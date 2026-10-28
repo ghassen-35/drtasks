@@ -1,0 +1,29 @@
+{
+  "name": "office-platform",
+  "version": "1.0.0",
+  "description": "منصة إدارة مكتب رجل الأعمال والتواصل مع مدير المكتب",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env src/server.js",
+    "demo:seed": "node --disable-warning=ExperimentalWarning scripts/demo.js seed",
+    "demo:clear": "node --disable-warning=ExperimentalWarning scripts/demo.js clear",
+    "backup": "node --disable-warning=ExperimentalWarning -e \"console.log(require('./src/db').backup('manual'))\"",
+    "test:e2e": "node --disable-warning=ExperimentalWarning tests/e2e.js",
+    "test:unit": "node --disable-warning=ExperimentalWarning tests/unit.js",
+    "test": "npm run test:unit && npm run test:e2e"
+  },
+  "dependencies": {
+    "@fontsource/ibm-plex-sans-arabic": "^5.3.0",
+    "express": "^5.3.0",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.2.1",
+    "web-push": "^3.6.7"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "منصة إدارة مكتب رجل الأعمال",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22",
+  "hostRequirements": { "cpus": 2 },
+  "postCreateCommand": "npm install --omit=dev",
+  "postAttachCommand": "npm start",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "المنصة", "onAutoForward": "openBrowser" }
+  },
+  "containerEnv": {
+    "COOKIE_SECURE": "1",
+    "TRUST_PROXY": "1",
+    "TZ_NAME": "Asia/Riyadh"
+  }
+}
