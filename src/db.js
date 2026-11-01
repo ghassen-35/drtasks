@@ -283,14 +283,21 @@ function ensureUsers() {
   const count = get('SELECT COUNT(*) c FROM users').c;
   if (count > 0) return null;
   const gen = () => crypto.randomBytes(6).toString('base64url');
+  for (const k of ['OWNER_PASSWORD', 'MANAGER_PASSWORD']) {
+    if (process.env[k] && process.env[k].length < 8) throw new Error(`${k} يجب ألا تقل عن 8 أحرف`);
+  }
   const ownerPw = process.env.OWNER_PASSWORD || gen();
   const managerPw = process.env.MANAGER_PASSWORD || gen();
   run('INSERT INTO users(username,name,role,email,password_hash) VALUES(?,?,?,?,?)',
     process.env.OWNER_USERNAME || 'owner', process.env.OWNER_NAME || 'رجل الأعمال', 'owner', process.env.OWNER_EMAIL || null, hashPassword(ownerPw));
   run('INSERT INTO users(username,name,role,email,password_hash) VALUES(?,?,?,?,?)',
     process.env.MANAGER_USERNAME || 'manager', process.env.MANAGER_NAME || 'مدير المكتب', 'manager', process.env.MANAGER_EMAIL || null, hashPassword(managerPw));
-  const creds = `بيانات الدخول الأولية (غيّرها بعد أول دخول من صفحة الإعدادات)\n\nرجل الأعمال: ${process.env.OWNER_USERNAME || 'owner'} / ${ownerPw}\nمدير المكتب: ${process.env.MANAGER_USERNAME || 'manager'} / ${managerPw}\n`;
-  fs.writeFileSync(path.join(DATA_DIR, 'initial-credentials.txt'), creds, { mode: 0o600 });
+  // لا تُطبع ولا تُحفظ كلمة مرور حددها المسؤول بنفسه (سجلات الاستضافة قد يطّلع عليها غيره)
+  const show = (envKey, pw) => process.env[envKey] ? '(كلمة المرور المحددة في متغيرات البيئة)' : pw;
+  const creds = `بيانات الدخول الأولية (غيّرها بعد أول دخول من صفحة الإعدادات)\n\nرجل الأعمال: ${process.env.OWNER_USERNAME || 'owner'} / ${show('OWNER_PASSWORD', ownerPw)}\nمدير المكتب: ${process.env.MANAGER_USERNAME || 'manager'} / ${show('MANAGER_PASSWORD', managerPw)}\n`;
+  if (!process.env.OWNER_PASSWORD || !process.env.MANAGER_PASSWORD) {
+    fs.writeFileSync(path.join(DATA_DIR, 'initial-credentials.txt'), creds, { mode: 0o600 });
+  }
   return creds;
 }
 

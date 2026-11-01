@@ -86,6 +86,7 @@ if (EMAIL_MODE === 'smtp' && process.env.SMTP_HOST) {
 const emailStatus = () => ({ mode: EMAIL_MODE, configured: !!transport });
 // في GitHub Codespaces يُستنتج الرابط العام من متغيرات البيئة (النطاق قد يتغير، فلا يُكتب ثابتًا)
 const APP_URL = process.env.APP_URL
+  || process.env.RENDER_EXTERNAL_URL // يضبطه Render تلقائيًا
   || (process.env.CODESPACE_NAME && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN
     ? `https://${process.env.CODESPACE_NAME}-${process.env.PORT || 3000}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`
     : `http://localhost:${process.env.PORT || 3000}`);

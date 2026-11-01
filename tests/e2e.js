@@ -41,7 +41,7 @@ let server;
 function startServer() {
   return new Promise((resolve, reject) => {
     server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/server.js'], {
-      cwd: ROOT, env: { ...process.env, DATA_DIR: DATA, PORT: String(PORT), OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', EMAIL_MODE: 'file', NODE_EXTRA_CA_CERTS: `${DATA}/c.pem`, OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test' },
+      cwd: ROOT, env: { ...process.env, DATA_DIR: DATA, PORT: String(PORT), OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', EMAIL_MODE: 'file', TRUST_PROXY: '1', NODE_EXTRA_CA_CERTS: `${DATA}/c.pem`, OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
@@ -84,6 +84,8 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     await check('يسجل رجل الأعمال الدخول (جوال)', async () => {
       await login(owner, 'owner', 'Owner#2026x');
       assert(await owner.isVisible('text=تكليف جديد'), 'زر التكليف غير ظاهر');
+      const order = await owner.$$eval('main .ribbon', rs => rs.map(r => r.classList.contains('red') ? 'red' : 'orange'));
+      assert(order.join() === 'red,orange', 'ترتيب الأشرطة: العاجلة يجب أن تكون أولًا — ' + order.join());
       await owner.screenshot({ path: path.join(SHOTS, '01-owner-home-mobile.png'), fullPage: true });
     });
 
@@ -243,6 +245,12 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert((await apiAs(owner, 'POST', `/api/items/${itemId}/ack`)).status === 403, 'رجل الأعمال أكّد الاستلام');
       assert((await apiAs(mgr, 'POST', `/api/approvals/1/decide`, { decision: 'approved' })).status === 403, 'مدير المكتب اتخذ قرارًا');
       assert((await apiAs(owner, 'POST', `/api/items/${itemId}/approvals`, { kind: 'report', title: 'x' })).status === 403, 'رجل الأعمال طلب اعتمادًا');
+      // حد المحاولات لكل مستخدم يصمد أمام تزوير عنوان IP عبر X-Forwarded-For
+      let last = 0;
+      for (let k = 0; k < 31; k++) {
+        last = (await fetch(BASE + '/api/login', { method: 'POST', headers: { 'X-Requested-With': 'fetch', 'Content-Type': 'application/json', 'X-Forwarded-For': `10.0.${k}.1` }, body: JSON.stringify({ username: 'ghost', password: 'wrong' }) })).status;
+      }
+      assert(last === 429, 'لم يُفعَّل حد المحاولات لكل مستخدم: ' + last);
       assert((await apiAs(mgr, 'POST', '/api/assignments', { title: 'x', section: 'family' })).status === 403, 'مدير المكتب أنشأ تكليفًا باسم رجل الأعمال');
       // حماية CSRF وتسجيل الدخول
       const csrf = await owner.evaluate(async () => (await fetch('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status);
@@ -309,6 +317,23 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(!(await owner.isVisible('#add')), 'زر إنشاء اجتماع ظاهر لرجل الأعمال');
     });
 
+    await check('زر (+) في مربع القسم يفتح تكليفًا جديدًا والقسم محدد مسبقًا', async () => {
+      await owner.goto(BASE + '/#/'); await owner.waitForSelector('.tiles');
+      await owner.click('button.tile-add[data-add-section="family"]');
+      await owner.waitForSelector('.modal input[name=title]');
+      assert(await owner.isChecked('.modal input[name=section][value=family]'), 'القسم غير محدد مسبقًا');
+      await owner.fill('.modal input[name=title]', 'حجز موعد عائلي من زر المربع');
+      await owner.click('.modal button:has-text("إرسال إلى مدير المكتب")');
+      await owner.waitForSelector('h1:has-text("حجز موعد عائلي من زر المربع")');
+      const it = (await apiAs(owner, 'GET', '/api/items?kind=all&q=' + encodeURIComponent('حجز موعد عائلي'))).body;
+      assert(it.length === 1 && it[0].section === 'family' && it[0].kind === 'assignment', 'التكليف لم يُنشأ في القسم الصحيح');
+      await mgr.goto(BASE + '/#/'); await mgr.waitForSelector('.tiles');
+      await mgr.click('button.tile-add[data-add-section="commercial"]');
+      await mgr.waitForSelector('.modal select[name=section]');
+      assert(await mgr.$eval('.modal select[name=section]', e => e.value) === 'commercial', 'قسم المهمة غير محدد مسبقًا لمدير المكتب');
+      await mgr.click('.modal button[data-close]');
+    });
+
     await check('الواجهة على الجوال والكمبيوتر: لا تمرير أفقي، والصفحات الأساسية تعمل', async () => {
       for (const [p, pages] of [[owner, ['#/', '#/my', '#/decisions', '#/notifications', '#/reports', '#/section/association', '#/meetings', '#/settings', '#/more']],
         [mgr, ['#/', '#/inbox', '#/dashboard', '#/tasks', '#/meetings', '#/sops', '#/partners', '#/reports', '#/settings', '#/section/partnerships']]]) {
@@ -346,10 +371,10 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 22 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 23 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', 'RESULTS.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);
-    process.exit(failed.length || results.length < 22 ? 1 : 0);
+    process.exit(failed.length || results.length < 23 ? 1 : 0);
   }
 })();

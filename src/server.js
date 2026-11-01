@@ -13,7 +13,8 @@ const whatsapp = require('./whatsapp');
 
 const app = express();
 app.disable('x-powered-by');
-app.set('trust proxy', process.env.TRUST_PROXY === '1');
+// TRUST_PROXY = عدد طبقات البروكسي الموثوقة أمام الخادم (1 في Render/Codespaces). لا نثق بكل الطبقات حتى لا يُزوَّر عنوان IP
+app.set('trust proxy', Number(process.env.TRUST_PROXY) || false);
 app.use(express.json({ limit: '1mb' }));
 
 // ===== ترويسات الأمان =====
@@ -60,15 +61,20 @@ function fail(res, e) {
 }
 
 // محدد بسيط لمحاولات الدخول
+// حدّان للمحاولات الفاشلة خلال ربع ساعة: لكل (عنوان IP + مستخدم)، ولكل مستخدم مهما تغيّر العنوان
 const attempts = new Map();
+const WINDOW = 15 * 60000;
+const LIMITS = { ip: 10, user: 30 };
+function hit(key) { const a = attempts.get(key); if (!a || Date.now() - a.t > WINDOW) return 0; return a.n; }
+function fail1(key) { const a = attempts.get(key); if (!a || Date.now() - a.t > WINDOW) attempts.set(key, { n: 1, t: Date.now() }); else a.n++; }
+setInterval(() => { for (const [k, a] of attempts) if (Date.now() - a.t > WINDOW) attempts.delete(k); }, WINDOW).unref();
 app.post('/api/login', wrap((req, res) => {
-  const key = `${req.ip}|${String(req.body.username || '').toLowerCase()}`;
-  const a = attempts.get(key) || { n: 0, t: Date.now() };
-  if (Date.now() - a.t > 15 * 60000) { a.n = 0; a.t = Date.now(); }
-  if (a.n >= 10) throw new S.AppError(429, 'محاولات كثيرة، حاول بعد ربع ساعة');
-  const u = get('SELECT * FROM users WHERE username=? AND active=1', String(req.body.username || '').trim().toLowerCase());
-  if (!u || !verifyPassword(String(req.body.password || ''), u.password_hash)) { a.n++; attempts.set(key, a); throw new S.AppError(401, 'اسم المستخدم أو كلمة المرور غير صحيحة'); }
-  attempts.delete(key);
+  const username = String(req.body.username || '').trim().toLowerCase().slice(0, 100);
+  const ipKey = `ip:${req.ip}|${username}`; const userKey = `user:${username}`;
+  if (hit(ipKey) >= LIMITS.ip || hit(userKey) >= LIMITS.user) throw new S.AppError(429, 'محاولات كثيرة، حاول بعد ربع ساعة');
+  const u = get('SELECT * FROM users WHERE username=? AND active=1', username);
+  if (!u || !verifyPassword(String(req.body.password || ''), u.password_hash)) { fail1(ipKey); fail1(userKey); throw new S.AppError(401, 'اسم المستخدم أو كلمة المرور غير صحيحة'); }
+  attempts.delete(ipKey);
   const tok = crypto.randomBytes(32).toString('base64url');
   run('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)', sha(tok), u.id, new Date(Date.now() + SESSION_DAYS * 864e5).toISOString());
   const secure = req.secure || process.env.COOKIE_SECURE === '1';
@@ -198,8 +204,8 @@ app.get('/api/dashboard', wrap(req => {
   const TK = `i.kind IN ${D.TASK_KINDS} AND i.${D.OPEN}`;
   return {
     groups: [
-      { key: 'today', title: 'مهام اليوم', tone: 'orange', items: D.todayRibbon() },
       { key: 'urgent', title: 'المهام العاجلة', tone: 'red', items: D.urgentRibbon() },
+      { key: 'today', title: 'مهام اليوم', tone: 'orange', items: D.todayRibbon() },
       { key: 'overdue', title: 'المهام المتأخرة', tone: 'red', items: q(`${TK} AND i.due_date<?`, t) },
       { key: 'unack', title: 'تكليفات جديدة غير مؤكدة الاستلام', tone: 'orange', items: q("i.kind IN ('assignment','note') AND i.acknowledged_at IS NULL AND i.status!='cancelled'") },
       { key: 'not_started', title: 'مهام لم يبدأ تنفيذها', tone: 'gray', items: q(`${TK} AND i.status IN ('new','acknowledged')`) },

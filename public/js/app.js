@@ -378,14 +378,18 @@ function bindRibbons(root) {
 function tileHtml(s) {
   const sec = state.meta.sections.find(x => x.key === s.key);
   const st = (v, label, tone) => `<div class="st ${v ? tone : 'zero'}"><b>${v}</b><span>${label}</span></div>`;
-  return `<a class="tile" href="#/section/${s.key}" aria-label="${esc(s.name)}">
+  // زر (+) خارج الرابط (لا يصح وضع زر داخل رابط) ويُثبَّت فوق زاوية المربع
+  return `<div class="tile-wrap"><a class="tile" href="#/section/${s.key}" aria-label="${esc(s.name)}">
     <div class="th"><div class="ic">${I(sec.icon)}</div><h3>${esc(s.name)}</h3></div>
     <div class="stats">
       ${st(s.open, 'مفتوحة', 'blue')}${st(s.due_today, 'مستحقة اليوم', 'orange')}${st(s.overdue, 'متأخرة', 'red')}${st(s.awaiting_decision, 'بانتظار قرار', 'orange')}
     </div>
     ${s.extra && s.extra.length ? `<div class="extra">${s.extra.map(e => `<span>${esc(e.label)}: ${e.value}</span>`).join('')}</div>` : ''}
     <div class="top">${s.top ? `أهم متابعة: <b>${esc(s.top.title)}</b>${s.top.due_date ? ` — ${esc(fmtDate(s.top.due_date))}` : ''}` : '<span class="muted">لا توجد متابعات مفتوحة</span>'}</div>
-  </a>`;
+  </a><button type="button" class="tile-add" data-add-section="${s.key}" aria-label="${isOwner() ? 'تكليف جديد' : 'مهمة جديدة'} في ${esc(s.name)}" title="${isOwner() ? 'تكليف جديد' : 'مهمة جديدة'} في ${esc(s.name)}">${I('plus')}</button></div>`;
+}
+function bindTileAdd(root) {
+  $$('[data-add-section]', root).forEach(b => b.onclick = () => isOwner() ? modalAssignment({ section: b.dataset.addSection }) : modalTask({ section: b.dataset.addSection }));
 }
 async function viewHome(main) {
   const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
@@ -441,11 +445,11 @@ async function viewHome(main) {
     }
     main.innerHTML = `
       <div class="hello"><h1>مرحبًا، ${esc(state.me.name)}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
-      ${ribbonHtml('orange', 'مهام اليوم', h.today_ribbon, 'لا توجد مهام مستحقة اليوم', sub)}
       ${ribbonHtml('red', 'المهام العاجلة', h.urgent_ribbon, 'لا توجد مهام عاجلة حاليًا', subU)}
+      ${ribbonHtml('orange', 'مهام اليوم', h.today_ribbon, 'لا توجد مهام مستحقة اليوم', sub)}
       <div class="tiles">${h.tiles.map(tileHtml).join('')}</div>
       ${roleHtml}`;
-    bindRibbons(main); bindInboxActions(main);
+    bindRibbons(main); bindInboxActions(main); bindTileAdd(main);
   }
   await load();
   return { refresh: load };

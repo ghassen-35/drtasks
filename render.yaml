@@ -1,0 +1,35 @@
+# Render Blueprint — نشر المنصة بنقرة: Render ← New ← Blueprint ← اختر هذا المستودع
+# يتطلب خطة مدفوعة (Starter) لأن القرص الدائم غير متاح في الخطة المجانية.
+services:
+  - type: web
+    name: drtasks
+    runtime: node
+    region: frankfurt        # أقرب منطقة متاحة في Render للمملكة
+    plan: starter
+    branch: main
+    autoDeploy: true         # كل دفع إلى main يُنشر تلقائيًا
+    buildCommand: npm ci --omit=dev
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: data
+      mountPath: /var/data   # قاعدة البيانات والملفات والنسخ الاحتياطية
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATA_DIR
+        value: /var/data
+      - key: COOKIE_SECURE
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
+      - key: TZ_NAME
+        value: Asia/Riyadh
+      - key: EMAIL_MODE
+        value: "off"
+      # كلمتا المرور الأوليتان: يطلبهما Render عند الإنشاء (8 أحرف على الأقل). تُستخدمان عند أول تشغيل فقط
+      - key: OWNER_PASSWORD
+        sync: false
+      - key: MANAGER_PASSWORD
+        sync: false
