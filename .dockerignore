@@ -5,3 +5,4 @@ tests
 .devcontainer
 .env
 *.log
+.wrangler

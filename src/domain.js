@@ -2,7 +2,8 @@
 // ثوابت المجال، الصلاحيات، وقواعد الحساب (الأشرطة، المربعات، التقارير)
 const { get, all } = require('./db');
 
-const TZ = process.env.TZ_NAME || 'Asia/Riyadh';
+const cfg = require('./config');
+const tz = () => cfg.get('TZ_NAME', 'Asia/Riyadh');
 
 const SECTIONS = [
   { key: 'association', name: 'الجمعية', icon: 'building' },
@@ -58,7 +59,7 @@ const PERMS = {
 const can = (user, perm) => !!(user && PERMS[user.role] && PERMS[user.role].has(perm));
 
 function todayStr(d = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
@@ -197,6 +198,6 @@ function report(period = 'week') {
 }
 
 module.exports = {
-  TZ, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS,
+  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS,
   PERMS, can, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

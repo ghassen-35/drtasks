@@ -1,12 +1,10 @@
 'use strict';
 // نظام الإشعارات: (1) داخل المنصة  (2) Push للجوال + البريد الإلكتروني  (3) واتساب (مُهيأ للمستقبل، معطل)
-const fs = require('fs');
-const path = require('path');
-const webpush = require('web-push');
-const nodemailer = require('nodemailer');
-const { get, all, run, DATA_DIR } = require('./db');
+const { get, all, run } = require('./db');
+const cfg = require('./config');
 const events = require('./events');
 const whatsapp = require('./whatsapp');
+const push = require('./push');
 
 const TYPES = {
   new_assignment: 'تكليف جديد',
@@ -38,18 +36,6 @@ function prefsOf(user) {
 }
 
 // ===== Web Push (VAPID) =====
-const VAPID_FILE = path.join(DATA_DIR, 'vapid.json');
-let vapid;
-if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-  vapid = { publicKey: process.env.VAPID_PUBLIC_KEY, privateKey: process.env.VAPID_PRIVATE_KEY };
-} else if (fs.existsSync(VAPID_FILE)) {
-  vapid = JSON.parse(fs.readFileSync(VAPID_FILE, 'utf8'));
-} else {
-  vapid = webpush.generateVAPIDKeys();
-  fs.writeFileSync(VAPID_FILE, JSON.stringify(vapid), { mode: 0o600 });
-}
-webpush.setVapidDetails(process.env.VAPID_SUBJECT || 'mailto:admin@example.invalid', vapid.publicKey, vapid.privateKey);
-
 async function sendPush(user, notif) {
   const prefs = prefsOf(user);
   if (!prefs.push.enabled) return;
@@ -62,7 +48,7 @@ async function sendPush(user, notif) {
     : { title: notif.title, body: notif.body || '', link: notif.link, tag: `n${notif.id}` });
   for (const s of subs) {
     try {
-      await webpush.sendNotification({ endpoint: s.endpoint, keys: JSON.parse(s.keys) }, payload, { TTL: 3600 * 24, urgency: notif.urgent ? 'high' : 'normal' });
+      await push.sendWebPush({ endpoint: s.endpoint, keys: JSON.parse(s.keys) }, payload, { urgent: notif.urgent });
       run('INSERT INTO deliveries(notification_id,user_id,channel,status) VALUES(?,?,?,?)', notif.id, user.id, 'push', 'sent');
     } catch (e) {
       if (e.statusCode === 404 || e.statusCode === 410) run('DELETE FROM push_subscriptions WHERE id=?', s.id);
@@ -72,46 +58,40 @@ async function sendPush(user, notif) {
 }
 
 // ===== البريد الإلكتروني =====
-// EMAIL_MODE: off (افتراضي) | smtp (يتطلب إعداد SMTP_*) | file (اختبار: يكتب الرسائل في data/outbox دون إرسال)
-const EMAIL_MODE = process.env.EMAIL_MODE || 'off';
-let transport = null;
-if (EMAIL_MODE === 'smtp' && process.env.SMTP_HOST) {
-  transport = nodemailer.createTransport({
-    host: process.env.SMTP_HOST, port: Number(process.env.SMTP_PORT || 587), secure: process.env.SMTP_SECURE === '1',
-    auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
-  });
-} else if (EMAIL_MODE === 'file') {
-  transport = nodemailer.createTransport({ streamTransport: true, buffer: true, newline: 'unix' });
-}
-const emailStatus = () => ({ mode: EMAIL_MODE, configured: !!transport });
-// في GitHub Codespaces يُستنتج الرابط العام من متغيرات البيئة (النطاق قد يتغير، فلا يُكتب ثابتًا)
-const APP_URL = process.env.APP_URL
-  || process.env.RENDER_EXTERNAL_URL // يضبطه Render تلقائيًا
-  || (process.env.CODESPACE_NAME && process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN
-    ? `https://${process.env.CODESPACE_NAME}-${process.env.PORT || 3000}.${process.env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}`
-    : `http://localhost:${process.env.PORT || 3000}`);
+// EMAIL_MODE: off (افتراضي) | resend (HTTP، يعمل على Cloudflare) | smtp وfile (Node فقط). المزودون يسجّلهم نظام التشغيل
+const mailProviders = {
+  async resend(msg) {
+    const key = cfg.get('RESEND_API_KEY');
+    if (!key) throw new Error('RESEND_API_KEY غير مضبوط');
+    const res = await fetch(cfg.get('RESEND_API_URL', 'https://api.resend.com/emails'), {
+      method: 'POST', headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from: cfg.get('EMAIL_FROM', 'office@localhost'), to: [msg.to], subject: msg.subject, text: msg.text, html: msg.html }),
+    });
+    if (!res.ok) throw new Error(`resend ${res.status}`);
+  },
+};
+const registerMailProvider = (name, fn) => { mailProviders[name] = fn; };
+const emailMode = () => cfg.get('EMAIL_MODE', 'off');
+const emailStatus = () => ({ mode: emailMode(), configured: emailMode() !== 'off' && !!mailProviders[emailMode()] && (emailMode() !== 'resend' || !!cfg.get('RESEND_API_KEY')) });
+const appUrl = () => cfg.get('APP_URL') || cfg.get('RENDER_EXTERNAL_URL')
+  || (cfg.get('CODESPACE_NAME') && cfg.get('GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN') ? `https://${cfg.get('CODESPACE_NAME')}-${cfg.get('PORT', '3000')}.${cfg.get('GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN')}` : null)
+  || cfg.runtime.origin || `http://localhost:${cfg.get('PORT', '3000')}`;
 
 async function sendEmail(user, notif, { force = false } = {}) {
   const prefs = prefsOf(user);
   if (!force && (!prefs.email.enabled || !prefs.email.types.includes(notif.type))) return;
-  if (!user.email) { run('INSERT INTO deliveries(notification_id,user_id,channel,status,detail) VALUES(?,?,?,?,?)', notif.id, user.id, 'email', 'skipped', 'لا يوجد بريد للمستخدم'); return; }
-  if (!transport) { run('INSERT INTO deliveries(notification_id,user_id,channel,status,detail) VALUES(?,?,?,?,?)', notif.id, user.id, 'email', 'not_configured', `EMAIL_MODE=${EMAIL_MODE}`); return; }
-  const link = APP_URL + '/' + (notif.link || '');
+  const rec = (status, detail) => run('INSERT INTO deliveries(notification_id,user_id,channel,status,detail) VALUES(?,?,?,?,?)', notif.id, user.id, 'email', status, detail);
+  if (!user.email) return rec('skipped', 'لا يوجد بريد للمستخدم');
+  if (!emailStatus().configured) return rec('not_configured', `EMAIL_MODE=${emailMode()}`);
+  const link = appUrl() + '/' + (notif.link || '');
   try {
-    const info = await transport.sendMail({
-      from: process.env.EMAIL_FROM || 'office-platform@localhost', to: user.email,
-      subject: `${notif.urgent ? '[عاجل] ' : ''}${notif.title}`,
+    await mailProviders[emailMode()]({
+      to: user.email, subject: `${notif.urgent ? '[عاجل] ' : ''}${notif.title}`,
       text: `${notif.body || ''}\n\nفتح في المنصة: ${link}`,
       html: `<div dir="rtl" style="font-family:Tahoma,Arial;font-size:15px"><p><b>${esc(notif.title)}</b></p><p style="white-space:pre-wrap">${esc(notif.body || '')}</p><p><a href="${esc(link)}">فتح في المنصة</a></p></div>`,
     });
-    if (EMAIL_MODE === 'file') {
-      const dir = path.join(DATA_DIR, 'outbox'); fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(path.join(dir, `${Date.now()}-${notif.id || 'x'}.eml`), info.message);
-    }
-    run('INSERT INTO deliveries(notification_id,user_id,channel,status,detail) VALUES(?,?,?,?,?)', notif.id, user.id, 'email', 'sent', EMAIL_MODE);
-  } catch (e) {
-    run('INSERT INTO deliveries(notification_id,user_id,channel,status,detail) VALUES(?,?,?,?,?)', notif.id, user.id, 'email', 'failed', String(e.message).slice(0, 300));
-  }
+    rec('sent', emailMode());
+  } catch (e) { rec('failed', String(e.message).slice(0, 300)); }
 }
 const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -142,7 +122,7 @@ function notify(userId, { type, title, body, link, urgent = false, dedupe = null
   const notif = { id, type, title, body, link, urgent };
   events.sendTo(userId, 'notification', notif);
   // القنوات الخارجية تعمل في الخلفية دون تعطيل الطلب
-  setImmediate(() => {
+  queueMicrotask(() => {
     sendPush(user, notif).catch(() => { });
     sendEmail(user, notif).catch(() => { });
     whatsapp.maybeSend(user, notif).catch(() => { });
@@ -154,4 +134,4 @@ function notifyRole(role, payload) {
   for (const u of all('SELECT id FROM users WHERE role=? AND active=1', role)) notify(u.id, payload);
 }
 
-module.exports = { notify, notifyRole, TYPES, prefsOf, DEFAULT_PREFS, vapidPublicKey: () => vapid.publicKey, sendEmail, emailStatus, APP_URL };
+module.exports = { notify, notifyRole, TYPES, prefsOf, DEFAULT_PREFS, sendEmail, emailStatus, registerMailProvider, appUrl };

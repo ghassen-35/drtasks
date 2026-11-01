@@ -1,12 +1,15 @@
 'use strict';
 // اختبارات منطق الخادم: قواعد الشريط العاجل، منع تكرار الإشعارات، الإشعارات المجدولة، عدم التكرار عند التحويل
 const fs = require('fs'); const os = require('os'); const path = require('path');
-process.env.DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'office-unit-'));
-const { get, all, run, ensureUsers } = require('../src/db');
+const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'office-unit-'));
+require('../src/config').set({ PBKDF2_ITERATIONS: '1000' });
+require('../src/node/sqlite').init(DATA);
+const { get, all, run } = require('../src/db');
 const D = require('../src/domain');
 const S = require('../src/services');
-const { scheduler } = require('../src/server');
-ensureUsers();
+const { runScheduler: scheduler } = require('../src/scheduler');
+(async () => {
+await require('../src/auth').ensureUsers();
 const owner = get("SELECT * FROM users WHERE role='owner'"); const mgr = get("SELECT * FROM users WHERE role='manager'");
 let ok = 0, fail = 0;
 const t = (name, cond) => { if (cond) { ok++; console.log('✔ ' + name); } else { fail++; console.log('✘ ' + name); } };
@@ -58,5 +61,20 @@ t('القرار بلا قسم يطلب تحديد القسم بدل إنشاء �
 S.decisionToTask(mgr, dec, { section: 'association' }); threw = false; try { S.decisionToTask(mgr, dec, { section: 'association' }); } catch { threw = true; }
 t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get('SELECT COUNT(*) c FROM items WHERE decision_id=?', dec).c === 1);
 
-fs.rmSync(process.env.DATA_DIR, { recursive: true, force: true });
+
+// ---- التشفير: Web Push وكلمات المرور
+{
+  const nodeCrypto = require('crypto'); const ece = require('http_ece'); const push = require('../src/push'); const auth = require('../src/auth');
+  const rx = nodeCrypto.createECDH('prime256v1'); rx.generateKeys();
+  const authSecret = nodeCrypto.randomBytes(16);
+  const text = JSON.stringify({ title: 'اختبار', body: 'رسالة عربية ✓' });
+  const body = Buffer.from(await push.encryptPayload(rx.getPublicKey().toString('base64url'), authSecret.toString('base64url'), text));
+  let plain = null; try { plain = ece.decrypt(body, { version: 'aes128gcm', privateKey: rx, authSecret: authSecret.toString('base64url') }).toString('utf8'); } catch (e) { plain = 'ERR ' + e.message; }
+  t('تشفير Web Push يفكّه مرجع مستقل (http_ece) إلى النص الأصلي', plain === text);
+  const h = await auth.hashPassword('كلمة-سر-1234');
+  t('كلمة المرور الصحيحة تُقبل والخاطئة تُرفض', (await auth.verifyPassword('كلمة-سر-1234', h)) && !(await auth.verifyPassword('كلمة-سر-1235', h)));
+}
+
+fs.rmSync(DATA, { recursive: true, force: true });
 console.log(`\n${ok}/${ok + fail} نجحت`); process.exit(fail ? 1 : 0);
+})();

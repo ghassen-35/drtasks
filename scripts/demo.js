@@ -1,13 +1,16 @@
 'use strict';
 // بيانات تجريبية مميزة بوضوح (is_demo=1 وتظهر بشارة «بيانات تجريبية») — للإضافة: npm run demo:seed  للحذف: npm run demo:clear
-const { get, all, run, tx, ensureUsers } = require('../src/db');
+const path = require('path');
+const cfg = require('../src/config');
+cfg.set(process.env);
+require('../src/node/sqlite').init(cfg.get('DATA_DIR', path.join(__dirname, '..', 'data')));
+const { get, all, run, tx } = require('../src/db');
+const auth = require('../src/auth');
 const D = require('../src/domain');
 const S = require('../src/services');
 
 const cmd = process.argv[2];
-ensureUsers();
-const owner = get("SELECT * FROM users WHERE role='owner'");
-const manager = get("SELECT * FROM users WHERE role='manager'");
+let owner, manager;
 
 function clear() {
   tx(() => {
@@ -77,6 +80,11 @@ function seed() {
   console.log('أُضيفت بيانات تجريبية مميزة (is_demo=1). للحذف: npm run demo:clear');
 }
 
-if (cmd === 'seed') seed();
-else if (cmd === 'clear') clear();
-else console.log('الاستخدام: node scripts/demo.js seed|clear');
+(async () => {
+  await auth.ensureUsers();
+  owner = get("SELECT * FROM users WHERE role='owner'");
+  manager = get("SELECT * FROM users WHERE role='manager'");
+  if (cmd === 'seed') seed();
+  else if (cmd === 'clear') clear();
+  else console.log('الاستخدام: node scripts/demo.js seed|clear');
+})();

@@ -1,0 +1,14 @@
+{
+  // اسم الـ Worker يجب أن يطابق الاسم في لوحة Cloudflare
+  "name": "drtasks",
+  "main": "src/cloudflare/worker.mjs",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./public",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": { "bindings": [{ "name": "OFFICE", "class_name": "OfficeDO" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OfficeDO"] }],
+  "vars": { "TZ_NAME": "Asia/Riyadh", "EMAIL_MODE": "off" },
+  "observability": { "enabled": true }
+}

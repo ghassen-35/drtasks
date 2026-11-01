@@ -332,20 +332,36 @@ function refreshView() {
   }, 350);
 }
 
-// ===== المزامنة الفورية (SSE) =====
-let es = null;
+// ===== المزامنة الفورية: SSE على Node وWebSocket على Cloudflare =====
+let es = null, ws = null, wsWanted = false, wsTries = 0, wsPing = null;
+function onNotification(n) {
+  toast(n.title, n.urgent ? 'urgent' : '', () => { if (n.link) location.hash = n.link.replace(/^#/, ''); });
+  refreshCounts();
+}
+function connectWs() {
+  if (!wsWanted || (ws && ws.readyState <= 1)) return;
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
+  ws.onopen = () => { if (wsTries) refreshView(); wsTries = 0; clearInterval(wsPing); wsPing = setInterval(() => { if (ws && ws.readyState === 1) ws.send('ping'); }, 30000); };
+  ws.onmessage = (e) => {
+    if (e.data === 'pong') return;
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    if (m.event === 'change') refreshView(); else if (m.event === 'notification') onNotification(m.data);
+  };
+  ws.onclose = () => { clearInterval(wsPing); if (wsWanted) setTimeout(connectWs, Math.min(30000, 1000 * 2 ** Math.min(wsTries++, 5))); };
+}
 function openEvents() {
   closeEvents();
+  if (state.meta.realtime === 'ws') { wsWanted = true; connectWs(); return; }
   es = new EventSource('/api/events');
   es.addEventListener('change', refreshView);
-  es.addEventListener('notification', (e) => {
-    const n = JSON.parse(e.data);
-    toast(n.title, n.urgent ? 'urgent' : '', () => { if (n.link) location.hash = n.link.replace(/^#/, ''); });
-    refreshCounts();
-  });
+  es.addEventListener('notification', (e) => onNotification(JSON.parse(e.data)));
   es.onerror = () => { /* يعيد المتصفح الاتصال تلقائيًا */ };
 }
-function closeEvents() { if (es) { es.close(); es = null; } }
+function closeEvents() {
+  if (es) { es.close(); es = null; }
+  wsWanted = false; clearInterval(wsPing);
+  if (ws) { const w = ws; ws = null; w.onclose = null; try { w.close(); } catch { /* مغلق */ } }
+}
 
 // ===== شريطا مهام اليوم والمهام العاجلة =====
 function ribbonHtml(tone, title, items, emptyMsg, sub) {
@@ -724,6 +740,9 @@ async function viewItem(main, id) {
       ${ctl}</div>`;
   }
   function renderTimeline() {
+    // لا نُضيّع ما كتبه المستخدم في نماذج القرار عند وصول تحديث فوري من الطرف الآخر
+    const drafts = {};
+    $$('form.decide', main).forEach(f => { const d = formData(f); if (d.note || d.opt) drafts[f.dataset.aid] = d; });
     const apMap = Object.fromEntries(data.approvals.map(a => [a.id, a]));
     const shown = new Set();
     const entries = [
@@ -747,6 +766,8 @@ async function viewItem(main, id) {
     for (const ap of data.approvals) if (!shown.has(ap.id)) html.push(approvalCard(ap));
     $('#tl', main).innerHTML = html.join('') || '<div class="empty">لا توجد رسائل بعد</div>';
     $$('form.decide', main).forEach(f => {
+      const dr = drafts[f.dataset.aid];
+      if (dr) { f.elements.note.value = dr.note || ''; if (dr.opt) { const r = $(`input[name=opt][value="${dr.opt}"]`, f); if (r) r.checked = true; } }
       let decision = null;
       $$('[data-d]', f).forEach(b => b.onclick = () => { decision = b.dataset.d; });
       f.onsubmit = async (e) => {
@@ -1139,7 +1160,10 @@ async function viewSettings(main) {
   <form class="card" id="pw"><div class="card-h"><h2>تغيير كلمة المرور</h2></div>
     <div class="grid2">${field('الحالية', '<input type="password" name="current" autocomplete="current-password" dir="ltr">')}${field('الجديدة (8 أحرف على الأقل)', '<input type="password" name="next" autocomplete="new-password" dir="ltr">')}</div>
     <button class="btn">تغيير</button></form>
-  ${isManager() ? `<div class="card"><div class="card-h"><h2>النسخ الاحتياطي</h2></div><p class="small muted">تُنشأ نسخة تلقائية يوميًا (آخر 14 نسخة) في مجلد data/backups على الخادم.</p><button class="btn" id="bk">${I('download')} إنشاء نسخة احتياطية الآن</button></div>` : ''}`;
+  ${isManager() ? `<div class="card"><div class="card-h"><h2>النسخ الاحتياطي والتصدير</h2></div>
+    ${state.meta.file_backup ? '<p class="small muted">تُنشأ نسخة تلقائية يوميًا (آخر 14 نسخة) في مجلد data/backups على الخادم.</p>' : ''}
+    <p class="small muted">«تصدير البيانات» ينزّل ملف JSON بكل التكليفات والرسائل والقرارات (دون كلمات المرور ودون محتوى المرفقات) للأرشفة والاطلاع. ليس أداة استعادة تلقائية.</p>
+    <div class="btn-row">${state.meta.file_backup ? `<button class="btn" id="bk">${I('download')} إنشاء نسخة احتياطية الآن</button>` : ''}<a class="btn" href="/api/export.json">${I('download')} تصدير البيانات (JSON)</a></div></div>` : ''}`;
   const group = (g) => $$(`[data-group=${g}]`, main).filter(x => x.checked).map(x => x.value);
   $('#pf', main).onsubmit = async (e) => {
     e.preventDefault(); const d = formData(e.target);
@@ -1186,5 +1210,5 @@ async function boot() {
 }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { });
 // تحديث تاريخ "اليوم" والبيانات عند العودة للتبويب
-document.addEventListener('visibilitychange', () => { if (!document.hidden && state.me) { GET('/api/meta').then(m => { state.meta = m; }).catch(() => { }); refreshView(); } });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && state.me) { if (wsWanted) connectWs(); GET('/api/meta').then(m => { state.meta = m; }).catch(() => { }); refreshView(); } });
 boot();

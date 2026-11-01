@@ -8,15 +8,15 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const https = require('https');
-const { execSync } = require('child_process');
+const http = require('http');
 const { chromium, devices } = require('playwright');
 
 const ROOT = path.join(__dirname, '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'office-e2e-'));
 const PORT = 3200 + Math.floor(Math.random() * 500);
 const BASE = `http://localhost:${PORT}`;
-const SHOTS = path.join(ROOT, 'tests', 'screenshots');
+const TARGET = process.env.E2E_TARGET === 'cf' ? 'cloudflare' : 'node';
+const SHOTS = path.join(ROOT, 'tests', 'screenshots', TARGET);
 fs.mkdirSync(SHOTS, { recursive: true });
 
 const results = [];
@@ -29,28 +29,40 @@ async function check(name, fn) {
 const assert = (c, m) => { if (!c) throw new Error(m); };
 
 // خادم Push وهمي يستقبل الطلبات المشفّرة التي يرسلها الخادم (يتحقق من جانب الإرسال لدينا)
-// شهادة محلية موقّعة ذاتيًا يثق بها خادم المنصة عبر NODE_EXTRA_CA_CERTS (دون تعطيل التحقق من TLS)
-execSync(`openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" -keyout "${DATA}/k.pem" -out "${DATA}/c.pem"`, { stdio: 'ignore' });
 const pushHits = [];
-const pushSrv = https.createServer({ key: fs.readFileSync(`${DATA}/k.pem`), cert: fs.readFileSync(`${DATA}/c.pem`) }, (req, res) => {
+const pushSrv = http.createServer((req, res) => {
   let len = 0; req.on('data', c => len += c.length);
-  req.on('end', () => { pushHits.push({ url: req.url, enc: req.headers['content-encoding'], auth: !!req.headers.authorization, len }); res.writeHead(201); res.end(); });
+  req.on('end', () => { pushHits.push({ url: req.url, enc: req.headers['content-encoding'], auth: /^vapid t=[\w-]+\.[\w-]+\.[\w-]+, k=[\w-]{80,}$/.test(req.headers.authorization || ''), len }); res.writeHead(201); res.end(); });
+});
+
+// خادم بريد وهمي بصيغة Resend: يتحقق من مسار الإرسال الفعلي في الشيفرة (دون إرسال حقيقي)
+const mails = [];
+const mailSrv = http.createServer((req, res) => {
+  let b = ''; req.on('data', c => b += c);
+  req.on('end', () => { try { mails.push(JSON.parse(b)); } catch { /* تجاهل */ } res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"id":"test"}'); });
 });
 
 let server;
 function startServer() {
+  const cfg = {
+    OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test',
+    EMAIL_MODE: 'resend', RESEND_API_KEY: 'test-key', RESEND_API_URL: `http://127.0.0.1:${mailSrv.address().port}/emails`, EMAIL_FROM: 'office@example.test',
+  };
   return new Promise((resolve, reject) => {
-    server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/server.js'], {
-      cwd: ROOT, env: { ...process.env, DATA_DIR: DATA, PORT: String(PORT), OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', EMAIL_MODE: 'file', TRUST_PROXY: '1', NODE_EXTRA_CA_CERTS: `${DATA}/c.pem`, OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test' },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    server.stdout.on('data', d => { out += d; if (out.includes('المنصة تعمل')) resolve(); });
-    server.stderr.on('data', d => process.stderr.write(d));
+    if (TARGET === 'node') {
+      server = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/node/server.js'], { cwd: ROOT, env: { ...process.env, ...cfg, DATA_DIR: DATA, PORT: String(PORT), TRUST_PROXY: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    } else { // Cloudflare: المحرك الفعلي workerd محليًا مع Durable Object وSQLite
+      const vars = Object.entries(cfg).flatMap(([k, v]) => ['--var', `${k}:${v}`]);
+      server = spawn(path.join(ROOT, 'node_modules', '.bin', 'wrangler'), ['dev', '--port', String(PORT), '--persist-to', path.join(DATA, 'state'), ...vars], { cwd: ROOT, env: { ...process.env, CI: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+    let out = ''; let done = false; global.serverLog = () => out;
+    const ready = () => { if (!done && /المنصة تعمل|Ready on/.test(out)) { done = true; setTimeout(resolve, TARGET === 'cf' ? 500 : 0); } };
+    server.stdout.on('data', d => { out += d; ready(); });
+    server.stderr.on('data', d => { if (TARGET === 'node') process.stderr.write(d); else out += d; });
     server.on('exit', c => reject(new Error('server exited ' + c)));
   });
 }
-const stopServer = () => new Promise(r => { server.removeAllListeners('exit'); server.on('exit', r); server.kill(); });
+const stopServer = () => new Promise(r => { server.removeAllListeners('exit'); server.on('exit', r); server.kill(); setTimeout(() => { try { process.kill(server.pid, 'SIGKILL'); } catch { /* انتهى */ } }, 8000).unref(); });
 async function apiAs(page, method, url, body) {
   return page.evaluate(async ([m, u, b]) => {
     const r = await fetch(u, { method: m, headers: { 'X-Requested-With': 'fetch', 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
@@ -68,6 +80,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
 
 (async () => {
   await new Promise(r => pushSrv.listen(0, r));
+  await new Promise(r => mailSrv.listen(0, r));
   const pushPort = pushSrv.address().port;
   await startServer();
   const browser = await chromium.launch();
@@ -95,7 +108,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     await apiAs(mgr, 'PUT', '/api/prefs', { ...prefs, email: { enabled: true, types: ['new_assignment', 'approval_request'] }, email_address: 'manager@example.test', private_lock_screen: true });
     // مفاتيح اشتراك صالحة الشكل (P-256) كما يولدها المتصفح
     const ecdh = require('crypto').createECDH('prime256v1'); ecdh.generateKeys();
-    await apiAs(mgr, 'POST', '/api/push/subscribe', { endpoint: `https://127.0.0.1:${pushPort}/push/mgr`, keys: { p256dh: ecdh.getPublicKey('base64url'), auth: require('crypto').randomBytes(16).toString('base64url') } });
+    await apiAs(mgr, 'POST', '/api/push/subscribe', { endpoint: `http://127.0.0.1:${pushPort}/push/mgr`, keys: { p256dh: ecdh.getPublicKey('base64url'), auth: require('crypto').randomBytes(16).toString('base64url') } });
     tileBefore = (await apiAs(mgr, 'GET', '/api/home')).body.tiles.find(t => t.key === 'association');
     await mgr.goto(BASE + '/#/inbox'); await mgr.waitForSelector('h1:has-text("الوارد من رجل الأعمال")');
 
@@ -127,10 +140,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(n.some(x => x.type === 'new_assignment' && x.title.includes(TITLE) && !x.read_at), 'لا يوجد إشعار داخل المنصة');
       assert(await mgr.isVisible('#bellN:not(.hidden)'), 'عداد الإشعارات غير ظاهر');
       await new Promise(r => setTimeout(r, 1500));
-      const eml = fs.existsSync(path.join(DATA, 'outbox')) ? fs.readdirSync(path.join(DATA, 'outbox')) : [];
-      assert(eml.length >= 1, 'لم تُكتب رسالة بريد');
-      const raw = fs.readFileSync(path.join(DATA, 'outbox', eml[0]), 'utf8');
-      assert(raw.includes('manager@example.test'), 'البريد لم يُوجّه لمدير المكتب');
+      assert(mails.some(m => m.to.includes('manager@example.test') && m.subject.includes(TITLE)), 'لم يُرسل بريد لمدير المكتب: ' + JSON.stringify(mails.map(m => m.subject)));
       assert(pushHits.length >= 1 && pushHits[0].enc === 'aes128gcm' && pushHits[0].auth, 'لم يُرسل طلب Push مشفر: ' + JSON.stringify(pushHits));
     });
 
@@ -156,7 +166,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await mgr.waitForSelector('.modal-bg', { state: 'detached' });
       await mgr.waitForSelector('.chip.kind:has-text("مهمة")');
       const list = (await apiAs(mgr, 'GET', '/api/items?kind=all&q=' + encodeURIComponent(TITLE))).body;
-      assert(list.length === 1, 'يوجد تكرار: ' + list.length);
+      assert(Array.isArray(list) && list.length === 1, 'يوجد تكرار أو خطأ: ' + JSON.stringify(list).slice(0, 200));
       assert(list[0].kind === 'task' && list[0].ref === ref.trim() && list[0].section === 'association', 'التحويل لم يحافظ على السجل');
     });
 
@@ -367,12 +377,12 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(!consoleErrors.length, 'أخطاء JavaScript: ' + consoleErrors.join(' | '));
     });
   } catch (e) {
-    // تُعرض النتائج أدناه
+    if (global.serverLog) { await new Promise(r => setTimeout(r, 1500)); console.log('--- سجل الخادم (بدون أسطر الطلبات العادية) ---\n' + global.serverLog().split('\n').filter(l => !/wrangler:info\] (GET|POST|PUT|PATCH) .* (200|101|304)/.test(l) && !/Request.cf|undici|DOMException|processTicks|Request was cancelled/.test(l)).join('\n').slice(-3500)); }
   } finally {
-    await browser.close(); await stopServer(); pushSrv.close();
+    await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 23 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
-    fs.writeFileSync(path.join(ROOT, 'tests', 'RESULTS.md'), md);
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 23 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);
     process.exit(failed.length || results.length < 23 ? 1 : 0);
