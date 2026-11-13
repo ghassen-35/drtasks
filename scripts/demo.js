@@ -83,7 +83,7 @@ function seed() {
 (async () => {
   await auth.ensureUsers();
   owner = get("SELECT * FROM users WHERE role='owner'");
-  manager = get("SELECT * FROM users WHERE role='manager'");
+  manager = get("SELECT * FROM users WHERE role='manager' AND member=0");
   if (cmd === 'seed') seed();
   else if (cmd === 'clear') clear();
   else console.log('الاستخدام: node scripts/demo.js seed|clear');

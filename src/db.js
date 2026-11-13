@@ -24,7 +24,15 @@ function nextRef(prefix) {
   return `${prefix}-${year}-${String(v).padStart(4, '0')}`;
 }
 
-function applySchema() { for (const s of require('./schema')) B.run(s, []); }
+function applySchema() {
+  const schema = require('./schema');
+  for (const s of schema) B.run(s, []);
+  const done = Number(kvGet('schema_version') || 0);
+  schema.migrations.forEach((stmts, i) => {
+    if (i + 1 <= done) return;
+    tx(() => { for (const s of stmts) B.run(s, []); kvSet('schema_version', String(i + 1)); });
+  });
+}
 
 const kvGet = (k) => (get('SELECT value FROM kv WHERE key=?', k) || {}).value;
 const kvSet = (k, v) => run('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, v);

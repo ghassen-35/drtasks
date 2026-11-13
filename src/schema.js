@@ -28,4 +28,20 @@ module.exports = [
   "CREATE TABLE IF NOT EXISTS partners (\n  id INTEGER PRIMARY KEY,\n  name TEXT NOT NULL,\n  entity_type TEXT NOT NULL DEFAULT 'org', -- org|person\n  relation_type TEXT,\n  phone TEXT,\n  email TEXT,\n  contact_notes TEXT,\n  last_contact_at TEXT,\n  commitments TEXT,\n  next_followup TEXT,\n  opportunities TEXT,\n  awaiting_reply INTEGER NOT NULL DEFAULT 0,\n  is_demo INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))\n)",
   "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS file_chunks (name TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (name, seq))",
+  "CREATE TABLE IF NOT EXISTS folders (id INTEGER PRIMARY KEY, section TEXT NOT NULL, name TEXT NOT NULL, description TEXT, is_demo INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+  "CREATE TABLE IF NOT EXISTS project_members (project_id INTEGER NOT NULL REFERENCES projects(id), user_id INTEGER NOT NULL REFERENCES users(id), PRIMARY KEY (project_id, user_id))",
+];
+
+// ترحيلات مرقّمة تُنفَّذ مرة واحدة (رقم آخر ترحيل محفوظ في kv.schema_version).
+// قاعدة مهمة: لا نعيد بناء جدول مرجعي (مثل users) أبدًا — في Cloudflare يؤدي ذلك إلى إعادة الكائن
+// لآخر حالة سليمة بسبب قيود المفاتيح الأجنبية. نكتفي بـ ALTER TABLE ... ADD COLUMN.
+module.exports.migrations = [
+  // 1) حسابات الفريق (users.member=1 يعني «عضو فريق»؛ عمود role يبقى owner/manager بسبب قيد CHECK القديم)
+  //    + المجلدات وإسناد المهام لمستخدم
+  [
+    'ALTER TABLE users ADD COLUMN member INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE items ADD COLUMN folder_id INTEGER REFERENCES folders(id)',
+    'ALTER TABLE items ADD COLUMN assignee_id INTEGER REFERENCES users(id)',
+    'ALTER TABLE projects ADD COLUMN folder_id INTEGER REFERENCES folders(id)',
+  ],
 ];

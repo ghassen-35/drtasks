@@ -44,7 +44,7 @@ async function sendPush(user, notif) {
   const subs = all('SELECT * FROM push_subscriptions WHERE user_id=?', user.id);
   if (!subs.length) return;
   const payload = JSON.stringify(prefs.private_lock_screen
-    ? { title: notif.urgent ? 'تنبيه عاجل — مكتب رجل الأعمال' : 'مكتب رجل الأعمال', body: 'لديك إشعار جديد في المنصة', link: notif.link, tag: `n${notif.id}` }
+    ? { title: notif.urgent ? `تنبيه عاجل — ${cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري')}` : cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'), body: 'لديك إشعار جديد في المنصة', link: notif.link, tag: `n${notif.id}` }
     : { title: notif.title, body: notif.body || '', link: notif.link, tag: `n${notif.id}` });
   for (const s of subs) {
     try {
@@ -131,7 +131,7 @@ function notify(userId, { type, title, body, link, urgent = false, dedupe = null
 }
 
 function notifyRole(role, payload) {
-  for (const u of all('SELECT id FROM users WHERE role=? AND active=1', role)) notify(u.id, payload);
+  for (const u of all('SELECT id FROM users WHERE role=? AND member=0 AND active=1', role)) notify(u.id, payload); // لا يشمل أعضاء الفريق
 }
 
 module.exports = { notify, notifyRole, TYPES, prefsOf, DEFAULT_PREFS, sendEmail, emailStatus, registerMailProvider, appUrl };

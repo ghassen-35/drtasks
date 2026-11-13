@@ -45,17 +45,23 @@ const APPROVAL_KINDS = {
 };
 
 // الصلاحيات تُفحص في الخادم لكل عملية — وليس بإخفاء الأزرار فقط
+// member (عضو فريق): لا يملك item.view العامة، بل item.view_scoped — أي مسار لم يُراعِ الأعضاء صراحةً يرفضهم تلقائيًا
 const PERMS = {
   owner: new Set([
     'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
     'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
+    'folders.view', 'users.manage',
   ]),
   manager: new Set([
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
     'reports.view', 'meetings.view', 'meetings.manage', 'sops.view', 'sops.manage',
-    'partners.view', 'partners.manage', 'contacts.view', 'projects.manage',
+    'partners.view', 'partners.manage', 'contacts.view', 'projects.manage', 'folders.view', 'users.manage',
   ]),
+  member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
+const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'عضو فريق' };
+// الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
+const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
 const can = (user, perm) => !!(user && PERMS[user.role] && PERMS[user.role].has(perm));
 
 function todayStr(d = new Date()) {
@@ -70,7 +76,8 @@ const OPEN = "status NOT IN ('done','cancelled')";
 
 const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
   i.status,i.assignee,i.next_step,i.requires_approval,i.acknowledged_at,i.converted_at,i.created_at,i.updated_at,i.closed_at,i.completed_at,i.is_demo,
-  i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name,
+  i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name, i.folder_id, i.assignee_id,
+  (SELECT f.name FROM folders f WHERE f.id=i.folder_id) AS folder_name,
   (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending') AS pending_approvals,
   (SELECT p.name FROM projects p WHERE p.id=i.project_id) AS project_name,
   (SELECT COUNT(*) FROM files f WHERE f.item_id=i.id) AS files_count`;
@@ -89,10 +96,11 @@ function decorate(item, today = todayStr()) {
 }
 
 // ===== شريط مهام اليوم: كل مهمة/تكليف مفتوح موعده اليوم =====
-function todayRibbon() {
+const NO_SCOPE = { sql: '', params: [] };
+function todayRibbon(scope = NO_SCOPE) {
   const t = todayStr();
-  return all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND ${OPEN} AND due_date=?
-    ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(due_time,'99:99')`, t).map(i => decorate(i, t));
+  return all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND ${OPEN} AND due_date=?${scope.sql}
+    ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(due_time,'99:99')`, t, ...scope.params).map(i => decorate(i, t));
 }
 
 // ===== شريط المهام العاجلة: قواعد صريحة منفصلة عن تاريخ الاستحقاق =====
@@ -101,7 +109,7 @@ function todayRibbon() {
 const URGENT_REASONS = {
   urgent: 'أولوية عاجلة', overdue: 'متأخرة وعالية الأولوية', stalled: 'متعثرة', decision: 'تنتظر قرارًا يعطل التنفيذ',
 };
-function urgentRibbon() {
+function urgentRibbon(scope = NO_SCOPE) {
   const t = todayStr();
   const rows = all(`SELECT ${ITEM_LIST_COLS},
       (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending' AND a.blocking=1) AS blocking_approvals
@@ -110,7 +118,7 @@ function urgentRibbon() {
       OR (due_date < ? AND priority IN ('important','urgent'))
       OR status='stalled'
       OR EXISTS (SELECT 1 FROM approvals a WHERE a.item_id=i.id AND a.status='pending' AND a.blocking=1)
-    )`, t);
+    )${scope.sql}`, t, ...scope.params);
   return rows.map(i => {
     decorate(i, t);
     const reasons = [];
@@ -199,5 +207,5 @@ function report(period = 'week') {
 
 module.exports = {
   get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS,
-  PERMS, can, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  PERMS, ROLE_LABELS, roleSql, can, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

@@ -1,5 +1,5 @@
 // Service Worker: تثبيت التطبيق (PWA)، تخزين الواجهة مؤقتًا، واستقبال إشعارات Push
-const CACHE = 'office-shell-v2';
+const CACHE = 'office-shell-v3';
 const SHELL = ['/', '/index.html', '/css/app.css', '/js/app.js', '/js/icons.js', '/img/logo.png', '/img/icon-192.png', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
@@ -20,8 +20,8 @@ self.addEventListener('fetch', (e) => {
 
 self.addEventListener('push', (e) => {
   let d = {};
-  try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'مكتب رجل الأعمال', body: e.data && e.data.text() }; }
-  e.waitUntil(self.registration.showNotification(d.title || 'مكتب رجل الأعمال', {
+  try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'مكتب عبدالله عبدالعزيز التويجري', body: e.data && e.data.text() }; }
+  e.waitUntil(self.registration.showNotification(d.title || 'مكتب عبدالله عبدالعزيز التويجري', {
     body: d.body || '', tag: d.tag, icon: '/img/icon-192.png', badge: '/img/icon-192.png', dir: 'rtl', lang: 'ar', data: { link: d.link || '' },
   }));
 });

@@ -62,7 +62,8 @@ function startServer() {
     server.on('exit', c => reject(new Error('server exited ' + c)));
   });
 }
-const stopServer = () => new Promise(r => { server.removeAllListeners('exit'); server.on('exit', r); server.kill(); setTimeout(() => { try { process.kill(server.pid, 'SIGKILL'); } catch { /* انتهى */ } }, 8000).unref(); });
+// يُلتقط معرّف العملية الحالية: بعد إعادة التشغيل يشير server إلى الخادم الجديد ويجب ألا يُقتل
+const stopServer = () => new Promise(r => { const old = server; old.removeAllListeners('exit'); old.on('exit', r); old.kill(); setTimeout(() => { if (old.exitCode === null && old.signalCode === null) try { process.kill(old.pid, 'SIGKILL'); } catch { /* انتهى */ } }, 8000).unref(); });
 async function apiAs(page, method, url, body) {
   return page.evaluate(async ([m, u, b]) => {
     const r = await fetch(u, { method: m, headers: { 'X-Requested-With': 'fetch', 'Content-Type': 'application/json' }, body: b ? JSON.stringify(b) : undefined });
@@ -91,14 +92,17 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   const consoleErrors = [];
   for (const p of [owner, mgr]) p.on('pageerror', e => consoleErrors.push(e.message));
   const TITLE = 'إعداد التقرير السنوي لبرامج الجمعية';
-  let itemId, ref, tileBefore;
+  let itemId, ref, tileBefore, folderId, projectId;
 
   try {
     await check('يسجل رجل الأعمال الدخول (جوال)', async () => {
       await login(owner, 'owner', 'Owner#2026x');
       assert(await owner.isVisible('text=تكليف جديد'), 'زر التكليف غير ظاهر');
-      const order = await owner.$$eval('main .ribbon', rs => rs.map(r => r.classList.contains('red') ? 'red' : 'orange'));
-      assert(order.join() === 'red,orange', 'ترتيب الأشرطة: العاجلة يجب أن تكون أولًا — ' + order.join());
+      assert((await owner.$$('main .ribbon')).length === 1 && await owner.isVisible('main .ribbon.follow'), 'يجب أن يكون هناك شريط متابعة واحد');
+      assert((await owner.textContent('.topbar .brand b')).includes('مكتب عبدالله عبدالعزيز التويجري'), 'اسم المنصة غير صحيح');
+      // المربعات على الجوال: عمودان وشكل قريب من المربع
+      const tg = await owner.evaluate(() => { const t = document.querySelector('.tile-wrap').getBoundingClientRect(); return { cols: getComputedStyle(document.querySelector('.tiles')).gridTemplateColumns.split(' ').length, ratio: t.height / t.width }; });
+      assert(tg.cols === 2 && tg.ratio > 0.95 && tg.ratio < 1.1, 'المربعات على الجوال ليست مربعات في عمودين: ' + JSON.stringify(tg));
       await owner.screenshot({ path: path.join(SHOTS, '01-owner-home-mobile.png'), fullPage: true });
     });
 
@@ -344,6 +348,60 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await mgr.click('.modal button[data-close]');
     });
 
+    await check('المجلدات: مجلد داخل الجمعية يضم مشروعًا ومهمة، وتظهر في صفحة المجلد', async () => {
+      await mgr.goto(BASE + '/#/section/association'); await mgr.waitForSelector('button[data-tab=folders].active');
+      await mgr.click('#addF'); await mgr.fill('.modal input[name=name]', 'الحلقات'); await mgr.click('.modal button:has-text("حفظ")');
+      await mgr.waitForSelector('h1:has-text("الحلقات")');
+      folderId = Number(mgr.url().match(/folder\/(\d+)/)[1]);
+      await mgr.click('#addP'); await mgr.waitForSelector('.modal input[name=name]');
+      await mgr.fill('.modal input[name=name]', 'برنامج الحفظ المكثف');
+      assert(await mgr.$eval('.modal select[name=folder_id]', e => e.value) === String(folderId), 'المجلد غير محدد في المشروع');
+      await mgr.click('.modal button:has-text("حفظ")');
+      await mgr.waitForSelector('.row:has-text("برنامج الحفظ المكثف")');
+      projectId = (await apiAs(mgr, 'GET', '/api/projects?folder_id=' + folderId)).body[0].id;
+      await mgr.click('#addT'); await mgr.waitForSelector('.modal select[name=project_id]');
+      await mgr.fill('.modal input[name=title]', 'تجهيز جدول حلقات الفصل');
+      await mgr.selectOption('.modal select[name=project_id]', String(projectId));
+      await mgr.click('.modal button:has-text("حفظ")');
+      await mgr.waitForSelector('h1:has-text("تجهيز جدول حلقات الفصل")');
+      const t = (await apiAs(mgr, 'GET', '/api/items?kind=tasks&q=' + encodeURIComponent('تجهيز جدول حلقات'))).body[0];
+      assert(t.folder_id === folderId && t.project_id === projectId, 'المهمة لم تُربط بالمجلد والمشروع');
+      await mgr.goto(BASE + '/#/section/association'); await mgr.waitForSelector('.folder-card:has-text("الحلقات")');
+      await mgr.goto(BASE + '/#/folder/' + folderId); await mgr.waitForSelector('#res .row:has-text("تجهيز جدول حلقات الفصل")');
+    });
+
+    await check('الإعدادات: إضافة مستخدم وربطه بمشروع', async () => {
+      await mgr.goto(BASE + '/#/settings'); await mgr.waitForSelector('#addUser');
+      await mgr.click('#addUser');
+      await mgr.fill('.modal input[name=name]', 'سعد المشرف'); await mgr.fill('.modal input[name=username]', 'saad');
+      await mgr.fill('.modal input[name=password]', 'Saad#2026x');
+      await mgr.check(`.modal input[name=project_ids][value="${projectId}"]`);
+      await mgr.click('.modal button:has-text("إضافة")');
+      await mgr.waitForSelector('#usersAdmin .row:has-text("سعد المشرف") .chip:has-text("برنامج الحفظ المكثف")');
+    });
+
+    await check('عضو الفريق يرى مهام مشروعه فقط ويحدّثها، ويُبلَّغ مدير المكتب', async () => {
+      const memCtx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' });
+      const mem = await memCtx.newPage(); mem.on('pageerror', e => consoleErrors.push(e.message));
+      await mem.goto(BASE); await mem.fill('input[name=username]', 'saad'); await mem.fill('input[name=password]', 'Saad#2026x');
+      await mem.click('button:has-text("دخول")'); await mem.waitForSelector('h2:has-text("مهامي المفتوحة")');
+      assert(await mem.isVisible('.row:has-text("تجهيز جدول حلقات الفصل")'), 'لا يرى مهمة مشروعه');
+      assert(!(await mem.isVisible(`.row:has-text("${TITLE}")`)), 'يرى مهمة لا تخصه');
+      assert(!(await mem.isVisible('#btnTask')) && !(await mem.isVisible('#btnAssign')), 'يظهر للعضو زر إنشاء');
+      assert((await apiAs(mem, 'GET', `/api/items/${itemId}`)).status === 404, 'فتح مهمة لا تخصه');
+      assert((await apiAs(mem, 'GET', '/api/approvals')).status === 403 && (await apiAs(mem, 'GET', '/api/reports')).status === 403 && (await apiAs(mem, 'GET', '/api/admin/users')).status === 403, 'وصول العضو لما لا يخصه');
+      const all = (await apiAs(mem, 'GET', '/api/items?kind=all')).body;
+      assert(all.length === 1 && all[0].title === 'تجهيز جدول حلقات الفصل', 'قائمة المهام تكشف غير مهامه: ' + all.length);
+      await mem.click('.row a.title:has-text("تجهيز جدول حلقات الفصل")');
+      await mem.click('#acts button:has-text("بدء التنفيذ")'); await mem.waitForSelector('.item-head .chip.st-in_progress');
+      await mem.fill('#cmp textarea[name=body]', 'جهزت مسودة الجدول وأرسلتها للمعلمين.'); await mem.click('#cmp button:has-text("إرسال")');
+      await mem.waitForSelector('.msg:has-text("جهزت مسودة الجدول")');
+      const n = (await apiAs(mgr, 'GET', '/api/notifications')).body;
+      assert(n.some(x => x.title.includes('سعد المشرف') && x.title.includes('تجهيز جدول حلقات')), 'لم يُبلَّغ المدير بتحديث العضو');
+      await mem.screenshot({ path: path.join(SHOTS, '08-member-item-mobile.png'), fullPage: true });
+      await memCtx.close();
+    });
+
     await check('الواجهة على الجوال والكمبيوتر: لا تمرير أفقي، والصفحات الأساسية تعمل', async () => {
       for (const [p, pages] of [[owner, ['#/', '#/my', '#/decisions', '#/notifications', '#/reports', '#/section/association', '#/meetings', '#/settings', '#/more']],
         [mgr, ['#/', '#/inbox', '#/dashboard', '#/tasks', '#/meetings', '#/sops', '#/partners', '#/reports', '#/settings', '#/section/partnerships']]]) {
@@ -365,14 +423,14 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       // إيقاف حركة الأشرطة يدويًا ودعم إعداد تقليل الحركة
       await apiAs(mgr, 'POST', '/api/tasks', { title: 'مهمة اختبار الشريط 1', section: 'family', due_date: (await apiAs(mgr, 'GET', '/api/meta')).body.today });
       await apiAs(mgr, 'POST', '/api/tasks', { title: 'مهمة اختبار الشريط 2', section: 'family', due_date: (await apiAs(mgr, 'GET', '/api/meta')).body.today });
-      await mgr.goto(BASE + '/#/'); await mgr.waitForSelector('.ribbon.orange [data-toggle]');
-      assert(await mgr.evaluate(() => getComputedStyle(document.querySelector('.ribbon.orange .r-track')).animationName) === 'ticker', 'الشريط لا يتحرك');
-      await mgr.click('.ribbon.orange [data-toggle]');
-      assert(await mgr.evaluate(() => getComputedStyle(document.querySelector('.ribbon.orange .r-track')).animationPlayState) === 'paused', 'زر الإيقاف لا يعمل');
-      await mgr.click('.ribbon.orange [data-toggle]');
-      await mgr.emulateMedia({ reducedMotion: 'reduce' }); await mgr.reload(); await mgr.waitForSelector('.ribbon.orange .r-item');
-      assert(await mgr.evaluate(() => getComputedStyle(document.querySelector('.ribbon.orange .r-track')).animationName) === 'none', 'لا يحترم تقليل الحركة');
-      await mgr.click('.ribbon.orange .r-item:has-text("مهمة اختبار الشريط 1")');
+      await mgr.goto(BASE + '/#/'); await mgr.waitForSelector('.ribbon.follow [data-toggle]');
+      assert(await mgr.evaluate(() => getComputedStyle(document.querySelector('.ribbon.follow .r-track')).animationName) === 'ticker', 'الشريط لا يتحرك');
+      await mgr.click('.ribbon.follow [data-toggle]');
+      assert(await mgr.evaluate(() => getComputedStyle(document.querySelector('.ribbon.follow .r-track')).animationPlayState) === 'paused', 'زر الإيقاف لا يعمل');
+      await mgr.click('.ribbon.follow [data-toggle]');
+      await mgr.emulateMedia({ reducedMotion: 'reduce' }); await mgr.reload(); await mgr.waitForSelector('.ribbon.follow .r-item');
+      assert(await mgr.evaluate(() => getComputedStyle(document.querySelector('.ribbon.follow .r-track')).animationName) === 'none', 'لا يحترم تقليل الحركة');
+      await mgr.click('.ribbon.follow .r-item:has-text("مهمة اختبار الشريط 1")');
       await mgr.waitForSelector('h1:has-text("مهمة اختبار الشريط 1")');
       assert(!consoleErrors.length, 'أخطاء JavaScript: ' + consoleErrors.join(' | '));
     });
@@ -381,10 +439,10 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 23 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 26 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);
-    process.exit(failed.length || results.length < 23 ? 1 : 0);
+    process.exit(failed.length || results.length < 26 ? 1 : 0);
   }
 })();

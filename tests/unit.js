@@ -62,6 +62,51 @@ S.decisionToTask(mgr, dec, { section: 'association' }); threw = false; try { S.d
 t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get('SELECT COUNT(*) c FROM items WHERE decision_id=?', dec).c === 1);
 
 
+// ---- حسابات الفريق: رؤية محصورة وصلاحيات محدودة
+{
+  const D2 = require('../src/domain');
+  const eff = (id) => get(`SELECT id,name,${D2.roleSql()} AS role FROM users WHERE id=?`, id);
+  const proj = run("INSERT INTO projects(section,name) VALUES('association','مشروع الفريق')").id;
+  const proj2 = run("INSERT INTO projects(section,name) VALUES('association','مشروع آخر')").id;
+  const { id: memId } = await S.createUser(mgr, { name: 'سعد', username: 'saad', password: 'Saad#2026x', project_ids: [proj] });
+  const mem = eff(memId);
+  t('عضو الفريق يُحمَّل بدور member (لا manager)', mem.role === 'member' && !D2.can(mem, 'item.manage') && !D2.can(mem, 'item.view'));
+  const inProj = S.createTask(mgr, { title: 'مهمة في مشروعه', section: 'association', project_id: proj });
+  const assigned = S.createTask(mgr, { title: 'مهمة مسندة إليه', section: 'family', assignee_id: memId });
+  const hidden = S.createTask(mgr, { title: 'مهمة لا تخصه', section: 'association', project_id: proj2 });
+  t('يُشعَر العضو عند إسناد مهمة إليه وعند إضافته لمشروع', all('SELECT title FROM notifications WHERE user_id=?', memId).some(n => n.title.includes('أُسندت إليك')) && all('SELECT title FROM notifications WHERE user_id=?', memId).some(n => n.title.includes('أُضفت إلى مشروع')));
+  t('اسم المسؤول يُضبط من الحساب المسند', S.getItem(assigned.id).assignee === 'سعد');
+  t('يرى العضو مهام مشروعه والمسندة إليه فقط', S.canSee(mem, inProj) && S.canSee(mem, assigned) && !S.canSee(mem, hidden));
+  let e1 = null; try { S.addMessage(mem, hidden.id, { body: 'x' }); } catch (e) { e1 = e.status; }
+  t('لا يستطيع العضو مراسلة مهمة لا يراها (404)', e1 === 404);
+  const before = get("SELECT COUNT(*) c FROM notifications WHERE user_id=?", mgr.id).c;
+  S.addMessage(mem, inProj.id, { body: 'بدأت العمل', kind: 'update' });
+  t('تحديث العضو يُبلَّغ به مدير المكتب', get("SELECT COUNT(*) c FROM notifications WHERE user_id=?", mgr.id).c > before);
+  S.updateItem(mem, inProj.id, { status: 'in_progress' });
+  t('يستطيع العضو تحديث حالة مهمته', S.getItem(inProj.id).status === 'in_progress');
+  const denied = [() => S.updateItem(mem, inProj.id, { status: 'cancelled' }), () => S.updateItem(mem, inProj.id, { title: 'تغيير' }), () => S.acknowledge(mem, inProj.id),
+    () => S.createTask(mem, { title: 'x', section: 'family' }), () => S.requestApproval(mem, inProj.id, { kind: 'report', title: 'x' }), () => S.listUsers(mem)];
+  t('العضو ممنوع من الإلغاء والتعديل والاستلام والإنشاء وطلب الاعتماد وإدارة المستخدمين', denied.every(f => { try { f(); return false; } catch (e) { return e.status === 403 || e.status === 404; } }));
+  let e2 = null; try { S.scopeFor({ id: 999, role: 'nobody' }); } catch (e) { e2 = e.status; }
+  t('دور غير معروف لا يرى شيئًا (403)', e2 === 403);
+  t('notifyRole("manager") لا يصل إلى أعضاء الفريق', (() => { const n0 = get('SELECT COUNT(*) c FROM notifications WHERE user_id=?', memId).c; require('../src/notify').notifyRole('manager', { type: 'digest', title: 'للمدير فقط' }); return get('SELECT COUNT(*) c FROM notifications WHERE user_id=?', memId).c === n0; })());
+  await S.updateUser(mgr, memId, { active: false });
+  t('إيقاف الحساب يحذف جلساته ويمنع ظهوره', !get('SELECT active FROM users WHERE id=?', memId).active);
+  let e3 = null; try { await S.updateUser(mgr, owner.id, { active: false }); } catch (e) { e3 = e.status; }
+  t('لا يمكن إيقاف حساب رجل الأعمال', e3 === 400);
+}
+// ---- المجلدات
+{
+  const fold = run("INSERT INTO folders(section,name) VALUES('association','الحلقات')").id;
+  const p3 = run("INSERT INTO projects(section,name,folder_id) VALUES('association','برنامج الحفظ',?)", fold).id;
+  const tk = S.createTask(mgr, { title: 'مهمة عبر المشروع', section: 'association', project_id: p3 });
+  t('المهمة تنتقل إلى مجلد مشروعها تلقائيًا', S.getItem(tk.id).folder_id === fold);
+  let e4 = null; try { S.createTask(mgr, { title: 'خطأ', section: 'family', folder_id: fold }); } catch (e) { e4 = e.status; }
+  t('لا تُوضع مهمة في مجلد من قسم آخر', e4 === 400);
+  S.updateItem(mgr, tk.id, { section: 'family', project_id: null });
+  t('تغيير القسم يُخرج المهمة من مجلد القسم القديم', S.getItem(tk.id).folder_id === null);
+}
+
 // ---- التشفير: Web Push وكلمات المرور
 {
   const nodeCrypto = require('crypto'); const ece = require('http_ece'); const push = require('../src/push'); const auth = require('../src/auth');
