@@ -14,7 +14,8 @@ async function api(method, url, body) {
   else if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const res = await fetch(url, opt);
   let data = null; try { data = await res.json(); } catch { }
-  if (res.status === 401 && url !== '/api/login') { state.me = null; renderLogin(); throw new Error('يلزم تسجيل الدخول'); }
+  // انتهت الجلسة: تظهر شاشة الدخول ويُترك الطلب معلقًا (لا خطأ غير ملتقط من طلبات خلفية متزامنة)
+  if (res.status === 401 && url !== '/api/login') { if (state.me) { state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); } else if (!$('#lf')) renderLogin(); return new Promise(() => { }); }
   if (!res.ok) throw new Error((data && data.error) || 'تعذر تنفيذ الطلب');
   return data;
 }
@@ -58,7 +59,7 @@ const DEFAULT_APP_NAME = 'مكتب عبدالله عبدالعزيز التوي�
 const appName = () => (state.meta && state.meta.app_name) || state.appName || DEFAULT_APP_NAME;
 const can = (p) => state.me.perms.includes(p);
 const canAddAny = () => can('task.create') || can('assignment.create') || can('projects.manage');
-const canEditItem = () => can('item.manage') || can('item.edit');
+const canEditItem = (i) => can('item.manage') || (can('item.edit') && (!isMember() || !i || i.kind === 'task'));
 const canAddSub = () => ['task.create', 'item.edit', 'subtask.create'].some(can);
 
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
@@ -116,7 +117,7 @@ function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', on
   const form = $('form', bg);
   // Escape يغلق النافذة العليا أينما كان التركيز
   const onKey = (e) => { if (e.key === 'Escape' && bg === $$('.modal-bg').pop()) close(); };
-  const close = () => { document.removeEventListener('keydown', onKey); bg.remove(); document.body.style.overflow = ''; if (state.stale) refreshView(); };
+  const close = () => { document.removeEventListener('keydown', onKey); bg.remove(); document.body.style.overflow = ''; if (state.reloadMe && !$('.modal-bg')) { state.reloadMe = false; onChange({ user: state.me.id }); } else if (state.stale) refreshView(); };
   $$('[data-close]', bg).forEach(b => b.onclick = close);
   // الضغط خارج النافذة لا يضيّع ما كُتب دون تأكيد
   let dirty = false; form.addEventListener('input', () => { dirty = true; });
@@ -489,8 +490,10 @@ function openEvents() {
 }
 // تغيّر شيء: إن كان حسابي (صلاحياتي مثلًا) أُعيد قراءة الحساب ورسم الواجهة، ثم تحديث العرض
 async function onChange(raw) {
+  if (!state.me) return;
   let scope = raw; try { if (typeof raw === 'string') scope = JSON.parse(raw); } catch { scope = {}; }
   if (scope && scope.user === state.me.id) {
+    if ($('.modal-bg')) { state.reloadMe = true; state.stale = true; return; } // لا نمسح نافذة مفتوحة؛ نُحدّث بعد إغلاقها
     try { const me = await GET('/api/me'); state.me = me; state.meta = await GET('/api/meta'); renderShell(); route(); return; } catch { return; }
   }
   if (scope && scope.user) { state.meta = await GET('/api/meta').catch(() => state.meta); }
@@ -776,8 +779,8 @@ function modalDone(i, done) {
       ${field('ما الذي أُنجز؟ (اختياري)', '<textarea name="body" style="min-height:70px" placeholder="ملخص قصير للنتيجة يصل إلى مدير المكتب"></textarea>')}
       ${field('مرفقات (اختياري)', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
-      if ((d.body || '').trim() || (d.file_ids || []).length) await POST(`/api/items/${i.id}/messages`, { body: d.body, file_ids: d.file_ids, kind: isManager() ? 'result' : 'update' });
-      await done({ status: 'done', complete_subtasks: d.subs !== 'keep' });
+      await done({ status: 'done', complete_subtasks: d.subs !== 'keep' }); // الحالة أولًا؛ الملخص بعد نجاحها فقط
+      if ((d.body || '').trim() || (d.file_ids || []).length) await POST(`/api/items/${i.id}/messages`, { body: d.body, file_ids: d.file_ids, kind: isManager() ? 'result' : 'update' }).catch(showErr);
     },
   });
 }
@@ -962,7 +965,7 @@ async function viewItem(main, id) {
     const pendingCount = data.approvals.filter(a => a.status === 'pending').length;
     $('#ih', main).innerHTML = `<div class="card item-head">
       <div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="javascript:history.back()">${I('back')} رجوع</a><span class="ref">${esc(i.ref)}</span>${demoChip(i)}
-        ${canEditItem() && !i.closed_at && i.kind !== 'note' ? `<span class="spacer" style="flex:1"></span><button class="btn sm" id="editTop">${I('edit')} تعديل التفاصيل</button>` : ''}</div>
+        ${canEditItem(i) && !i.closed_at && i.kind !== 'note' ? `<span class="spacer" style="flex:1"></span><button class="btn sm" id="editTop">${I('edit')} تعديل التفاصيل</button>` : ''}</div>
       <h1>${esc(i.title)}</h1>
       <div class="meta btn-row" style="margin-top:8px"><span class="chip kind">${esc(kindLabel(i))}</span>${statusChip(i.status)}${prioChip(i.priority)}${dueChip(i)}
         ${i.acknowledged_at ? `<span class="chip st-acknowledged">${I('check')}تم تأكيد الاستلام ${fmtTs(i.acknowledged_at)}</span>` : (i.kind !== 'task' && i.status !== 'cancelled' ? '<span class="chip st-new">لم يُؤكد الاستلام بعد</span>' : '')}
@@ -1035,13 +1038,13 @@ async function viewItem(main, id) {
       if (!i.is_open) a.push(`<button class="btn" data-s="in_progress">إعادة فتح</button>`);
       if (i.is_open) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء</button>`);
     }
-    if (isMember() && i.is_open && !i.closed_at) {
+    if (isMember() && i.is_open && !i.closed_at && i.kind === 'task') {
       if (i.status !== 'in_progress') a.push(`<button class="btn primary" data-s="in_progress">${I('play')} بدء التنفيذ</button>`);
       if (i.status !== 'waiting_reply') a.push(`<button class="btn" data-s="waiting_reply">بانتظار رد طرف خارجي</button>`);
       if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">متعثرة</button>`);
       a.push(`<button class="btn green" data-s="done">${I('checkCircle')} أنجزت المهمة</button>`);
     }
-    if (canEditItem() && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
+    if (canEditItem(i) && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
     if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     bar.innerHTML = a.join('');

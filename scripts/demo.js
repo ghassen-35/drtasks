@@ -23,6 +23,10 @@ function clear() {
       run(`DELETE FROM audit_log WHERE entity='item' AND entity_id IN (${q})`);
       run(`UPDATE decisions SET task_id=NULL WHERE task_id IN (${q})`);
       run(`UPDATE items SET parent_id=NULL WHERE parent_id IN (${q})`);
+      // مراجع من بيانات حقيقية إلى تجريبية (مهمة فرعية أو موعد تالٍ) تُفك قبل الحذف
+      run(`UPDATE items SET parent_task_id=NULL WHERE parent_task_id IN (${q}) AND is_demo=0`);
+      run(`UPDATE items SET next_occurrence_id=NULL WHERE next_occurrence_id IN (${q})`);
+      run(`UPDATE items SET parent_task_id=NULL WHERE parent_task_id IN (${q})`);
       run(`DELETE FROM items WHERE id IN (${q})`);
     }
     run('DELETE FROM decisions WHERE meeting_id IN (SELECT id FROM meetings WHERE is_demo=1)');
@@ -37,7 +41,7 @@ function clear() {
     run('UPDATE folders SET parent_id=NULL WHERE is_demo=1');
     run('DELETE FROM folders WHERE is_demo=1');
     run("DELETE FROM notifications WHERE link LIKE '#/item/%' AND CAST(substr(link,9) AS INTEGER) NOT IN (SELECT id FROM items)");
-    for (const u of all("SELECT id FROM users WHERE username LIKE 'demo.%'")) {
+    for (const u of all(`SELECT id FROM users WHERE username IN (${DEMO_STAFF.map(() => '?').join(',')})`, ...DEMO_STAFF.map(x => x.username))) {
       run('UPDATE users SET active=0 WHERE id=?', u.id); run('DELETE FROM sessions WHERE user_id=?', u.id); run('DELETE FROM project_members WHERE user_id=?', u.id);
     }
     console.log(`حُذفت البيانات التجريبية (${ids.length} عنصر) وأُوقفت حسابات الموظفين التجريبيين`);

@@ -425,7 +425,7 @@ fieldset.grants legend { font-weight: 700; padding: 0 6px; }
   .subtask input[type=checkbox] { width: 26px; height: 26px; margin: 9px; }
   .seg label span { min-height: 44px; display: inline-flex; align-items: center; }
   .actions-bar { position: sticky; bottom: calc(58px + env(safe-area-inset-bottom)); z-index: 30; background: var(--surface); flex-wrap: nowrap; overflow-x: auto;
-    margin-inline: -16px; padding: 10px 16px; box-shadow: 0 -6px 16px rgba(16, 36, 51, .08); scrollbar-width: none; }
+    margin-inline: -16px; padding: 10px 16px 8px; box-shadow: 0 -6px 16px rgba(16, 36, 51, .08); scrollbar-width: thin; }
   .actions-bar .btn { flex: none; }
 }
 /* لوحة المتابعة: مجموعات قابلة للطي */

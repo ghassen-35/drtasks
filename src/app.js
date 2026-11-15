@@ -51,6 +51,7 @@ function createApp(P) {
     c.set('user', user);
     const p = new URL(c.req.url).pathname;
     if (!user && !['/api/login', '/api/health'].includes(p)) return c.json({ error: 'يلزم تسجيل الدخول' }, 401);
+    if (user && user.must_change_password && !['/api/me', '/api/password', '/api/logout', '/api/meta'].includes(p)) return c.json({ error: 'غيّر كلمة المرور أولًا', must_change_password: true }, 403);
     await next();
   });
 
@@ -68,7 +69,8 @@ function createApp(P) {
     try { return JSON.parse(txt || '{}'); } catch { throw new S.AppError(400, 'بيانات غير صالحة'); }
   }
   const wrap = (fn) => async (c) => {
-    const req = { user: c.get('user'), params: c.req.param(), query: c.req.query(), body: await readBody(c), ip: P.clientIp(c), secure: secure(c), header: (n) => c.req.header(n) };
+    const body = await readBody(c); if (body && typeof body === 'object') delete body.is_demo; // علامة البيانات التجريبية لا تُقبل من الطلبات
+    const req = { user: c.get('user'), params: c.req.param(), query: c.req.query(), body, ip: P.clientIp(c), secure: secure(c), header: (n) => c.req.header(n) };
     const res = { setHeader: (k, v) => c.header(k, v, { append: true }) };
     const r = await fn(req, res);
     if (r instanceof Response) return r;
@@ -121,7 +123,10 @@ function createApp(P) {
   }));
   app.post('/api/password', wrap(async req => {
     const u = get('SELECT * FROM users WHERE id=?', req.user.id);
-    if (!(await auth.verifyPassword(String(req.body.current || ''), u.password_hash))) throw S.bad('كلمة المرور الحالية غير صحيحة');
+    const key = `pw:${u.id}`;
+    if (hit(key) >= LIMITS.ip) throw new S.AppError(429, 'محاولات كثيرة، حاول بعد ربع ساعة');
+    if (!(await auth.verifyPassword(String(req.body.current || ''), u.password_hash))) { fail1(key); throw S.bad('كلمة المرور الحالية غير صحيحة'); }
+    attempts.delete(key);
     const pw = String(req.body.next || '');
     if (pw.length < 8) throw S.bad('كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف');
     if (pw === String(req.body.current || '')) throw S.bad('اختر كلمة مرور جديدة مختلفة عن الحالية');
@@ -132,7 +137,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -145,7 +150,7 @@ function createApp(P) {
       const pids = S.memberProjects(req.user.id);
       const secs = D.can(req.user, 'folders.view') ? (S.allowedSections(req.user) || D.SECTION_KEYS) : [];
       return {
-        member: true, tiles: secs.map(D.sectionStats), today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
+        member: true, tiles: secs.map(k => { const t = D.sectionStats(k); delete t.unacknowledged; return t; }), today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
         my_items: listItems({ kind: 'tasks', scope: 'open' }, req.user),
         projects: pids.length ? all(`SELECT p.*, (SELECT name FROM folders f WHERE f.id=p.folder_id) AS folder_name FROM projects p WHERE p.id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name`, ...pids).map(p => ({ ...p, section_name: D.sectionName(p.section) })) : [],
       };
@@ -189,7 +194,7 @@ function createApp(P) {
     // instr بدل LIKE: في Durable Object يُرفض نمط LIKE الطويل (حد صغير بالبايت، والحرف العربي بايتان)
     if (q.q) { where.push('(' + ['i.title', 'i.description', 'i.ref', 'i.assignee'].map(c => `instr(lower(${c}), lower(?)) > 0`).join(' OR ') + ')'); const s = String(q.q).slice(0, 100); p.push(s, s, s, s); }
     return all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE ${where.join(' AND ')}
-      ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, CASE i.priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(i.due_date,'9999'), i.id DESC LIMIT 500`, ...p)
+      ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, CASE i.priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(i.due_date,'9999'), i.id DESC LIMIT ${Math.min(Number(q.limit) || 500, 5000)}`, ...p)
       .map(i => D.decorate(i, t))
       // المهام الفرعية تظهر تحت أمها (مع عداد التقدم) لا كبنود مستقلة — إلا في البحث ومهام اليوم والمتأخرة، أو إن كانت الأم لا تُرى
       .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
@@ -215,7 +220,7 @@ function createApp(P) {
     if (it.sop_id) extra.sop = get('SELECT id,name FROM sops WHERE id=?', it.sop_id);
     if (it.partner_id && D.can(req.user, 'partners.view')) extra.partner = get('SELECT id,name FROM partners WHERE id=?', it.partner_id);
     if (it.meeting_id && !D.can(req.user, 'meetings.view')) delete extra.meeting;
-    if (req.user.role === 'member') { th.notes = []; delete extra.parent; } // ملاحظات رجل الأعمال لمدير المكتب فقط
+    if (req.user.role === 'member') { th.notes = []; delete extra.parent; it.original_text = null; } // ملاحظات رجل الأعمال ونصه الأصلي لمدير المكتب فقط
     extra.subtasks = S.subtasksOf(it.id).filter(x => S.canSee(req.user, x));
     if (it.parent_task_id) { const pt = get('SELECT id,ref,title FROM items WHERE id=?', it.parent_task_id); if (pt && S.canSee(req.user, pt)) extra.parent_task = pt; }
     return { item: it, ...th, ...extra };
@@ -304,7 +309,10 @@ function createApp(P) {
     } else if (D.can(req.user, 'item.view_scoped')) {
       // مشاريعه + مشاريع الأقسام الممنوحة له
       const secs = S.allowedSections(req.user) || [];
-      rows = all(`SELECT p.* FROM projects p WHERE p.id IN (SELECT project_id FROM project_members WHERE user_id=?)${secs.length ? ` OR p.section IN (${secs.map(() => '?').join(',')})` : ''} ORDER BY p.name`, req.user.id, ...secs);
+      const extra = []; const ep = [];
+      if (req.query.section) { extra.push('p.section=?'); ep.push(req.query.section); }
+      if (req.query.folder_id) { extra.push('p.folder_id=?'); ep.push(Number(req.query.folder_id)); }
+      rows = all(`SELECT p.* FROM projects p WHERE (p.id IN (SELECT project_id FROM project_members WHERE user_id=?)${secs.length ? ` OR p.section IN (${secs.map(() => '?').join(',')})` : ''})${extra.length ? ' AND ' + extra.join(' AND ') : ''} ORDER BY p.name`, req.user.id, ...secs, ...ep);
     } else throw S.forbidden();
     return rows.map(p => ({ ...p, open_tasks: get(`SELECT COUNT(*) c FROM items WHERE project_id=? AND kind IN ${D.TASK_KINDS} AND ${D.OPEN}`, p.id).c,
       folder_name: p.folder_id ? (get('SELECT name FROM folders WHERE id=?', p.folder_id) || {}).name : null,
@@ -573,8 +581,8 @@ function createApp(P) {
   app.get('/api/items-export.csv', (c) => {
     const user = c.get('user');
     if (!D.can(user, 'item.view') && !D.can(user, 'item.view_scoped')) return c.body(null, 403);
-    const rows = listItems({ kind: 'tasks', ...c.req.query(), subtasks: '1' }, user);
-    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; }; // منع حقن الصيغ في Excel
+    const rows = listItems({ kind: 'tasks', ...c.req.query(), subtasks: '1', limit: 5000 }, user);
+    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; }; // منع حقن الصيغ في Excel
     const head = ['الرقم المرجعي', 'العنوان', 'النوع', 'القسم', 'المجلد', 'المشروع/المبادرة', 'المسؤول', 'الحالة', 'الأولوية', 'الموعد النهائي', 'الوقت', 'متأخرة', 'مهمة فرعية من', 'تكرار', 'آخر تحديث', 'تاريخ الإنجاز'];
     const lines = [head, ...rows.map(i => [i.ref, i.title, i.kind === 'assignment' ? 'تكليف' : 'مهمة', i.section_name, i.folder_name, i.project_name, i.assignee, D.STATUSES[i.status], D.PRIORITIES[i.priority],
       i.due_date, i.due_time, i.is_overdue ? 'نعم' : '', i.parent_task_title, i.recurrence ? D.RECURRENCES[i.recurrence] : '', localTs(i.updated_at), localTs(i.completed_at)])].map(r => r.map(q).join(',')).join('\r\n');
@@ -584,7 +592,7 @@ function createApp(P) {
     if (!D.can(c.get('user'), 'reports.view')) return c.body(null, 403);
     const period = ['day', 'week', 'month'].includes(c.req.query('period')) ? c.req.query('period') : 'week';
     const r = D.report(period);
-    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; };
+    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; };
     const lines = [
       ['التقرير', `من ${r.from} إلى ${r.to}`], [],
       ['المؤشر', 'القيمة'], ['التكليفات المستلمة', r.received], ['الملاحظات والطلبات', r.notes_received], ['المهام المكتملة', r.completed], ['المهام المتأخرة حاليًا', r.overdue_now],

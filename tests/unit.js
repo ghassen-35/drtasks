@@ -161,8 +161,9 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('صلاحية التعديل تسمح بتعديل تفاصيل مهام قسمه', S.getItem(inSec.id).priority === 'urgent');
   t('ولا تسمح بمهام خارج قسمه', err(() => S.updateItem(co, outSec.id, { priority: 'urgent' })) === 404);
   t('ولا بالإلغاء', err(() => S.updateItem(co, inSec.id, { status: 'cancelled' })) === 403);
-  const mine = S.createTask(co, { title: 'مهمة أنشأها المنسق', section: 'family' });
+  const mine = S.createTask(co, { title: 'مهمة أنشأها المنسق', section: 'dawah' });
   t('مهمة ينشئها الموظف بلا مسؤول تُسند إليه فيراها', mine.assignee_id === cId && S.canSee(co, S.getItem(mine.id)));
+  t('منسّق قسم لا ينشئ مهمة في قسم آخر ولو لنفسه', err(() => S.createTask(co, { title: 'خارج القسم', section: 'family' })) === 403);
   t('المنسّق يضيف مهام فرعية في قسمه فقط', !!S.createSubtask(co, inSec.id, { title: 'فرعية' }).id && err(() => S.createSubtask(co, outSec.id, { title: 'x' })) === 404);
   t('المنسّق لا ينشئ مجلدًا أو مشروعًا خارج قسمه', err(() => S.assertSectionAllowed(co, 'family')) === 403 && err(() => S.assertSectionAllowed(co, 'dawah')) === null);
   // ثغرات وجدها اختبار الصلاحيات
@@ -174,7 +175,7 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   const canc = S.createTask(mgr, { title: 'ستُلغى', section: 'dawah' }); S.updateItem(mgr, canc.id, { status: 'cancelled' });
   t('لا يعيد الموظف فتح مهمة ملغاة', err(() => S.updateItem(co, canc.id, { status: 'in_progress' })) === 403);
   const asgD = S.createAssignment(owner, { title: 'تكليف للدعوة', section: 'dawah' });
-  t('الموظف لا يغيّر حالة تكليف رجل الأعمال', S.canSee(co, asgD) && err(() => S.updateItem(co, asgD.id, { status: 'done' })) === 403);
+  t('الموظف لا يرى تكليف رجل الأعمال قبل تحويله ولا يغيّر حالته', !S.canSee(co, asgD) && err(() => S.updateItem(co, asgD.id, { status: 'done' })) === 404);
   t('حسابا المالك والمدير لا يعدّلهما غير صاحبيهما', (await S.updateUser(mgr, owner.id, { password: 'NewOwner#2026' }).then(() => null, e => e.status)) === 403
     && (await S.updateUser(owner, mgr.id, { email: 'x@y.z' }).then(() => null, e => e.status)) === 403);
 
@@ -251,6 +252,36 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
 {
   const { id } = run('INSERT INTO meetings(title,starts_at,location) VALUES(?,?,?)', 'اجتماع بلا مكان', '2026-11-20T10:00', undefined);
   t('undefined يُخزَّن NULL ولا يُسقط الطلب', get('SELECT location FROM meetings WHERE id=?', id).location === null);
+}
+
+// ---- إصلاحات المراجعة المستقلة
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status || e.message; } };
+  const load = (id) => get(`SELECT id,name,${D.roleSql()} AS role,grants FROM users WHERE id=?`, id);
+  const { id: aId } = await S.createUser(mgr, { name: 'أ', username: 'rv.a', password: 'RvA#2026xxx', must_change_password: false, grants: { scope: 'own', perms: [] } });
+  const { id: bId } = await S.createUser(mgr, { name: 'ب', username: 'rv.b', password: 'RvB#2026xxx', must_change_password: false });
+  const A = load(aId);
+  // «إنجاز الكل» لا يتجاوز النطاق ولا شرط الاعتماد
+  const par = S.createTask(mgr, { title: 'أم لـ أ', section: 'family', assignee_id: aId });
+  const hid = S.createSubtask(mgr, par.id, { title: 'فرعية لـ ب', assignee_id: bId });
+  run('UPDATE items SET requires_approval=1 WHERE id=?', hid.id);
+  const vis = S.createSubtask(mgr, par.id, { title: 'فرعية لـ أ' });
+  S.updateItem(A, par.id, { status: 'done', complete_subtasks: true });
+  t('«إنجاز الكل» يتخطى فرعية لا يراها الموظف أو تتطلب اعتمادًا', S.getItem(hid.id).status !== 'done' && S.getItem(vis.id).status === 'done');
+  // المهمة الفرعية: لا تداخل، لا تكرار، وتتبع أمها
+  const p2 = S.createTask(mgr, { title: 'أم تنتقل', section: 'family' }); const c2 = S.createSubtask(mgr, p2.id, { title: 'ابنة' });
+  t('لا مهمة أصل عبر إنشاء المهام العادي', S.createTask(mgr, { title: 'محاولة', section: 'family', parent_task_id: c2.id }).parent_task_id === null);
+  t('لا تكرار للمهمة الفرعية', err(() => S.updateItem(mgr, c2.id, { recurrence: 'weekly' })) === 400);
+  S.updateItem(mgr, p2.id, { section: 'commercial' });
+  t('نقل الأم إلى قسم آخر ينقل فرعياتها', S.getItem(c2.id).section === 'commercial');
+  S.updateItem(mgr, p2.id, { status: 'cancelled' });
+  t('إلغاء الأم يلغي فرعياتها المفتوحة', S.getItem(c2.id).status === 'cancelled');
+  // مراجع غير موجودة تُرفض
+  t('إجراء أو جهة غير موجودة تُرفض', err(() => S.createTask(mgr, { title: 'x', section: 'family', partner_id: 99999 })) === 400 && err(() => S.updateItem(mgr, par.id, { sop_id: 12345 })) === 400);
+  // الموظف بنطاق «كل المكتب» لا يرى تكليف المالك قبل تحويله
+  const { id: allId } = await S.createUser(mgr, { name: 'كل', username: 'rv.all', password: 'RvAll#2026xx', must_change_password: false, grants: { scope: 'all', perms: [] } });
+  const asg = S.createAssignment(owner, { title: 'تكليف لم يُحوَّل', section: 'family' });
+  t('تكليف رجل الأعمال لا يظهر للموظفين قبل تحويله إلى مهمة', !S.canSee(load(allId), asg));
 }
 
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور

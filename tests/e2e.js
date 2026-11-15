@@ -90,7 +90,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   const owner = await ownerCtx.newPage();
   const mgr = await mgrCtx.newPage();
   const consoleErrors = [];
-  for (const p of [owner, mgr]) p.on('pageerror', e => consoleErrors.push(e.message));
+  for (const p of [owner, mgr]) p.on('pageerror', e => consoleErrors.push(e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 4).join(' | ')));
   const TITLE = 'إعداد التقرير السنوي لبرامج الجمعية';
   let itemId, ref, tileBefore, folderId, projectId;
   const staff = {};
@@ -420,11 +420,12 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
 
     await check('عضو الفريق يرى مهام مشروعه فقط ويحدّثها، ويُبلَّغ مدير المكتب', async () => {
       const memCtx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' });
-      const mem = await memCtx.newPage(); mem.on('pageerror', e => consoleErrors.push(e.message));
+      const mem = await memCtx.newPage(); mem.on('pageerror', e => consoleErrors.push(e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 4).join(' | ')));
       await mem.goto(BASE); await mem.fill('input[name=username]', 'saad'); await mem.fill('input[name=password]', 'Saad#2026x');
       await mem.click('button:has-text("دخول")');
       // أول دخول: يُلزم الموظف بتغيير كلمة المرور التي أعطاه إياها المدير
       await mem.waitForSelector('#fpw');
+      assert((await apiAs(mem, 'GET', '/api/items?kind=all')).status === 403, 'الخادم سمح بالاستخدام قبل تغيير كلمة المرور');
       await mem.fill('#fpw input[name=current]', 'Saad#2026x'); await mem.fill('#fpw input[name=next]', 'Saad#2026x'); await mem.fill('#fpw input[name=again]', 'Saad#2026x');
       await mem.click('#fpw button[type=submit]'); await mem.waitForSelector('#fpw .err-box:has-text("مختلفة")');
       await mem.fill('#fpw input[name=next]', 'SaadNew#2026'); await mem.fill('#fpw input[name=again]', 'SaadNew#2026');
@@ -459,7 +460,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       for (const st of ['ترتيب المقاعد', 'تجهيز الضيافة']) await apiAs(mgr, 'POST', `/api/items/${t.id}/subtasks`, { title: st });
       const other = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'مهمة دعوية غير مسندة', section: 'dawah' })).body;
       const ctx = await browser.newContext({ ...devices['iPhone 13'], locale: 'ar-SA' });
-      const ex = await ctx.newPage(); ex.on('pageerror', e => consoleErrors.push(e.message));
+      const ex = await ctx.newPage(); ex.on('pageerror', e => consoleErrors.push(e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 4).join(' | ')));
       await ex.goto(BASE); await ex.fill('input[name=username]', 'qa.exec'); await ex.fill('input[name=password]', 'Staff#2026x'); await ex.click('button:has-text("دخول")');
       await ex.waitForSelector('h2:has-text("مهامي المفتوحة")');
       assert(await ex.isVisible('.row:has-text("تجهيز قاعة الاجتماع الأسري")') && !(await ex.isVisible('.row:has-text("مهمة دعوية غير مسندة")')), 'المنفّذ يرى غير مهامه');
@@ -497,7 +498,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
 
     await check('المنسّقة: قسمها فقط، مجلد ومهمة من «إضافة»، تأجيل الموعد، ومنع العمل خارج القسم', async () => {
       const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 }, locale: 'ar-SA' });
-      const co = await ctx.newPage(); co.on('pageerror', e => consoleErrors.push(e.message));
+      const co = await ctx.newPage(); co.on('pageerror', e => consoleErrors.push(e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 4).join(' | ')));
       await co.goto(BASE); await co.fill('input[name=username]', 'qa.coord'); await co.fill('input[name=password]', 'Staff#2026x'); await co.click('button:has-text("دخول")');
       await co.waitForSelector('#sidenav');
       const secLinks = await co.$$eval('#sidenav a[href^="#/section/"]', as => as.map(a => a.getAttribute('href')));
@@ -531,7 +532,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
 
     await check('المساعد الإداري: كل المهام دون ملاحظات المالك، قرار اجتماع يُسند إليه بحساب، وحماية حسابي المالك والمدير', async () => {
       const ctx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' });
-      const as = await ctx.newPage(); as.on('pageerror', e => consoleErrors.push(e.message));
+      const as = await ctx.newPage(); as.on('pageerror', e => consoleErrors.push(e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 4).join(' | ')));
       await as.goto(BASE); await as.fill('input[name=username]', 'qa.asst'); await as.fill('input[name=password]', 'Staff#2026x'); await as.click('button:has-text("دخول")');
       await as.waitForSelector('.bottomnav');
       const note = (await apiAs(owner, 'POST', '/api/notes', { msg_type: 'info', description: 'ملاحظة خاصة لمدير المكتب فقط', section: 'family' })).body;
