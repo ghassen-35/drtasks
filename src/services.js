@@ -51,7 +51,13 @@ function advanceDate(d, r) {
 // ===== رؤية المهام: المالك والمدير يريان الكل؛ عضو الفريق يرى المهام المسندة إليه أو في مشاريعه فقط =====
 function scopeFor(user) {
   if (D.can(user, 'item.view')) return { sql: '', params: [] };
-  if (D.can(user, 'item.view_scoped')) return { sql: " AND i.kind='task' AND (i.assignee_id=? OR i.project_id IN (SELECT project_id FROM project_members WHERE user_id=?))", params: [user.id, user.id] };
+  if (D.can(user, 'item.view_scoped')) {
+    const g = D.parseGrants(user.grants);
+    const own = "(i.kind='task' AND (i.assignee_id=? OR i.project_id IN (SELECT project_id FROM project_members WHERE user_id=?)))";
+    if (!g.sections.length) return { sql: ` AND ${own}`, params: [user.id, user.id] };
+    // رؤية الأقسام: كل المهام والتكليفات في الأقسام الممنوحة (لا الملاحظات)
+    return { sql: ` AND (${own} OR (i.kind IN ${D.TASK_KINDS} AND i.section IN (${g.sections.map(() => '?').join(',')})))`, params: [user.id, user.id, ...g.sections] };
+  }
   throw forbidden();
 }
 function canSee(user, it) {
@@ -59,6 +65,15 @@ function canSee(user, it) {
   if (!D.can(user, 'item.view_scoped')) return false;
   const sc = scopeFor(user);
   return !!get(`SELECT 1 AS x FROM items i WHERE i.id=?${sc.sql}`, it.id, ...sc.params);
+}
+// الأقسام المسموحة للموظف (null = كل الأقسام)
+function allowedSections(user) {
+  if (user.role !== 'member' || D.can(user, 'item.view')) return null;
+  return D.parseGrants(user.grants).sections;
+}
+function assertSectionAllowed(user, section) {
+  const secs = allowedSections(user);
+  if (secs && !secs.includes(section)) throw forbidden('هذا القسم خارج صلاحياتك');
 }
 function assertCanSee(user, it) { if (!canSee(user, it)) throw notFound(); } // 404 لا 403: لا نكشف وجود المهمة
 const memberProjects = (userId) => all('SELECT project_id FROM project_members WHERE user_id=?', userId).map(r => r.project_id);
@@ -154,6 +169,8 @@ function createNote(user, b) {
 // ===== 3) مدير المكتب ينشئ مهمة مباشرة =====
 function createTask(user, b, { internal = false } = {}) {
   if (!internal) require_(user, 'task.create');
+  // الموظف: المهمة بلا مسؤول تُسند إليه حتى تبقى ضمن ما يراه
+  if (user.role === 'member' && !b.assignee_id) b = { ...b, assignee_id: user.id };
   const title = str(b.title, 300); if (!title) throw bad('عنوان المهمة مطلوب');
   const section = validSection(b.section); if (!section) throw bad('اختر القسم');
   if (b.category && !D.CATEGORIES[b.category]) throw bad('تصنيف غير صالح');
@@ -169,6 +186,7 @@ function createTask(user, b, { internal = false } = {}) {
     run('UPDATE items SET recurrence=?, parent_task_id=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
     sysMsg(id, user.id, `أنشأ ${user.name} ${b.parent_task_id ? 'المهمة الفرعية' : 'المهمة'} ${ref}`);
+    if (user.role === 'member') notifyRole('manager', { type: 'new_assignment', title: `أنشأ ${user.name} ${b.parent_task_id ? 'مهمة فرعية' : 'مهمة'}: ${title}`, body: `${D.sectionName(section)} — ${ref}`, link: link(b.parent_task_id || id) });
     events.broadcastChange({ item: id });
     return getItem(id);
   });
@@ -230,10 +248,11 @@ function updateItem(user, id, b) {
       if (!ok) throw forbidden();
     }
   } else if (user.role === 'member') {
-    // عضو الفريق: يحدّث حالة المهام التي يراها فقط، وضمن حالات العمل
+    // عضو الفريق: يحدّث حالة المهام التي يراها، وضمن حالات العمل؛ وتعديل التفاصيل لمن مُنح item.edit
     require_(user, 'item.work'); assertCanSee(user, it);
-    if (Object.keys(b).some(k => !['status', 'status_note'].includes(k))) throw forbidden();
-    if (!['in_progress', 'waiting_reply', 'stalled', 'done'].includes(b.status)) throw forbidden('لا يمكنك تعيين هذه الحالة');
+    const allowed = ['status', 'status_note', ...(D.can(user, 'item.edit') ? [...EDITABLE, 'folder_id', 'assignee_id'] : [])];
+    if (Object.keys(b).some(k => !allowed.includes(k))) throw forbidden('ليست لديك صلاحية تعديل تفاصيل المهمة');
+    if (b.status !== undefined && b.status !== it.status && !['in_progress', 'waiting_reply', 'stalled', 'done'].includes(b.status)) throw forbidden('لا يمكنك تعيين هذه الحالة');
   } else require_(user, 'item.manage');
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا');
   return tx(() => {
@@ -329,8 +348,9 @@ function spawnNextOccurrence(user, it) {
 
 // ===== المهام الفرعية: تحت مهمة أو تكليف، وترث القسم والمجلد والمشروع =====
 function createSubtask(user, parentId, b) {
-  if (!D.can(user, 'task.create') && !D.can(user, 'item.edit')) throw forbidden();
+  if (!['task.create', 'item.edit', 'subtask.create'].some(p => D.can(user, p))) throw forbidden();
   const parent = getItem(parentId);
+  assertCanSee(user, parent);
   if (!['task', 'assignment'].includes(parent.kind)) throw bad('المهام الفرعية تُضاف تحت مهمة أو تكليف');
   if (parent.parent_task_id) throw bad('لا يمكن إضافة مهمة فرعية تحت مهمة فرعية');
   if (parent.closed_at) throw bad('المهمة مغلقة نهائيًا');
@@ -485,8 +505,19 @@ function withdrawApproval(user, aid) {
 const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
 function listUsers(actor) {
   require_(actor, 'users.manage');
-  return all(`SELECT id,username,name,${D.roleSql()} AS role,email,active,created_at FROM users ORDER BY member, id`)
-    .map(u => ({ ...u, role_label: D.ROLE_LABELS[u.role], projects: memberProjects(u.id) }));
+  return all(`SELECT id,username,name,${D.roleSql()} AS role,email,active,created_at,grants FROM users ORDER BY member, id`)
+    .map(u => ({ ...u, role_label: D.ROLE_LABELS[u.role], projects: memberProjects(u.id), grants: u.role === 'member' ? D.parseGrants(u.grants) : null }));
+}
+// حفظ صلاحيات الموظف بعد تنقيتها (قائمة بيضاء)، مع سجل التغيير وإشعار الموظف
+function setUserGrants(actor, userId, raw) {
+  const g = D.parseGrants(raw);
+  if (g.scope === 'sections' && !g.sections.length) throw bad('اختر قسمًا واحدًا على الأقل لنطاق «أقسام محددة»');
+  const before = (get('SELECT grants FROM users WHERE id=?', userId) || {}).grants;
+  const json = JSON.stringify(g);
+  if (json === JSON.stringify(D.parseGrants(before))) return;
+  run('UPDATE users SET grants=? WHERE id=?', json, userId);
+  audit('user', userId, actor.id, 'grants', 'grants', before, json);
+  notify(userId, { type: 'status_change', title: 'تحدّثت صلاحياتك في المنصة', body: D.SCOPES[g.scope], link: '#/' });
 }
 function setUserProjects(actor, userId, ids) {
   const want = [...new Set((ids || []).map(Number).filter(Boolean))];
@@ -514,6 +545,7 @@ async function createUser(actor, b) {
     const { id } = run("INSERT INTO users(username,name,role,email,password_hash,member) VALUES(?,?,'manager',?,?,1)", username, name, email, hash);
     audit('user', id, actor.id, 'created');
     setUserProjects(actor, id, b.project_ids);
+    if (b.grants) setUserGrants(actor, id, b.grants);
     return { id };
   });
 }
@@ -531,6 +563,7 @@ async function updateUser(actor, id, b) {
     }
     if (hash) { run('UPDATE users SET password_hash=? WHERE id=?', hash, id); if (id !== actor.id) run('DELETE FROM sessions WHERE user_id=?', id); }
     if (b.project_ids !== undefined) setUserProjects(actor, id, b.project_ids);
+    if (b.grants !== undefined) { if (u.eff_role !== 'member') throw bad('الصلاحيات تُخصص لحسابات الموظفين فقط'); setUserGrants(actor, id, b.grants); }
     audit('user', id, actor.id, 'updated');
     events.broadcastChange({ user: id });
     return { ok: true };
@@ -557,6 +590,6 @@ function decisionToTask(user, did, b) {
 
 module.exports = {
   AppError, bad, forbidden, notFound, require_, audit, getItem, scopeFor, canSee, assertCanSee, memberProjects, listUsers, createUser, updateUser, createAssignment, createNote, createTask, acknowledge, convertToTask,
-  createSubtask, subtasksOf, spawnNextOccurrence, advanceDate, validProject, validRecurrence,
+  allowedSections, assertSectionAllowed, createSubtask, subtasksOf, spawnNextOccurrence, advanceDate, validProject, validRecurrence,
   updateItem, closeItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,
 };

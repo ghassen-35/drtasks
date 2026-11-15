@@ -141,6 +141,39 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('تكليف رجل الأعمال يقبل المبادرة والتكرار', asg.project_id === ini && asg.recurrence === 'monthly');
 }
 
+// ---- صلاحيات الموظفين القابلة للتخصيص
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status || e.message; } };
+  const load = (id) => get(`SELECT id,name,${D.roleSql()} AS role,grants FROM users WHERE id=?`, id);
+  const { id: cId } = await S.createUser(mgr, { name: 'نورة', username: 'noura', password: 'Noura#2026x',
+    grants: { scope: 'sections', sections: ['dawah'], perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage', 'bogus.perm'] } });
+  const co = load(cId);
+  t('الصلاحيات تُنقّى من القائمة البيضاء', !D.can(co, 'bogus.perm') && D.can(co, 'task.create') && !D.can(co, 'item.manage') && !D.can(co, 'approval.decide') && !D.can(co, 'users.manage'));
+  const inSec = S.createTask(mgr, { title: 'مهمة في قسم الدعوة', section: 'dawah' });
+  const outSec = S.createTask(mgr, { title: 'مهمة في الأسري', section: 'family' });
+  t('منسّق القسم يرى كل مهام قسمه فقط', S.canSee(co, inSec) && !S.canSee(co, outSec));
+  S.updateItem(co, inSec.id, { priority: 'urgent', due_date: today });
+  t('صلاحية التعديل تسمح بتعديل تفاصيل مهام قسمه', S.getItem(inSec.id).priority === 'urgent');
+  t('ولا تسمح بمهام خارج قسمه', err(() => S.updateItem(co, outSec.id, { priority: 'urgent' })) === 404);
+  t('ولا بالإلغاء', err(() => S.updateItem(co, inSec.id, { status: 'cancelled' })) === 403);
+  const mine = S.createTask(co, { title: 'مهمة أنشأها المنسق', section: 'family' });
+  t('مهمة ينشئها الموظف بلا مسؤول تُسند إليه فيراها', mine.assignee_id === cId && S.canSee(co, S.getItem(mine.id)));
+  t('المنسّق يضيف مهام فرعية في قسمه فقط', !!S.createSubtask(co, inSec.id, { title: 'فرعية' }).id && err(() => S.createSubtask(co, outSec.id, { title: 'x' })) === 404);
+  t('المنسّق لا ينشئ مجلدًا أو مشروعًا خارج قسمه', err(() => S.assertSectionAllowed(co, 'family')) === 403 && err(() => S.assertSectionAllowed(co, 'dawah')) === null);
+
+  const { id: eId } = await S.createUser(mgr, { name: 'سالم', username: 'salem', password: 'Salem#2026x' });
+  const ex = load(eId);
+  t('المنفّذ الافتراضي: لا إنشاء ولا تعديل ولا رؤية للأقسام', !D.can(ex, 'task.create') && !D.can(ex, 'item.edit') && !D.can(ex, 'folders.view') && !S.canSee(ex, inSec));
+  t('المنفّذ لا يضيف مهام فرعية', err(() => S.createSubtask(ex, inSec.id, { title: 'x' })) === 403);
+
+  await S.updateUser(mgr, eId, { grants: { scope: 'all', perms: ['meetings.view'] } });
+  const ex2 = load(eId);
+  t('تغيير الصلاحيات يسري فورًا ويُشعَر الموظف', D.can(ex2, 'item.view') && D.can(ex2, 'meetings.view') && S.canSee(ex2, outSec)
+    && all('SELECT title FROM notifications WHERE user_id=?', eId).some(n => n.title.includes('صلاحياتك')));
+  t('نطاق «أقسام محددة» بلا أقسام يُرفض', (await S.updateUser(mgr, eId, { grants: { scope: 'sections', sections: [] } }).then(() => null, e => e.status)) === 400);
+  t('لا تُخصص صلاحيات لحساب المدير', (await S.updateUser(mgr, mgr.id, { grants: { scope: 'all' } }).then(() => null, e => e.status)) === 400);
+}
+
 // ---- التشفير: Web Push وكلمات المرور
 {
   const nodeCrypto = require('crypto'); const ece = require('http_ece'); const push = require('../src/push'); const auth = require('../src/auth');

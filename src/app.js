@@ -40,7 +40,7 @@ function createApp(P) {
     if (!tok) return null;
     const s = get('SELECT * FROM sessions WHERE token_hash=?', await auth.sha256hex(tok));
     if (!s || s.expires_at < new Date().toISOString()) return null;
-    return get(`SELECT id,username,name,${D.roleSql()} AS role,email,prefs FROM users WHERE id=? AND active=1`, s.user_id) || null;
+    return get(`SELECT id,username,name,${D.roleSql()} AS role,email,prefs,grants FROM users WHERE id=? AND active=1`, s.user_id) || null;
   }
 
   app.use('/api/*', async (c, next) => {
@@ -109,7 +109,8 @@ function createApp(P) {
 
   app.get('/api/me', wrap(req => {
     const u = { ...req.user }; delete u.prefs;
-    u.perms = [...D.PERMS[u.role]];
+    u.perms = [...D.effectivePerms(req.user)];
+    if (u.role === 'member') u.grants = D.parseGrants(u.grants); else delete u.grants;
     u.role_label = D.ROLE_LABELS[u.role];
     u.unread = get('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL', u.id).c;
     if (D.can(u, 'item.view')) { // أعداد عامة للمالك والمدير فقط
@@ -129,7 +130,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -295,7 +296,9 @@ function createApp(P) {
       if (req.query.folder_id) { w.push('folder_id=?'); p.push(Number(req.query.folder_id)); }
       rows = all(`SELECT * FROM projects ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY section, status, name`, ...p);
     } else if (D.can(req.user, 'item.view_scoped')) {
-      rows = all('SELECT p.* FROM projects p JOIN project_members m ON m.project_id=p.id WHERE m.user_id=? ORDER BY p.name', req.user.id);
+      // مشاريعه + مشاريع الأقسام الممنوحة له
+      const secs = S.allowedSections(req.user) || [];
+      rows = all(`SELECT p.* FROM projects p WHERE p.id IN (SELECT project_id FROM project_members WHERE user_id=?)${secs.length ? ` OR p.section IN (${secs.map(() => '?').join(',')})` : ''} ORDER BY p.name`, req.user.id, ...secs);
     } else throw S.forbidden();
     return rows.map(p => ({ ...p, open_tasks: get(`SELECT COUNT(*) c FROM items WHERE project_id=? AND kind IN ${D.TASK_KINDS} AND ${D.OPEN}`, p.id).c,
       folder_name: p.folder_id ? (get('SELECT name FROM folders WHERE id=?', p.folder_id) || {}).name : null,
@@ -311,6 +314,7 @@ function createApp(P) {
     S.require_(req.user, 'projects.manage');
     const name = S.str(req.body.name, 200); if (!name) throw S.bad(req.body.kind === 'initiative' ? 'اسم المبادرة مطلوب' : 'اسم المشروع مطلوب');
     const section = S.validSection(req.body.section); if (!section) throw S.bad('اختر القسم');
+    S.assertSectionAllowed(req.user, section);
     const kind = D.PROJECT_KINDS[req.body.kind] ? req.body.kind : 'project';
     const { id } = run('INSERT INTO projects(section,name,description,folder_id,kind) VALUES(?,?,?,?,?)', section, name, S.str(req.body.description), validFolder(req.body.folder_id, section), kind);
     S.audit('project', id, req.user.id, 'created'); events.broadcastChange({ project: id });
@@ -319,6 +323,7 @@ function createApp(P) {
   app.patch('/api/projects/:id', wrap(req => {
     S.require_(req.user, 'projects.manage');
     const p = get('SELECT * FROM projects WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound();
+    S.assertSectionAllowed(req.user, p.section);
     const b = req.body;
     if (D.PROJECT_KINDS[b.kind] && b.kind !== p.kind) run('UPDATE projects SET kind=? WHERE id=?', b.kind, p.id);
     run('UPDATE projects SET name=?, description=?, status=?, folder_id=? WHERE id=?', S.str(b.name, 200) || p.name, b.description !== undefined ? S.str(b.description) : p.description, ['active', 'paused', 'done'].includes(b.status) ? b.status : p.status,
@@ -461,11 +466,13 @@ function createApp(P) {
   app.get('/api/folders', wrap(req => {
     S.require_(req.user, 'folders.view');
     const rows = req.query.section ? all('SELECT * FROM folders WHERE section=? ORDER BY name', req.query.section) : all('SELECT * FROM folders ORDER BY section, name');
-    return rows.map(folderCounts);
+    const secs = S.allowedSections(req.user);
+    return rows.filter(f => !secs || secs.includes(f.section)).map(folderCounts);
   }));
   app.get('/api/folders/:id', wrap(req => {
     S.require_(req.user, 'folders.view');
     const f = get('SELECT * FROM folders WHERE id=?', Number(req.params.id)); if (!f) throw S.notFound('المجلد غير موجود');
+    const secs = S.allowedSections(req.user); if (secs && !secs.includes(f.section)) throw S.notFound('المجلد غير موجود');
     return { ...folderCounts(f), path: folderPath(f.id), children: all('SELECT * FROM folders WHERE parent_id=? ORDER BY name', f.id).map(folderCounts) };
   }));
   app.post('/api/folders', wrap(req => {
@@ -479,6 +486,7 @@ function createApp(P) {
       section = parent.section; parentId = parent.id;
     }
     if (!section) throw S.bad('اختر القسم');
+    S.assertSectionAllowed(req.user, section);
     if (get('SELECT id FROM folders WHERE section=? AND parent_id IS ? AND name=?', section, parentId, name)) throw S.bad('يوجد مجلد بالاسم نفسه في هذا المكان');
     const { id } = run('INSERT INTO folders(section,name,description,parent_id) VALUES(?,?,?,?)', section, name, S.str(req.body.description, 1000), parentId);
     S.audit('folder', id, req.user.id, 'created'); events.broadcastChange({ folder: id });

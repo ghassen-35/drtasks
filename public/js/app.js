@@ -57,6 +57,9 @@ const isMember = () => state.me.role === 'member';
 const DEFAULT_APP_NAME = 'مكتب عبدالله عبدالعزيز التويجري';
 const appName = () => (state.meta && state.meta.app_name) || state.appName || DEFAULT_APP_NAME;
 const can = (p) => state.me.perms.includes(p);
+const canAddAny = () => can('task.create') || can('assignment.create') || can('projects.manage');
+const canEditItem = () => can('item.manage') || can('item.edit');
+const canAddSub = () => ['task.create', 'item.edit', 'subtask.create'].some(can);
 
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
   return `<div class="row p-${i.priority} ${i.status === 'done' ? 'done' : ''}">
@@ -264,8 +267,8 @@ function navItems() {
   ];
   if (isMember()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/tasks', i: 'list', t: 'مهامي' },
-    { h: '#/sops', i: 'book', t: 'الإجراءات التشغيلية' },
+    { h: '#/tasks', i: 'list', t: can('item.view') ? 'كل المهام' : 'مهامي' },
+    ...common.filter(n => n.h === '#/sops' || can({ '#/meetings': 'meetings.view', '#/partners': 'partners.view', '#/reports': 'reports.view' }[n.h])),
   ];
   if (isOwner()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
@@ -297,7 +300,7 @@ function renderShell() {
     <span class="role-chip desk-only">${esc(me.role_label || '')}</span>
     <span class="spacer"></span>
     <div class="actions">
-      ${isOwner() || isManager() ? `<button class="btn primary" id="btnAdd" title="إضافة مهمة أو مشروع أو مبادرة">${I('plus')} <span>إضافة</span></button>` : ''}
+      ${canAddAny() ? `<button class="btn primary" id="btnAdd" title="إضافة مهمة أو مشروع أو مبادرة">${I('plus')} <span>إضافة</span></button>` : ''}
       ${isOwner() ? `<button class="btn" id="btnNote" title="إرسال ملاحظة أو طلب">${I('note')} <span class="desk-only">إرسال ملاحظة أو طلب</span></button>` : ''}
       <button class="iconbtn" id="btnToday" aria-label="مهام اليوم" title="مهام اليوم">${I('calendarCheck')}</button>
       <a class="iconbtn desk-only" href="#/notifications" aria-label="الإشعارات">${I('bell')}<span class="badge hidden" id="bellN"></span></a>
@@ -308,7 +311,7 @@ function renderShell() {
     <main id="main" tabindex="-1"></main>
   </div>
   <nav class="bottomnav" id="bottomnav" aria-label="التنقل السريع"></nav>`;
-  if (isOwner() || isManager()) $('#btnAdd').onclick = () => modalAdd();
+  if (canAddAny()) $('#btnAdd').onclick = () => modalAdd();
   if (isOwner()) $('#btnNote').onclick = () => modalNote();
   $('#btnToday').onclick = () => modalToday();
   document.title = appName();
@@ -679,7 +682,7 @@ const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== 
 
 async function viewTasks(main) {
   const f = { scope: 'open' };
-  main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${isManager() ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
+  main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
   async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${items.length} نتيجة</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main); }
   bindFilters(main, f, load); await load(); return { refresh: load };
@@ -706,7 +709,7 @@ async function viewSection(main, key) {
     const [home, projects, folders] = await Promise.all([GET('/api/home'), GET('/api/projects?section=' + key), GET('/api/folders?section=' + key)]);
     const s = home.tiles.find(t => t.key === key);
     main.innerHTML = `<div class="page-h"><div class="tile" style="min-height:0;padding:0;border:0;box-shadow:none;background:none;cursor:default"><div class="th"><div class="ic">${I(sec.icon)}</div><h1>${esc(sec.name)}</h1></div></div><span class="spacer"></span>
-        ${isOwner() || isManager() ? `<button class="btn primary" id="add">${I('plus')} إضافة في هذا القسم</button>` : ''}</div>
+        ${canAddAny() ? `<button class="btn primary" id="add">${I('plus')} إضافة في هذا القسم</button>` : ''}</div>
       <div class="kpis">
         <div class="kpi blue"><b>${s.open}</b><span>مهام مفتوحة</span></div><div class="kpi orange"><b>${s.due_today}</b><span>متابعات مستحقة اليوم</span></div>
         <div class="kpi red"><b>${s.overdue}</b><span>متأخرة</span></div><div class="kpi orange"><b>${s.awaiting_decision}</b><span>بانتظار قرار أو اعتماد</span></div>
@@ -715,7 +718,7 @@ async function viewSection(main, key) {
       <div class="tabs section-gap"><button data-tab="folders" class="${tab === 'folders' ? 'active' : ''}">${I('folder')} المجلدات (${folders.length})</button><button data-tab="tasks" class="${tab === 'tasks' ? 'active' : ''}">كل المهام</button><button data-tab="projects" class="${tab === 'projects' ? 'active' : ''}">المشاريع والمبادرات (${projects.length})</button>
         ${key === 'partnerships' ? `<button data-tab="partners" class="${tab === 'partners' ? 'active' : ''}">سجل الجهات والشخصيات</button>` : ''}</div>
       <div id="tabc"></div>`;
-    $('#add', main).onclick = () => modalAdd({ section: key });
+    const addB = $('#add', main); if (addB) addB.onclick = () => modalAdd({ section: key });
     $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
     const tc = $('#tabc', main);
     if (tab === 'folders') {
@@ -769,7 +772,7 @@ async function viewFolder(main, id) {
         <a href="#/section/${fo.section}">${esc(sec.name)}</a>${crumbs.map(c => `<span class="muted">/</span>${c}`).join('')}</div>
       <div class="page-h">${I('folder')}<h1>${esc(fo.name)}</h1><span class="spacer"></span>
         ${can('projects.manage') ? `<button class="btn" id="addSub">${I('folderPlus')} مجلد فرعي</button><button class="btn" id="editF">${I('edit')} تعديل المجلد</button>` : ''}
-        ${isOwner() || isManager() ? `<button class="btn primary" id="addT">${I('plus')} إضافة في هذا المجلد</button>` : ''}</div>
+        ${canAddAny() ? `<button class="btn primary" id="addT">${I('plus')} إضافة في هذا المجلد</button>` : ''}</div>
       ${fo.description ? `<p class="muted">${esc(fo.description)}</p>` : ''}
       ${fo.children.length ? `<div class="card"><div class="card-h"><h2>المجلدات الفرعية</h2><span class="chip">${fo.children.length}</span></div><div class="folders">${fo.children.map(folderCard).join('')}</div></div>` : ''}
       <div class="card"><div class="card-h"><h2>المشاريع والمبادرات</h2><span class="chip">${projects.length}</span><span class="spacer"></span>${can('projects.manage') ? `<button class="btn sm" id="addP">${I('plus')} مشروع / مبادرة في المجلد</button>` : ''}</div>
@@ -828,7 +831,7 @@ async function viewItem(main, id) {
     const pendingCount = data.approvals.filter(a => a.status === 'pending').length;
     $('#ih', main).innerHTML = `<div class="card item-head">
       <div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="javascript:history.back()">${I('back')} رجوع</a><span class="ref">${esc(i.ref)}</span>${demoChip(i)}
-        ${(isOwner() || isManager()) && !i.closed_at && i.kind !== 'note' ? `<span class="spacer" style="flex:1"></span><button class="btn sm" id="editTop">${I('edit')} تعديل التفاصيل</button>` : ''}</div>
+        ${canEditItem() && !i.closed_at && i.kind !== 'note' ? `<span class="spacer" style="flex:1"></span><button class="btn sm" id="editTop">${I('edit')} تعديل التفاصيل</button>` : ''}</div>
       <h1>${esc(i.title)}</h1>
       <div class="meta btn-row" style="margin-top:8px"><span class="chip kind">${esc(kindLabel(i))}</span>${statusChip(i.status)}${prioChip(i.priority)}${dueChip(i)}
         ${i.acknowledged_at ? `<span class="chip st-acknowledged">${I('check')}تم تأكيد الاستلام ${fmtTs(i.acknowledged_at)}</span>` : (i.kind !== 'task' && i.status !== 'cancelled' ? '<span class="chip st-new">لم يُؤكد الاستلام بعد</span>' : '')}
@@ -860,7 +863,7 @@ async function viewItem(main, id) {
     if (i.kind === 'note' || i.parent_task_id) { el.innerHTML = ''; return; }
     const subs = data.subtasks || [];
     const active = subs.filter(x => x.status !== 'cancelled'); const done = active.filter(x => x.status === 'done').length;
-    const canAdd = !i.closed_at && (isOwner() || isManager());
+    const canAdd = !i.closed_at && canAddSub();
     const canTick = (st) => !st.closed_at && st.status !== 'cancelled' && (isOwner() || isManager() || isMember());
     if (!subs.length && !canAdd) { el.innerHTML = ''; return; }
     el.innerHTML = `<div class="card section-gap"><div class="card-h">${I('list')}<h2>المهام الفرعية</h2>${active.length ? `<span class="chip">${done}/${active.length}</span>` : ''}</div>
@@ -1040,7 +1043,7 @@ function modalAdd(pre = {}) {
   const m = openModal({
     title: 'إضافة جديدة',
     body: `<div class="add-choices">
-      ${choice('task', 'checkCircle', isOwner() ? 'مهمة / تكليف' : 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة')}
+      ${can('task.create') || can('assignment.create') ? choice('task', 'checkCircle', isOwner() ? 'مهمة / تكليف' : 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة') : ''}
       ${can('projects.manage') ? choice('project', 'briefcase', 'مشروع', 'يجمع مهامًا تحت هدف واحد') + choice('initiative', 'flag', 'مبادرة', 'فكرة أو برنامج تُتابع مهامه') : ''}</div>`,
     init: (form) => $$('[data-k]', form).forEach(b => b.onclick = () => {
       m.close(); const k = b.dataset.k;
@@ -1077,7 +1080,7 @@ async function modalToday() {
   });
 }
 async function modalAssignment(pre = {}) {
-  const [projects, folders] = await Promise.all([GET('/api/projects'), GET('/api/folders')]);
+  const [projects, folders] = await Promise.all([GET('/api/projects'), can('folders.view') ? GET('/api/folders') : []]);
   openModal({
     title: 'تكليف جديد إلى مدير المكتب', submit: 'إرسال إلى مدير المكتب', init: bindTaskForm,
     body: `${field('عنوان التكليف *', '<input type="text" name="title" required maxlength="300">')}
@@ -1116,7 +1119,7 @@ async function modalNote(pre = {}) {
   });
 }
 async function taskFormBody(i = {}, { withDesc = true } = {}) {
-  const [projects, sops, partners, folders] = await Promise.all([GET('/api/projects'), GET('/api/sops'), GET('/api/partners'), GET('/api/folders')]);
+  const [projects, sops, partners, folders] = await Promise.all([GET('/api/projects'), can('sops.view') ? GET('/api/sops') : [], can('partners.view') ? GET('/api/partners') : [], can('folders.view') ? GET('/api/folders') : []]);
   const people = state.meta.users.filter(u => u.role !== 'owner');
   return `${field('العنوان *', `<input type="text" name="title" required value="${esc(i.title || '')}">`)}
     ${withDesc ? field('الوصف', `<textarea name="description">${esc(i.description || '')}</textarea>`) : ''}
@@ -1482,38 +1485,71 @@ async function viewSettings(main) {
 }
 
 // ===== إدارة المستخدمين وربطهم بالمشاريع =====
+// ملخص صلاحيات الموظف بكلمات واضحة
+function grantsSummary(g) {
+  const m = state.meta;
+  return `<span class="chip kind">${esc(m.scopes[g.scope])}${g.scope === 'sections' ? `: ${g.sections.map(sectionName).join('، ')}` : ''}</span>`
+    + (g.perms.length ? g.perms.map(p => `<span class="chip">${esc(m.grantable[p].split(' (')[0])}</span>`).join('') : '<span class="txt">تحديث الحالة والتحديثات والمرفقات فقط</span>');
+}
+// محرر الصلاحيات: قوالب جاهزة + نطاق الرؤية + صلاحيات إضافية
+function grantsEditorHtml(g = { scope: 'own', sections: [], perms: [] }) {
+  const m = state.meta;
+  return `<fieldset class="grants"><legend>الصلاحيات</legend>
+    <div class="small muted">قالب جاهز:</div>
+    <div class="btn-row" style="margin:4px 0 10px">${Object.entries(m.grant_presets).map(([k, p]) => `<button type="button" class="btn sm" data-preset="${k}">${esc(p.label)}</button>`).join('')}</div>
+    ${field('ماذا يرى؟', `<div class="radios">${Object.entries(m.scopes).map(([k, v]) => `<label class="check"><input type="radio" name="g_scope" value="${k}" ${g.scope === k ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`)}
+    <div data-secs class="${g.scope === 'sections' ? '' : 'hidden'}">${field('الأقسام', `<div class="grid2">${m.sections.map(s => `<label class="check"><input type="checkbox" name="g_sections" data-multi="1" value="${s.key}" ${g.sections.includes(s.key) ? 'checked' : ''}> ${esc(s.name)}</label>`).join('')}</div>`)}</div>
+    ${field('ماذا يستطيع أن يفعل؟', `<div class="radios">
+      <label class="check"><input type="checkbox" checked disabled> تحديث حالة مهامه وإضافة التحديثات والمرفقات (دائمًا)</label>
+      ${Object.entries(m.grantable).map(([k, v]) => `<label class="check"><input type="checkbox" name="g_perms" data-multi="1" value="${k}" ${g.perms.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`)}
+    <p class="small muted">لا يملك الموظف أبدًا: الاعتماد والقرارات، إغلاق المهام نهائيًا، الوارد من رجل الأعمال، إدارة المستخدمين.</p></fieldset>`;
+}
+function bindGrantsEditor(form) {
+  const m = state.meta;
+  const sync = () => { const sc = (form.elements.g_scope || {}).value; const d = $('[data-secs]', form); if (d) d.classList.toggle('hidden', sc !== 'sections'); };
+  form.addEventListener('change', sync);
+  $$('[data-preset]', form).forEach(b => b.onclick = () => {
+    const p = m.grant_presets[b.dataset.preset];
+    for (const r of form.querySelectorAll('[name=g_scope]')) r.checked = r.value === p.scope;
+    for (const c of form.querySelectorAll('[name=g_perms]')) c.checked = p.perms.includes(c.value);
+    sync();
+  });
+}
+const grantsFromForm = (d) => { const g = { scope: d.g_scope || 'own', sections: d.g_sections || [], perms: d.g_perms || [] }; delete d.g_scope; delete d.g_sections; delete d.g_perms; return g; };
+
 async function renderUsersAdmin(el) {
   const [users, projects] = await Promise.all([GET('/api/admin/users'), GET('/api/projects')]);
   const pname = (id) => (projects.find(p => p.id === id) || {}).name || `#${id}`;
-  el.innerHTML = `<div class="card-h">${I('users')}<h2>المستخدمون والفريق</h2><span class="spacer"></span><button type="button" class="btn primary sm" id="addUser">${I('plus')} إضافة مستخدم</button></div>
-    <p class="small muted">أعضاء الفريق يرون فقط المهام المسندة إليهم والمهام داخل المشاريع المرتبطين بها، ويمكنهم تحديث حالتها وإضافة التحديثات والمرفقات. لا يرون بقية المكتب ولا الاعتمادات ولا التقارير.</p>
+  el.innerHTML = `<div class="card-h">${I('users')}<h2>المستخدمون والفريق</h2><span class="spacer"></span><button type="button" class="btn primary sm" id="addUser">${I('plus')} إضافة موظف</button></div>
+    <p class="small muted">لكل موظف حساب دخول خاص وصلاحيات تحددها: ماذا يرى (مهامه فقط، أو أقسامًا محددة، أو كل المكتب) وماذا يستطيع أن يفعل. تُفحص الصلاحيات في الخادم لكل عملية.</p>
     <div class="list">${users.map(u => `<div class="row ${u.active ? '' : 'done'}"><div class="main"><span class="title">${esc(u.name)} <span class="small muted ltr">@${esc(u.username)}</span></span>
       <div class="meta"><span class="chip kind">${esc(u.role_label)}</span>${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
-      ${u.role === 'member' ? (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '<span class="txt">غير مرتبط بمشاريع</span>') : '<span class="txt">يرى كل المهام</span>'}</div></div>
+      ${u.role === 'member' ? grantsSummary(u.grants) + (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '') : '<span class="txt">يرى كل المهام</span>'}</div></div>
       <div class="side"><button type="button" class="btn sm" data-edit-user="${u.id}">تعديل</button></div></div>`).join('')}</div>`;
   const projChecks = (sel = []) => projects.length
     ? `<div class="grid2">${projects.map(p => `<label class="check"><input type="checkbox" name="project_ids" data-multi="1" value="${p.id}" ${sel.includes(p.id) ? 'checked' : ''}> ${esc(p.name)} <span class="small muted">(${esc(sectionName(p.section))})</span></label>`).join('')}</div>`
     : '<p class="small muted">لا توجد مشاريع بعد. أنشئها من صفحة القسم أو داخل مجلد.</p>';
   const reload = () => renderUsersAdmin(el);
   $('#addUser', el).onclick = () => openModal({
-    title: 'إضافة مستخدم (عضو فريق)', submit: 'إضافة',
+    title: 'إضافة موظف', submit: 'إضافة', wide: true, init: bindGrantsEditor,
     body: `<div class="grid2">${field('الاسم *', '<input type="text" name="name" required>')}${field('اسم الدخول * (لاتيني)', '<input type="text" name="username" dir="ltr" required autocomplete="off" placeholder="saad">')}
       ${field('كلمة المرور الأولية * (8 أحرف على الأقل)', '<input type="password" name="password" dir="ltr" autocomplete="new-password" required>')}${field('البريد (اختياري)', '<input type="email" name="email" dir="ltr">')}</div>
+      ${grantsEditorHtml()}
       ${field('المشاريع التي يشارك فيها', projChecks())}
-      <p class="small muted">أبلغ المستخدم باسم الدخول وكلمة المرور بطريقة آمنة، ويمكنه تغيير كلمة المرور من الإعدادات.</p>`,
-    onSubmit: async (d) => { d.project_ids = (d.project_ids || []).map(Number); await POST('/api/admin/users', d); toast('أُضيف المستخدم', 'ok'); reload(); },
+      <p class="small muted">أبلغ الموظف باسم الدخول وكلمة المرور بطريقة آمنة، ويمكنه تغيير كلمة المرور من الإعدادات.</p>`,
+    onSubmit: async (d) => { d.grants = grantsFromForm(d); d.project_ids = (d.project_ids || []).map(Number); await POST('/api/admin/users', d); toast('أُضيف الموظف', 'ok'); reload(); },
   });
   $$('[data-edit-user]', el).forEach(b => b.onclick = () => {
     const u = users.find(x => x.id == b.dataset.editUser);
     openModal({
-      title: `تعديل: ${u.name}`,
+      title: `تعديل: ${u.name}`, wide: u.role === 'member', init: u.role === 'member' ? bindGrantsEditor : undefined,
       body: `<div class="grid2">${field('الاسم', `<input type="text" name="name" value="${esc(u.name)}" required>`)}${field('البريد', `<input type="email" name="email" dir="ltr" value="${esc(u.email || '')}">`)}
         ${field('كلمة مرور جديدة (اتركها فارغة للإبقاء)', '<input type="password" name="password" dir="ltr" autocomplete="new-password">')}</div>
-        ${u.role === 'member' ? `${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
+        ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
       onSubmit: async (d) => {
         const body = { name: d.name, email: d.email };
         if (d.password) body.password = d.password;
-        if (u.role === 'member') { body.project_ids = (d.project_ids || []).map(Number); body.active = d.active; }
+        if (u.role === 'member') { body.grants = grantsFromForm(d); body.project_ids = (d.project_ids || []).map(Number); body.active = d.active; }
         await api('PATCH', `/api/admin/users/${u.id}`, body); toast('حُفظت التعديلات', 'ok'); reload();
       },
     });

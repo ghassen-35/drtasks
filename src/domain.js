@@ -61,10 +61,51 @@ const PERMS = {
   ]),
   member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
+// صلاحيات يمنحها مدير المكتب لكل موظف (فوق صلاحياته الأساسية). أي صلاحية خارج هذه القائمة تُتجاهل
+const GRANTABLE = {
+  'task.create': 'إنشاء مهام جديدة (تُسند إليه إن لم يُحدَّد مسؤول)',
+  'subtask.create': 'إضافة مهام فرعية تحت المهام التي يراها',
+  'item.edit': 'تعديل تفاصيل المهام التي يراها (الموعد، الأولوية، التصنيف، المجلد…)',
+  'projects.manage': 'إنشاء المشاريع والمبادرات والمجلدات وتعديلها',
+  'meetings.view': 'الاطلاع على الاجتماعات والقرارات',
+  'partners.view': 'الاطلاع على العلاقات والشراكات وبيانات التواصل',
+  'reports.view': 'الاطلاع على التقارير والإنجازات (لكل المكتب)',
+};
+const SCOPES = {
+  own: 'المسندة إليه ومهام مشاريعه فقط',
+  sections: 'كل مهام أقسام محددة + المسندة إليه ومشاريعه',
+  all: 'كل مهام المكتب',
+};
+// قوالب جاهزة تسهّل الاختيار
+const GRANT_PRESETS = {
+  executor: { label: 'منفّذ', scope: 'own', perms: [] },
+  coordinator: { label: 'منسّق قسم', scope: 'sections', perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage'] },
+  assistant: { label: 'مساعد إداري', scope: 'all', perms: ['task.create', 'subtask.create', 'item.edit', 'meetings.view', 'partners.view'] },
+};
+function parseGrants(raw) {
+  let g = {}; try { g = typeof raw === 'string' ? JSON.parse(raw) : (raw || {}); } catch { }
+  const scope = SCOPES[g.scope] ? g.scope : 'own';
+  return { scope, sections: scope === 'sections' ? (g.sections || []).filter(s => SECTION_KEYS.includes(s)) : [], perms: (g.perms || []).filter(p => GRANTABLE[p]) };
+}
+const permCache = new WeakMap();
+// الصلاحيات الفعلية: أساس الدور + ما مُنح للموظف (الرؤية الكاملة تمنح item.view، ورؤية الأقسام تمنح تصفح الأقسام والمجلدات)
+function effectivePerms(user) {
+  if (!user || !PERMS[user.role]) return new Set();
+  if (user.role !== 'member') return PERMS[user.role];
+  if (permCache.has(user)) return permCache.get(user);
+  const g = parseGrants(user.grants);
+  const set = new Set([...PERMS.member, ...g.perms]);
+  if (g.scope === 'all') set.add('item.view');
+  if (g.scope !== 'own') set.add('folders.view');
+  if (set.has('partners.view')) set.add('contacts.view');
+  permCache.set(user, set);
+  return set;
+}
+
 const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'عضو فريق' };
 // الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
 const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
-const can = (user, perm) => !!(user && PERMS[user.role] && PERMS[user.role].has(perm));
+const can = (user, perm) => effectivePerms(user).has(perm);
 
 function todayStr(d = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
@@ -214,5 +255,5 @@ function report(period = 'week') {
 
 module.exports = {
   get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS,
-  PERMS, ROLE_LABELS, roleSql, can, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  PERMS, ROLE_LABELS, roleSql, can, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

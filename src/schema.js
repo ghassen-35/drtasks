@@ -54,4 +54,8 @@ module.exports.migrations = [
     'CREATE INDEX IF NOT EXISTS idx_items_parent_task ON items(parent_task_id)',
     'CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)',
   ],
+  // 3) صلاحيات الموظفين القابلة للتخصيص: JSON {scope: own|sections|all, sections: [], perms: []}
+  [
+    'ALTER TABLE users ADD COLUMN grants TEXT',
+  ],
 ];

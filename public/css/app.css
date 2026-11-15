@@ -404,3 +404,8 @@ details.log summary { cursor: pointer; color: var(--ink-2); font-weight: 600; pa
 .sub-add { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .sub-add input[type=text] { flex: 1 1 200px; min-width: 0; }
 .sub-add input[type=date] { flex: 0 1 160px; }
+
+/* ===== صلاحيات الموظفين ===== */
+fieldset.grants { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 6px 0 12px; min-width: 0; }
+fieldset.grants legend { font-weight: 700; padding: 0 6px; }
+.radios { display: flex; flex-direction: column; gap: 6px; }
