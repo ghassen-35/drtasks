@@ -247,6 +247,12 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('الموظف المسؤول يُذكَّر قبل الموعد', get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND type='deadline_soon'", hId).c === n0 + 1);
 }
 
+// ---- قيمة غير مُرسلة تُخزن فارغة بدل خطأ في الخادم
+{
+  const { id } = run('INSERT INTO meetings(title,starts_at,location) VALUES(?,?,?)', 'اجتماع بلا مكان', '2026-11-20T10:00', undefined);
+  t('undefined يُخزَّن NULL ولا يُسقط الطلب', get('SELECT location FROM meetings WHERE id=?', id).location === null);
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

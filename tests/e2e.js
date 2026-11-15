@@ -93,6 +93,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   for (const p of [owner, mgr]) p.on('pageerror', e => consoleErrors.push(e.message));
   const TITLE = 'إعداد التقرير السنوي لبرامج الجمعية';
   let itemId, ref, tileBefore, folderId, projectId;
+  const staff = {};
 
   try {
     await check('يسجل رجل الأعمال الدخول (جوال)', async () => {
@@ -448,6 +449,110 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await memCtx.close();
     });
 
+    await check('الموظف المنفّذ: يرى مهامه فقط، تعثّر بسبب، إنجاز مع الفرعيات، منع التعديل، تحديث الصلاحيات فورًا، والإيقاف يُخرجه', async () => {
+      const meta = (await apiAs(mgr, 'GET', '/api/meta')).body; const today = meta.today;
+      const mk = async (b) => { const r = await apiAs(mgr, 'POST', '/api/admin/users', { password: 'Staff#2026x', must_change_password: false, ...b }); assert(r.status === 200, 'تعذر إنشاء موظف: ' + JSON.stringify(r.body)); return r.body.id; };
+      staff.exec = await mk({ name: 'منفّذ الاختبار', username: 'qa.exec', title: 'منسق ميداني', grants: { scope: 'own', perms: [] } });
+      staff.coord = await mk({ name: 'منسّقة الاختبار', username: 'qa.coord', grants: { scope: 'sections', sections: ['dawah'], perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage'] } });
+      staff.asst = await mk({ name: 'مساعد الاختبار', username: 'qa.asst', grants: { scope: 'all', perms: ['task.create', 'subtask.create', 'item.edit', 'meetings.view', 'partners.view'] } });
+      const t = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'تجهيز قاعة الاجتماع الأسري', section: 'family', assignee_id: staff.exec, due_date: today, priority: 'important' })).body;
+      for (const st of ['ترتيب المقاعد', 'تجهيز الضيافة']) await apiAs(mgr, 'POST', `/api/items/${t.id}/subtasks`, { title: st });
+      const other = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'مهمة دعوية غير مسندة', section: 'dawah' })).body;
+      const ctx = await browser.newContext({ ...devices['iPhone 13'], locale: 'ar-SA' });
+      const ex = await ctx.newPage(); ex.on('pageerror', e => consoleErrors.push(e.message));
+      await ex.goto(BASE); await ex.fill('input[name=username]', 'qa.exec'); await ex.fill('input[name=password]', 'Staff#2026x'); await ex.click('button:has-text("دخول")');
+      await ex.waitForSelector('h2:has-text("مهامي المفتوحة")');
+      assert(await ex.isVisible('.row:has-text("تجهيز قاعة الاجتماع الأسري")') && !(await ex.isVisible('.row:has-text("مهمة دعوية غير مسندة")')), 'المنفّذ يرى غير مهامه');
+      assert(!(await ex.isVisible('#btnAdd')), 'زر الإضافة ظاهر للمنفّذ');
+      const n = (await apiAs(ex, 'GET', '/api/notifications')).body.filter(x => x.title.includes('أُسندت إليك'));
+      assert(n.length === 1 && n[0].body.includes('من '), 'إشعار الإسناد ليس واحدًا وغنيًا: ' + n.length);
+      await ex.goto(`${BASE}/#/item/${t.id}`); await ex.waitForSelector('#acts');
+      assert(!(await ex.isVisible('#editTop')), 'زر تعديل التفاصيل ظاهر للمنفّذ');
+      // متعثرة: نافذة بأسباب جاهزة
+      await ex.click('#acts [data-s=stalled]'); await ex.waitForSelector('.modal input[name=reason]');
+      await ex.click('.modal label:has-text("نقص معلومات") input'); await ex.click('.modal button:has-text("حفظ")');
+      await ex.waitForSelector('.item-head .chip.st-stalled'); await ex.waitForSelector('.sys:has-text("نقص معلومات")');
+      // أنجزت: تنبيه الفرعيات المفتوحة و«إنجازها معها»
+      await ex.click('#acts [data-s=done]'); await ex.waitForSelector('.modal .warn-box:has-text("2 مهام فرعية")');
+      await ex.fill('.modal textarea[name=body]', 'القاعة جاهزة بالكامل.'); await ex.click('.modal button:has-text("تم الإنجاز")');
+      await ex.waitForSelector('.item-head .chip.st-done');
+      const subs = (await apiAs(mgr, 'GET', `/api/items/${t.id}`)).body.subtasks;
+      assert(subs.length === 2 && subs.every(s => s.status === 'done'), 'الفرعيات لم تُنجز مع الأم');
+      // ممنوعات المنفّذ في الخادم
+      assert((await apiAs(ex, 'PATCH', `/api/items/${t.id}`, { title: 'تغيير' })).status === 403, 'المنفّذ عدّل التفاصيل');
+      assert((await apiAs(ex, 'POST', '/api/tasks', { title: 'x', section: 'family' })).status === 403, 'المنفّذ أنشأ مهمة');
+      assert((await apiAs(ex, 'GET', `/api/items/${other.id}`)).status === 404, 'المنفّذ فتح مهمة لا تخصه');
+      const csv = await ex.evaluate(async () => (await fetch('/api/items-export.csv?scope=')).text());
+      assert(csv.includes('تجهيز قاعة الاجتماع الأسري') && !csv.includes('مهمة دعوية غير مسندة'), 'التصدير يكشف غير مهامه');
+      // تغيير الصلاحيات يظهر فورًا دون إعادة تحميل
+      await ex.goto(BASE + '/#/'); await ex.waitForSelector('h2:has-text("مهامي المفتوحة")');
+      await apiAs(mgr, 'PATCH', `/api/admin/users/${staff.exec}`, { grants: { scope: 'own', perms: ['task.create'] } });
+      await ex.waitForSelector('#btnAdd', { timeout: 8000 });
+      // الإيقاف يُخرجه فورًا
+      await apiAs(mgr, 'PATCH', `/api/admin/users/${staff.exec}`, { active: false });
+      await ex.waitForSelector('#lf', { timeout: 8000 });
+      assert((await apiAs(ex, 'GET', '/api/me')).status === 401, 'الجلسة بقيت بعد الإيقاف');
+      await ctx.close();
+    });
+
+    await check('المنسّقة: قسمها فقط، مجلد ومهمة من «إضافة»، تأجيل الموعد، ومنع العمل خارج القسم', async () => {
+      const ctx = await browser.newContext({ viewport: { width: 1366, height: 900 }, locale: 'ar-SA' });
+      const co = await ctx.newPage(); co.on('pageerror', e => consoleErrors.push(e.message));
+      await co.goto(BASE); await co.fill('input[name=username]', 'qa.coord'); await co.fill('input[name=password]', 'Staff#2026x'); await co.click('button:has-text("دخول")');
+      await co.waitForSelector('#sidenav');
+      const secLinks = await co.$$eval('#sidenav a[href^="#/section/"]', as => as.map(a => a.getAttribute('href')));
+      assert(secLinks.length === 1 && secLinks[0] === '#/section/dawah', 'الأقسام في القائمة: ' + secLinks.join(','));
+      await co.goto(BASE + '/#/section/dawah'); await co.waitForSelector('main h1:has-text("المشاريع الدعوية")');
+      assert(await co.isVisible('.row:has-text("مهمة دعوية غير مسندة")') || (await apiAs(co, 'GET', '/api/items?section=dawah')).body.some(i => i.title === 'مهمة دعوية غير مسندة'), 'لا ترى مهام قسمها');
+      await co.click('#addF'); await co.fill('.modal input[name=name]', 'الدورات العلمية'); await co.click('.modal button:has-text("حفظ")');
+      await co.waitForSelector('main h1:has-text("الدورات العلمية")');
+      await co.click('#addT'); await co.click('.modal [data-k=task]'); await co.waitForSelector('.modal input[name=title]');
+      const secOpts = await co.$$eval('.modal select[name=section] option', os => os.filter(o => o.value).map(o => o.value));
+      assert(secOpts.length === 1 && secOpts[0] === 'dawah', 'النموذج يعرض أقسامًا خارج نطاقها: ' + secOpts.join(','));
+      await co.fill('.modal input[name=title]', 'إعداد جدول الدورة الشتوية');
+      assert(await co.$eval('.modal select[name=assignee_pick]', s => s.value) === String(staff.coord), 'المسؤول الافتراضي ليس المنشئة');
+      await co.click('.modal button:has-text("حفظ")'); await co.waitForSelector('.item-head h1:has-text("إعداد جدول الدورة الشتوية")');
+      const it = (await apiAs(co, 'GET', '/api/items?q=' + encodeURIComponent('إعداد جدول الدورة'))).body[0];
+      assert(it.folder_name === 'الدورات العلمية' && it.assignee_id === staff.coord, 'المهمة لم تُحفظ في المجلد/للمنسقة');
+      // تأجيل بنقرة
+      await co.click('#acts [data-a=postpone]'); await co.waitForSelector('.modal [data-pp]');
+      await co.click('.modal [data-pp]:has-text("بعد أسبوع")'); await co.waitForSelector('.modal-bg', { state: 'detached' });
+      const due = (await apiAs(co, 'GET', `/api/items/${it.id}`)).body.item.due_date;
+      const today = (await apiAs(co, 'GET', '/api/meta')).body.today;
+      assert(due && due > today, 'لم يُؤجل الموعد: ' + due);
+      // ممنوعات خارج القسم
+      const owners = (await apiAs(co, 'GET', '/api/users')).body; const mgrId = owners.find(u => u.role === 'manager').id;
+      assert((await apiAs(co, 'POST', '/api/tasks', { title: 'x', section: 'family', assignee_id: mgrId })).status === 403, 'أنشأت مهمة لغيرها خارج قسمها');
+      assert((await apiAs(co, 'PATCH', `/api/items/${it.id}`, { section: 'family' })).status === 403, 'نقلت مهمة خارج قسمها');
+      assert((await apiAs(co, 'POST', '/api/folders', { section: 'family', name: 'x' })).status === 403, 'أنشأت مجلدًا خارج قسمها');
+      assert((await apiAs(co, 'GET', '/api/approvals')).status === 403, 'رأت طلبات الاعتماد');
+      await ctx.close();
+    });
+
+    await check('المساعد الإداري: كل المهام دون ملاحظات المالك، قرار اجتماع يُسند إليه بحساب، وحماية حسابي المالك والمدير', async () => {
+      const ctx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' });
+      const as = await ctx.newPage(); as.on('pageerror', e => consoleErrors.push(e.message));
+      await as.goto(BASE); await as.fill('input[name=username]', 'qa.asst'); await as.fill('input[name=password]', 'Staff#2026x'); await as.click('button:has-text("دخول")');
+      await as.waitForSelector('.bottomnav');
+      const note = (await apiAs(owner, 'POST', '/api/notes', { msg_type: 'info', description: 'ملاحظة خاصة لمدير المكتب فقط', section: 'family' })).body;
+      const all = (await apiAs(as, 'GET', '/api/items?kind=all&scope=')).body;
+      assert(new Set(all.map(i => i.section)).size >= 2 && !all.some(i => i.kind === 'note'), 'المساعد لا يرى كل المهام أو يرى الملاحظات');
+      assert((await apiAs(as, 'GET', `/api/items/${note.id}`)).status === 404, 'المساعد فتح ملاحظة المالك');
+      assert((await apiAs(as, 'GET', '/api/approvals')).status === 403 && (await apiAs(as, 'GET', '/api/meetings')).status === 200, 'صلاحيات الاعتماد/الاجتماعات غير صحيحة');
+      // قرار اجتماع ← مهمة بحساب المساعد وموعد
+      const m = (await apiAs(mgr, 'POST', '/api/meetings', { title: 'اجتماع المتابعة الأسبوعي', section: 'family', starts_at: (await apiAs(mgr, 'GET', '/api/meta')).body.today + 'T09:00' })).body;
+      const d = (await apiAs(mgr, 'POST', `/api/meetings/${m.id}/decisions`, { text: 'تحديث سجل المراسلات الواردة', responsible: 'غير محدد' })).body;
+      const task = (await apiAs(mgr, 'POST', `/api/decisions/${d.id}/task`, { section: 'family', assignee_id: staff.asst, due_date: '2026-12-31' })).body;
+      assert(task.assignee_id === staff.asst && task.due_date === '2026-12-31', 'القرار لم يُسند بالحساب والموعد: ' + JSON.stringify({ m, d, task }).slice(0, 400));
+      assert((await apiAs(as, 'GET', '/api/notifications')).body.some(x => x.title.includes('تحديث سجل المراسلات')), 'لم يصل المساعدَ إشعار المهمة');
+      await as.goto(`${BASE}/#/item/${task.id}`); await as.waitForSelector('#editTop');
+      // حماية حسابي المالك والمدير من بعضهما
+      const users = (await apiAs(mgr, 'GET', '/api/users')).body; const ownerId = users.find(u => u.role === 'owner').id; const mgrId = users.find(u => u.role === 'manager').id;
+      assert((await apiAs(mgr, 'PATCH', `/api/admin/users/${ownerId}`, { password: 'Hijack#2026x' })).status === 403, 'المدير غيّر كلمة مرور المالك');
+      assert((await apiAs(owner, 'PATCH', `/api/admin/users/${mgrId}`, { email: 'x@example.test' })).status === 403, 'المالك عدّل حساب المدير');
+      await ctx.close();
+    });
+
     await check('الواجهة على الجوال والكمبيوتر: لا تمرير أفقي، والصفحات الأساسية تعمل', async () => {
       for (const [p, pages] of [[owner, ['#/', '#/my', '#/decisions', '#/notifications', '#/reports', '#/section/association', '#/meetings', '#/settings', '#/more']],
         [mgr, ['#/', '#/inbox', '#/dashboard', '#/tasks', '#/meetings', '#/sops', '#/partners', '#/reports', '#/settings', '#/section/partnerships']]]) {
@@ -485,7 +590,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 26 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 30 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);

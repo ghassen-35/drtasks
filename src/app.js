@@ -367,7 +367,8 @@ function createApp(P) {
     const starts = b.starts_at !== undefined ? String(b.starts_at) : m.starts_at; if (!starts || !/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?/.test(starts)) throw S.bad('موعد الاجتماع مطلوب');
     return [title, b.section !== undefined ? S.validSection(b.section) : m.section, starts, b.location !== undefined ? S.str(b.location, 300) : m.location,
       b.participants !== undefined ? S.str(b.participants, 2000) : m.participants, b.topics !== undefined ? S.str(b.topics) : m.topics,
-      b.minutes !== undefined ? S.str(b.minutes, 20000) : m.minutes, ['scheduled', 'held', 'cancelled'].includes(b.status) ? b.status : (m.status || 'scheduled')];
+      b.minutes !== undefined ? S.str(b.minutes, 20000) : m.minutes, ['scheduled', 'held', 'cancelled'].includes(b.status) ? b.status : (m.status || 'scheduled')]
+      .map(v => (v === undefined ? null : v)); // حقل غير مُرسل = فارغ (SQLite يرفض undefined)
   }
   app.post('/api/meetings', wrap(req => {
     S.require_(req.user, 'meetings.manage');
