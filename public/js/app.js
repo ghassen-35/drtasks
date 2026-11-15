@@ -461,7 +461,7 @@ function connectWs() {
   ws.onmessage = (e) => {
     if (e.data === 'pong') return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
-    if (m.event === 'change') refreshView(); else if (m.event === 'notification') onNotification(m.data); else if (m.event === 'logout') forcedLogout();
+    if (m.event === 'change') onChange(m.data); else if (m.event === 'notification') onNotification(m.data); else if (m.event === 'logout') forcedLogout();
   };
   ws.onclose = () => { clearInterval(wsPing); if (wsWanted) setTimeout(connectWs, Math.min(30000, 1000 * 2 ** Math.min(wsTries++, 5))); };
 }
@@ -469,10 +469,19 @@ function openEvents() {
   closeEvents();
   if (state.meta.realtime === 'ws') { wsWanted = true; connectWs(); return; }
   es = new EventSource('/api/events');
-  es.addEventListener('change', refreshView);
+  es.addEventListener('change', (e) => onChange(e.data));
   es.addEventListener('notification', (e) => onNotification(JSON.parse(e.data)));
   es.addEventListener('logout', forcedLogout);
   es.onerror = () => { /* يعيد المتصفح الاتصال تلقائيًا */ };
+}
+// تغيّر شيء: إن كان حسابي (صلاحياتي مثلًا) أُعيد قراءة الحساب ورسم الواجهة، ثم تحديث العرض
+async function onChange(raw) {
+  let scope = raw; try { if (typeof raw === 'string') scope = JSON.parse(raw); } catch { scope = {}; }
+  if (scope && scope.user === state.me.id) {
+    try { const me = await GET('/api/me'); state.me = me; state.meta = await GET('/api/meta'); renderShell(); route(); return; } catch { return; }
+  }
+  if (scope && scope.user) { state.meta = await GET('/api/meta').catch(() => state.meta); }
+  refreshView();
 }
 // أوقف المدير الحساب أو غيّر كلمة مروره: خروج فوري
 function forcedLogout() { closeEvents(); state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); }
@@ -709,21 +718,30 @@ function modalDone(i, done) {
 }
 
 // ===== قوائم المهام مع البحث والتصفية =====
-function filtersHtml(f, { section = true, kindSel = false } = {}) {
+// شريط التصفية: بحث + شرائح سريعة + «تصفية متقدمة» مطوية + تصدير القائمة كما تظهر
+function filtersHtml(f, { section = true } = {}) {
+  const adv = ['section', 'status', 'priority', 'category'].filter(k => f[k] && !(k === 'section' && !section)).length;
+  const chip = (v, label) => `<label><input type="radio" name="scope" value="${v}" ${String(f.scope ?? '') === v ? 'checked' : ''}><span>${label}</span></label>`;
   return `<form class="filters" id="flt">
-    <input type="search" name="q" placeholder="بحث بالعنوان أو الرقم المرجعي أو المسؤول" value="${esc(f.q || '')}">
-    ${section ? `<select name="section">${opt('', 'كل الأقسام', f.section)}${state.meta.sections.map(s => opt(s.key, s.name, f.section)).join('')}</select>` : ''}
-    <select name="scope">${opt('open', 'المفتوحة', f.scope)}${opt('today', 'مستحقة اليوم', f.scope)}${opt('overdue', 'المتأخرة', f.scope)}${opt('closed', 'المكتملة والملغاة', f.scope)}${opt('', 'الكل', f.scope)}</select>
-    <select name="status">${opt('', 'كل الحالات', f.status)}${Object.entries(state.meta.statuses).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
-    <select name="priority">${opt('', 'كل الأولويات', f.priority)}${Object.entries(state.meta.priorities).map(([k, v]) => opt(k, v, f.priority)).join('')}</select>
-    <select name="category">${opt('', 'كل التصنيفات', f.category)}${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, f.category)).join('')}</select>
+    <div class="filters-top"><input type="search" name="q" placeholder="بحث بالعنوان أو الرقم المرجعي أو المسؤول" value="${esc(f.q || '')}" aria-label="بحث">
+      <a class="btn sm" data-export href="#" download title="تصدير القائمة كما تظهر (Excel)">${I('download')}<span class="desk-only"> تصدير</span></a></div>
+    <div class="seg quick" role="group" aria-label="عرض">${chip('open', 'المفتوحة')}${chip('today', 'اليوم')}${chip('overdue', 'المتأخرة')}${chip('closed', 'المنجزة')}${chip('', 'الكل')}</div>
+    <details class="adv" ${adv ? 'open' : ''}><summary>تصفية متقدمة${adv ? ` (${adv})` : ''}</summary><div class="adv-grid">
+      ${section ? `<select name="section" aria-label="القسم">${opt('', 'كل الأقسام', f.section)}${mySections().map(s => opt(s.key, s.name, f.section)).join('')}</select>` : ''}
+      <select name="status" aria-label="الحالة">${opt('', 'كل الحالات', f.status)}${Object.entries(state.meta.statuses).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
+      <select name="priority" aria-label="الأولوية">${opt('', 'كل الأولويات', f.priority)}${Object.entries(state.meta.priorities).map(([k, v]) => opt(k, v, f.priority)).join('')}</select>
+      <select name="category" aria-label="التصنيف">${opt('', 'كل التصنيفات', f.category)}${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, f.category)).join('')}</select>
+    </div></details>
   </form>`;
 }
 function bindFilters(root, f, reload) {
   const form = $('#flt', root); if (!form) return;
-  let t; const go = () => { Object.assign(f, formData(form)); reload(); };
-  form.oninput = () => { clearTimeout(t); t = setTimeout(go, 300); };
+  const ex = $('[data-export]', form);
+  const syncExport = () => { if (ex) ex.href = '/api/items-export.csv?' + qs(f); };
+  let t; const go = () => { Object.assign(f, formData(form)); syncExport(); reload(); };
+  form.oninput = (e) => { clearTimeout(t); t = setTimeout(go, e.target.type === 'search' ? 300 : 0); };
   form.onsubmit = (e) => { e.preventDefault(); go(); };
+  syncExport();
 }
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
@@ -1309,15 +1327,18 @@ function decisionRowHtml(d) {
   return `<div class="row ${d.is_overdue ? 'p-urgent' : d.effective_status === 'done' ? 'done' : ''}"><div class="main"><span class="title">${esc(d.text)}</span><div class="meta">
     <span class="chip st-${d.effective_status}">${esc(d.status_label)}</span>${d.due_date ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.due_date))}${d.is_overdue ? ' — متأخر' : ''}</span>` : ''}
     ${d.responsible ? `<span class="txt">المسؤول: ${esc(d.responsible)}</span>` : ''}${d.meeting_title ? `<a class="txt" href="#/meeting/${d.meeting_id}">${esc(d.meeting_title)}</a>` : ''}
-    ${d.task_id ? `<a class="chip kind" href="#/item/${d.task_id}">المهمة ${esc(d.task_ref)}</a>` : ''}</div></div>
-    ${can('meetings.manage') && !d.task_id ? `<div class="side"><button class="btn sm primary" data-d2t="${d.id}" data-section="${esc(d.meeting_section || '')}">تحويل إلى مهمة</button>
+    ${d.task_id ? (d.task_hidden ? '<span class="chip">مرتبط بمهمة</span>' : `<a class="chip kind" href="#/item/${d.task_id}">المهمة ${esc(d.task_ref)}</a>`) : ''}</div></div>
+    ${can('meetings.manage') && !d.task_id ? `<div class="side"><button class="btn sm primary" data-d2t="${d.id}" data-section="${esc(d.meeting_section || '')}" data-resp="${esc(d.responsible || '')}" data-due="${esc(d.due_date || '')}">تحويل إلى مهمة</button>
       <select class="dst" data-id="${d.id}" style="min-height:36px;width:auto">${['pending', 'in_progress', 'done', 'cancelled'].map(s => opt(s, ({ pending: 'لم يبدأ', in_progress: 'قيد التنفيذ', done: 'منفذ', cancelled: 'ملغى' })[s], d.status)).join('')}</select></div>` : ''}</div>`;
 }
 function bindDecisionActions(root, reload) {
   $$('[data-d2t]', root).forEach(b => b.onclick = () => openModal({
     title: 'تحويل القرار إلى مهمة', submit: 'إنشاء المهمة',
-    body: `${field('القسم *', sectionSelect(b.dataset.section, 'section', true))}${field('الأولوية', prioSeg('normal'))}<p class="small muted">تُربط المهمة بالاجتماع والقرار، ويتبع القرار حالتها دون تكرار.</p>`,
-    onSubmit: async (d) => { if (!d.section) throw new Error('اختر القسم'); const t = await POST(`/api/decisions/${b.dataset.d2t}/task`, d); toast(`أُنشئت المهمة ${t.ref} مرتبطة بالاجتماع`, 'ok'); reload(); },
+    body: `${field('القسم *', sectionSelect(b.dataset.section, 'section', true))}
+      <div class="grid2">${field('المسؤول', `<select name="assignee_id">${opt('', b.dataset.resp ? `كما في القرار: ${b.dataset.resp}` : '— غير محدد —')}${state.meta.users.filter(u => u.role !== 'owner').map(u => opt(u.id, u.name, (state.meta.users.find(x => x.name === b.dataset.resp) || {}).id)).join('')}</select>`)}
+      ${field('الموعد النهائي', `<input type="date" name="due_date" value="${esc(b.dataset.due || '')}">`)}</div>
+      ${field('الأولوية', prioSeg('normal'))}<p class="small muted">تُربط المهمة بالاجتماع والقرار، ويتبع القرار حالتها دون تكرار. اختيار حساب يجعل المهمة تظهر للموظف وتصله إشعارًا.</p>`,
+    onSubmit: async (d) => { if (!d.section) throw new Error('اختر القسم'); if (!d.assignee_id) delete d.assignee_id; const t = await POST(`/api/decisions/${b.dataset.d2t}/task`, d); toast(`أُنشئت المهمة ${t.ref} مرتبطة بالاجتماع`, 'ok'); reload(); },
   }));
   $$('select.dst', root).forEach(s => s.onchange = async () => { try { await api('PATCH', `/api/decisions/${s.dataset.id}`, { status: s.value }); reload(); } catch (e) { showErr(e); } });
 }

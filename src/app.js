@@ -563,18 +563,30 @@ function createApp(P) {
   });
 
   // ===== التقارير: تصدير CSV =====
+  // تصدير قائمة المهام كما تظهر للمستخدم (نفس الفلاتر ونفس نطاق الصلاحيات) — يفتح في Excel
+  const localTs = (iso) => { if (!iso) return ''; const d = new Date(iso); return new Intl.DateTimeFormat('en-CA', { timeZone: D.TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d).replace(',', ''); };
+  app.get('/api/items-export.csv', (c) => {
+    const user = c.get('user');
+    if (!D.can(user, 'item.view') && !D.can(user, 'item.view_scoped')) return c.body(null, 403);
+    const rows = listItems({ kind: 'tasks', ...c.req.query() }, user);
+    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; }; // منع حقن الصيغ في Excel
+    const head = ['الرقم المرجعي', 'العنوان', 'النوع', 'القسم', 'المجلد', 'المشروع/المبادرة', 'المسؤول', 'الحالة', 'الأولوية', 'الموعد النهائي', 'الوقت', 'متأخرة', 'مهمة فرعية من', 'تكرار', 'آخر تحديث', 'تاريخ الإنجاز'];
+    const lines = [head, ...rows.map(i => [i.ref, i.title, i.kind === 'assignment' ? 'تكليف' : 'مهمة', i.section_name, i.folder_name, i.project_name, i.assignee, D.STATUSES[i.status], D.PRIORITIES[i.priority],
+      i.due_date, i.due_time, i.is_overdue ? 'نعم' : '', i.parent_task_title, i.recurrence ? D.RECURRENCES[i.recurrence] : '', localTs(i.updated_at), localTs(i.completed_at)])].map(r => r.map(q).join(',')).join('\r\n');
+    return c.body('\uFEFF' + lines, 200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="tasks-${D.todayStr()}.csv"` });
+  });
   app.get('/api/reports/export.csv', (c) => {
     if (!D.can(c.get('user'), 'reports.view')) return c.body(null, 403);
     const period = ['day', 'week', 'month'].includes(c.req.query('period')) ? c.req.query('period') : 'week';
     const r = D.report(period);
-    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; };
     const lines = [
       ['التقرير', `من ${r.from} إلى ${r.to}`], [],
       ['المؤشر', 'القيمة'], ['التكليفات المستلمة', r.received], ['الملاحظات والطلبات', r.notes_received], ['المهام المكتملة', r.completed], ['المهام المتأخرة حاليًا', r.overdue_now],
       ['المهام المفتوحة حاليًا', r.open_now], ['قرارات/اعتمادات صدرت', r.decisions_made], ['قرارات اجتماعات منفذة', r.meeting_decisions_done], ['قرارات اجتماعات تنتظر التنفيذ', r.meeting_decisions_pending],
       ['متوسط مدة الإنجاز (يوم)', r.avg_completion_days ?? 'بيانات غير كافية'], [],
       ['القسم', 'مفتوحة', 'مكتملة في الفترة', 'متأخرة'], ...r.by_section.map(s => [s.name, s.open, s.completed, s.overdue]), [],
-      ['المهام المكتملة', 'الرقم المرجعي', 'القسم', 'تاريخ الإكمال'], ...r.completed_items.map(i => [i.title, i.ref, i.section_name, i.completed_at]),
+      ['المهام المكتملة', 'الرقم المرجعي', 'القسم', 'تاريخ الإكمال'], ...r.completed_items.map(i => [i.title, i.ref, i.section_name, localTs(i.completed_at)]),
     ].map(row => row.map(q).join(',')).join('\r\n');
     return c.body('\uFEFF' + lines, 200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="report-${period}-${r.to}.csv"` });
   });

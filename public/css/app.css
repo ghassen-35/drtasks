@@ -223,9 +223,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--brand-2); box-sh
 .row .side { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
 @media (max-width: 600px) { .row { flex-direction: column; } .row .side { flex-direction: row; flex-wrap: wrap; align-items: center; width: 100%; } }
 
-.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-.filters > * { flex: 1 1 150px; }
-.filters input[type=search] { flex: 2 1 220px; }
+.filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.filters-top { display: flex; gap: 8px; align-items: center; }
+.filters-top input[type=search] { flex: 1; min-width: 0; }
+.filters-top .btn { flex: none; min-height: 44px; }
+.filters .seg.quick { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.filters .seg.quick label { flex: none; }
+.filters details.adv summary { cursor: pointer; color: var(--brand-2); font-size: .9rem; padding: 4px 2px; min-height: 32px; }
+.adv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; margin-top: 6px; }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; overflow-x: auto; scrollbar-width: none; }
 .tabs a, .tabs button { padding: 10px 14px; color: var(--ink-2); border: 0; background: none; border-bottom: 2px solid transparent; cursor: pointer; white-space: nowrap; font-weight: 500; }
 .tabs .active { color: var(--brand); border-bottom-color: var(--brand); }

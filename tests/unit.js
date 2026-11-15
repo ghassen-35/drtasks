@@ -216,6 +216,18 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('إشعار الإسناد يذكر من أسند والموعد والأولوية', ns[0] && ns[0].body.includes('من ') && ns[0].body.includes(today) && ns[0].body.includes('مهم'));
 }
 
+// ---- تحويل قرار اجتماع إلى مهمة بحساب المسؤول والموعد
+{
+  const m = run("INSERT INTO meetings(title,section,starts_at) VALUES('اجتماع اختبار','dawah','2026-11-20T10:00')").id;
+  const d1 = run("INSERT INTO decisions(meeting_id,text,responsible,due_date) VALUES(?,?,?,?)", m, 'قرار باسم موظف', 'وليد', '2026-12-01').id;
+  const d2 = run("INSERT INTO decisions(meeting_id,text,responsible) VALUES(?,?,?)", m, 'قرار بحساب مختار', 'شخص ما').id;
+  const w = get("SELECT id FROM users WHERE username='waleed'").id;
+  const t1 = S.decisionToTask(mgr, d1, {});
+  t('اسم المسؤول المطابق لحساب يربط المهمة بالحساب', t1.assignee_id === w && t1.due_date === '2026-12-01');
+  const t2 = S.decisionToTask(mgr, d2, { assignee_id: w, due_date: '2026-12-05' });
+  t('المدير يختار حساب المسؤول والموعد عند التحويل', t2.assignee_id === w && t2.due_date === '2026-12-05');
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

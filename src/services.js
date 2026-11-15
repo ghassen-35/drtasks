@@ -618,10 +618,13 @@ function decisionToTask(user, did, b) {
   const d = get('SELECT d.*, m.section AS m_section, m.title AS m_title FROM decisions d JOIN meetings m ON m.id=d.meeting_id WHERE d.id=?', did);
   if (!d) throw notFound('القرار غير موجود');
   if (d.task_id) throw bad('هذا القرار مرتبط بمهمة بالفعل');
+  // المسؤول: حساب يختاره المدير، أو حساب يطابق اسم المسؤول المكتوب في القرار، أو الاسم كما هو
+  const byName = !b.assignee_id && d.responsible ? get('SELECT id FROM users WHERE active=1 AND name=?', d.responsible.trim()) : null;
   return tx(() => {
     const task = createTask(user, {
       title: str(b.title, 300) || d.text.slice(0, 300), description: `قرار صادر عن اجتماع: ${d.m_title}\n\n${d.text}`,
-      section: b.section || d.m_section, assignee: d.responsible || user.name, due_date: d.due_date, priority: b.priority || 'normal',
+      section: b.section || d.m_section, assignee: d.responsible || user.name, assignee_id: b.assignee_id || (byName && byName.id) || undefined,
+      due_date: b.due_date !== undefined ? b.due_date : d.due_date, priority: b.priority || 'normal',
       source: 'meeting', meeting_id: d.meeting_id, decision_id: d.id,
     });
     run("UPDATE decisions SET task_id=?, status='in_progress' WHERE id=?", task.id, did);
