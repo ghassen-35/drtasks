@@ -119,7 +119,7 @@ function effectivePerms(user) {
   return set;
 }
 
-const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'عضو فريق' };
+const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'موظف' };
 // الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
 const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
 const can = (user, perm) => effectivePerms(user).has(perm);
@@ -266,6 +266,16 @@ function report(period = 'week') {
   r.avg_completion_days = done.length >= 3
     ? Math.round(done.reduce((s, x) => s + (new Date(x.completed_at) - new Date(x.created_at)), 0) / done.length / 86400000 * 10) / 10
     : null; // بيانات غير كافية
+  // عبء العمل حسب المسؤول: المفتوحة، المتأخرة، المستحقة خلال أسبوع، والمنجزة في الفترة
+  const week = addDays(t, 7);
+  r.by_person = all(`SELECT COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد') AS name, i.assignee_id AS user_id,
+      SUM(CASE WHEN i.${OPEN} THEN 1 ELSE 0 END) AS open,
+      SUM(CASE WHEN i.${OPEN} AND i.due_date<? THEN 1 ELSE 0 END) AS overdue,
+      SUM(CASE WHEN i.${OPEN} AND i.due_date BETWEEN ? AND ? THEN 1 ELSE 0 END) AS due_week,
+      SUM(CASE WHEN i.status='done' AND i.completed_at>=? THEN 1 ELSE 0 END) AS completed
+    FROM items i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.kind IN ${TASK_KINDS}
+    GROUP BY COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد'), i.assignee_id
+    HAVING open > 0 OR completed > 0 ORDER BY overdue DESC, open DESC LIMIT 50`, t, t, week, fromIso);
   r.completed_items = all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND status='done' AND completed_at>=? ORDER BY completed_at DESC LIMIT 50`, fromIso).map(i => decorate(i, t));
   return r;
 }

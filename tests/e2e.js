@@ -421,7 +421,13 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       const memCtx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' });
       const mem = await memCtx.newPage(); mem.on('pageerror', e => consoleErrors.push(e.message));
       await mem.goto(BASE); await mem.fill('input[name=username]', 'saad'); await mem.fill('input[name=password]', 'Saad#2026x');
-      await mem.click('button:has-text("دخول")'); await mem.waitForSelector('h2:has-text("مهامي المفتوحة")');
+      await mem.click('button:has-text("دخول")');
+      // أول دخول: يُلزم الموظف بتغيير كلمة المرور التي أعطاه إياها المدير
+      await mem.waitForSelector('#fpw');
+      await mem.fill('#fpw input[name=current]', 'Saad#2026x'); await mem.fill('#fpw input[name=next]', 'Saad#2026x'); await mem.fill('#fpw input[name=again]', 'Saad#2026x');
+      await mem.click('#fpw button[type=submit]'); await mem.waitForSelector('#fpw .err-box:has-text("مختلفة")');
+      await mem.fill('#fpw input[name=next]', 'SaadNew#2026'); await mem.fill('#fpw input[name=again]', 'SaadNew#2026');
+      await mem.click('#fpw button[type=submit]'); await mem.waitForSelector('h2:has-text("مهامي المفتوحة")');
       assert(await mem.isVisible('.row:has-text("تجهيز جدول حلقات الفصل")'), 'لا يرى مهمة مشروعه');
       assert(!(await mem.isVisible(`.row:has-text("${TITLE}")`)), 'يرى مهمة لا تخصه');
       assert(!(await mem.isVisible('#btnAdd')), 'يظهر للعضو زر إنشاء');

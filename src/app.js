@@ -40,7 +40,7 @@ function createApp(P) {
     if (!tok) return null;
     const s = get('SELECT * FROM sessions WHERE token_hash=?', await auth.sha256hex(tok));
     if (!s || s.expires_at < new Date().toISOString()) return null;
-    return get(`SELECT id,username,name,${D.roleSql()} AS role,email,prefs,grants FROM users WHERE id=? AND active=1`, s.user_id) || null;
+    return get(`SELECT id,username,name,${D.roleSql()} AS role,email,prefs,grants,title,must_change_password FROM users WHERE id=? AND active=1`, s.user_id) || null;
   }
 
   app.use('/api/*', async (c, next) => {
@@ -111,7 +111,7 @@ function createApp(P) {
     const u = { ...req.user }; delete u.prefs;
     u.perms = [...D.effectivePerms(req.user)];
     if (u.role === 'member') u.grants = D.parseGrants(u.grants); else delete u.grants;
-    u.role_label = D.ROLE_LABELS[u.role];
+    u.role_label = (u.role === 'member' && u.title) || D.ROLE_LABELS[u.role];
     u.unread = get('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL', u.id).c;
     if (D.can(u, 'item.view')) { // أعداد عامة للمالك والمدير فقط
       u.pending_decisions = get("SELECT COUNT(*) c FROM approvals WHERE status='pending'").c;
@@ -124,7 +124,9 @@ function createApp(P) {
     if (!(await auth.verifyPassword(String(req.body.current || ''), u.password_hash))) throw S.bad('كلمة المرور الحالية غير صحيحة');
     const pw = String(req.body.next || '');
     if (pw.length < 8) throw S.bad('كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف');
-    run('UPDATE users SET password_hash=? WHERE id=?', await auth.hashPassword(pw), u.id);
+    if (pw === String(req.body.current || '')) throw S.bad('اختر كلمة مرور جديدة مختلفة عن الحالية');
+    run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', await auth.hashPassword(pw), u.id);
+    run('DELETE FROM sessions WHERE user_id=? AND token_hash!=?', u.id, await auth.sha256hex(parseCookies(req.header('cookie'))[COOKIE] || '')); // تسجيل الخروج من الأجهزة الأخرى
     return { ok: true };
   }));
 
@@ -132,7 +134,7 @@ function createApp(P) {
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
     approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
-    users: all(`SELECT id,name,${D.roleSql()} AS role FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
+    users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
 
   // ===== الصفحة الرئيسية: الأشرطة والمربعات والملخصات =====

@@ -697,6 +697,49 @@ function bindQuickStatus(root, items = []) {
   });
 }
 
+// ===== تأجيل الموعد بنقرة =====
+function modalPostpone(i, after) {
+  const base = i.due_date && i.due_date > today() ? i.due_date : today();
+  const opts = [['غدًا', addDays(today(), 1)], ['بعد 3 أيام', addDays(base, 3)], ['بعد أسبوع', addDays(base, 7)], ['بعد أسبوعين', addDays(base, 14)]];
+  const m = openModal({
+    title: 'تأجيل الموعد', submit: 'تأجيل إلى التاريخ المختار',
+    body: `<p class="small muted">الموعد الحالي: ${esc(fmtDue(i))}</p>
+      <div class="btn-row" style="margin:8px 0 12px">${opts.map(([l, d]) => `<button type="button" class="btn" data-pp="${d}">${l} <span class="small muted">(${esc(fmtDate(d))})</span></button>`).join('')}</div>
+      ${field('أو اختر تاريخًا', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
+      ${field('سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
+    init: (form) => $$('[data-pp]', form).forEach(b => b.onclick = async () => { try { await save(b.dataset.pp, form.elements.reason.value); m.close(); } catch (e) { showErr(e); } }),
+    onSubmit: async (d) => { if (!d.due_date) throw new Error('اختر التاريخ'); await save(d.due_date, d.reason); },
+  });
+  async function save(date, reason) {
+    await api('PATCH', `/api/items/${i.id}`, { due_date: date });
+    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `تأجيل الموعد إلى ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
+    toast(`أُجّل الموعد إلى ${fmtDate(date)}`, 'ok'); after && after();
+  }
+}
+// أول دخول بكلمة مرور أعطاها المدير: يجب تغييرها قبل استخدام المنصة
+function renderForcePassword() {
+  closeEvents();
+  app.innerHTML = `<div class="login"><form class="card" id="fpw">
+    <img src="/img/logo.png" alt="الشعار"><h1>مرحبًا ${esc(state.me.name)}</h1>
+    <p class="small muted">لأمان حسابك، اختر كلمة مرور جديدة خاصة بك قبل البدء.</p>
+    <div class="err-box hidden"></div>
+    ${field('كلمة المرور الحالية (التي أعطاك إياها المدير)', '<input type="password" name="current" autocomplete="current-password" dir="ltr" required>')}
+    ${field('كلمة المرور الجديدة (8 أحرف على الأقل)', '<input type="password" name="next" autocomplete="new-password" dir="ltr" minlength="8" required>')}
+    ${field('تأكيد كلمة المرور الجديدة', '<input type="password" name="again" autocomplete="new-password" dir="ltr" required>')}
+    <button class="btn primary block" type="submit">حفظ والمتابعة</button>
+    <button class="btn ghost block" type="button" id="fpwOut">تسجيل الخروج</button></form></div>`;
+  const f = $('#fpw'); const err = $('.err-box', f);
+  $('#fpwOut').onclick = () => logout();
+  f.onsubmit = async (e) => {
+    e.preventDefault(); const d = formData(f); err.classList.add('hidden');
+    try {
+      if (d.next !== d.again) throw new Error('التأكيد لا يطابق كلمة المرور الجديدة');
+      await POST('/api/password', { current: d.current, next: d.next });
+      toast('تم حفظ كلمة المرور', 'ok'); boot();
+    } catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); }
+  };
+}
+
 // ===== تغيير الحالة: نوافذ «أنجزت» و«متعثرة» بدل نوافذ المتصفح =====
 const STALL_REASONS = ['طرف خارجي لم يرد', 'نقص معلومات أو مستندات', 'تعارض مع أولوية أخرى', 'عائق مالي أو إداري'];
 async function changeStatus(i, status, after) {
@@ -994,6 +1037,7 @@ async function viewItem(main, id) {
       if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">متعثرة</button>`);
       a.push(`<button class="btn green" data-s="done">${I('checkCircle')} أنجزت المهمة</button>`);
     }
+    if (canEditItem() && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
     if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     bar.innerHTML = a.join('');
@@ -1010,6 +1054,7 @@ async function viewItem(main, id) {
         else if (act === 'close') { await POST(`/api/items/${id}/close`); toast('أُغلقت المهمة وحُفظ سجلها', 'ok'); await load(); }
         else if (act === 'edit') modalTask(data.item, load);
         else if (act === 'noteOn') modalNote({ parent_id: data.item.id });
+        else if (act === 'postpone') modalPostpone(data.item, load);
       } catch (e) { showErr(e); }
     });
   }
@@ -1510,6 +1555,9 @@ async function viewReports(main) {
       <div class="card section-gap"><div class="card-h"><h2>توزيع المهام حسب الأقسام الستة</h2><span class="spacer"></span><span class="small muted"><span class="chip st-in_progress">مفتوحة</span> <span class="chip st-done">مكتملة في الفترة</span> <span class="chip overdue">منها متأخرة</span></span></div>
         <div class="bars">${r.by_section.map(s => `<div class="bar"><span>${esc(s.name)}</span><div class="track" title="مفتوحة ${s.open} • مكتملة ${s.completed} • متأخرة ${s.overdue}">
           <div class="fill late" style="width:${s.overdue / max * 100}%"></div><div class="fill" style="width:${(s.open - s.overdue) / max * 100}%"></div><div class="fill done" style="width:${s.completed / max * 100}%"></div></div><b>${s.open + s.completed}</b></div>`).join('')}</div></div>
+      <div class="card"><div class="card-h">${I('users')}<h2>عبء العمل حسب المسؤول</h2></div>
+        ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th></tr></thead><tbody>
+          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
       <div class="card"><div class="card-h"><h2>المهام المكتملة في الفترة</h2></div>${listOrEmpty(r.completed_items, i => itemRow(i), 'لا توجد مهام مكتملة في هذه الفترة')}</div>`;
     $$('[data-p]', main).forEach(b => b.onclick = () => { period = b.dataset.p; load(); });
     $('#pdf', main).onclick = () => window.print();
@@ -1629,7 +1677,7 @@ async function renderUsersAdmin(el) {
   el.innerHTML = `<div class="card-h">${I('users')}<h2>المستخدمون والفريق</h2><span class="spacer"></span><button type="button" class="btn primary sm" id="addUser">${I('plus')} إضافة موظف</button></div>
     <p class="small muted">لكل موظف حساب دخول خاص وصلاحيات تحددها: ماذا يرى (مهامه فقط، أو أقسامًا محددة، أو كل المكتب) وماذا يستطيع أن يفعل. تُفحص الصلاحيات في الخادم لكل عملية.</p>
     <div class="list">${users.map(u => `<div class="row ${u.active ? '' : 'done'}"><div class="main"><span class="title">${esc(u.name)} <span class="small muted ltr">@${esc(u.username)}</span></span>
-      <div class="meta"><span class="chip kind">${esc(u.role_label)}</span>${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
+      <div class="meta"><span class="chip kind">${esc(u.title || u.role_label)}</span>${u.must_change_password ? '<span class="chip">لم يغيّر كلمة المرور بعد</span>' : ''}${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
       ${u.role === 'member' ? grantsSummary(u.grants) + (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '') : '<span class="txt">يرى كل المهام</span>'}</div></div>
       <div class="side"><button type="button" class="btn sm" data-edit-user="${u.id}">تعديل</button></div></div>`).join('')}</div>`;
   const projChecks = (sel = []) => projects.length
@@ -1639,7 +1687,9 @@ async function renderUsersAdmin(el) {
   $('#addUser', el).onclick = () => openModal({
     title: 'إضافة موظف', submit: 'إضافة', wide: true, init: bindGrantsEditor,
     body: `<div class="grid2">${field('الاسم *', '<input type="text" name="name" required>')}${field('اسم الدخول * (لاتيني)', '<input type="text" name="username" dir="ltr" required autocomplete="off" placeholder="saad">')}
-      ${field('كلمة المرور الأولية * (8 أحرف على الأقل)', '<input type="password" name="password" dir="ltr" autocomplete="new-password" required>')}${field('البريد (اختياري)', '<input type="email" name="email" dir="ltr">')}</div>
+      ${field('كلمة المرور الأولية * (8 أحرف على الأقل)', '<input type="password" name="password" dir="ltr" autocomplete="new-password" required>')}${field('البريد (اختياري)', '<input type="email" name="email" dir="ltr">')}
+      ${field('المسمى الوظيفي (اختياري)', '<input type="text" name="title" maxlength="60" placeholder="مثل: منسّق الجمعية، سكرتير">')}</div>
+      <label class="check"><input type="checkbox" name="must_change_password" checked> يغيّر كلمة المرور بنفسه عند أول دخول (موصى به)</label>
       ${grantsEditorHtml()}
       ${field('المشاريع التي يشارك فيها', projChecks())}
       <p class="small muted">أبلغ الموظف باسم الدخول وكلمة المرور بطريقة آمنة، ويمكنه تغيير كلمة المرور من الإعدادات.</p>`,
@@ -1650,10 +1700,13 @@ async function renderUsersAdmin(el) {
     openModal({
       title: `تعديل: ${u.name}`, wide: u.role === 'member', init: u.role === 'member' ? bindGrantsEditor : undefined,
       body: `<div class="grid2">${field('الاسم', `<input type="text" name="name" value="${esc(u.name)}" required>`)}${field('البريد', `<input type="email" name="email" dir="ltr" value="${esc(u.email || '')}">`)}
-        ${field('كلمة مرور جديدة (اتركها فارغة للإبقاء)', '<input type="password" name="password" dir="ltr" autocomplete="new-password">')}</div>
+        ${field(u.id === state.me.id || u.role === 'member' ? 'كلمة مرور جديدة (اتركها فارغة للإبقاء)' + (u.role === 'member' ? ' — سيُطلب منه تغييرها عند دخوله' : '') : 'كلمة المرور', u.id === state.me.id || u.role === 'member' ? '<input type="password" name="password" dir="ltr" autocomplete="new-password">' : '<p class="small muted">يغيّرها صاحب الحساب من إعداداته.</p>')}
+        ${u.role === 'member' ? field('المسمى الوظيفي', `<input type="text" name="title" maxlength="60" value="${esc(u.title || '')}">`) : ''}</div>
         ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
       onSubmit: async (d) => {
+        if (u.id !== state.me.id && u.role !== 'member') { toast('حسابا رجل الأعمال ومدير المكتب يعدّلهما صاحباهما من الإعدادات', 'err'); return; }
         const body = { name: d.name, email: d.email };
+        if (u.role === 'member') body.title = d.title;
         if (d.password) body.password = d.password;
         if (u.role === 'member') { body.grants = grantsFromForm(d); body.project_ids = (d.project_ids || []).map(Number); body.active = d.active; }
         await api('PATCH', `/api/admin/users/${u.id}`, body); toast('حُفظت التعديلات', 'ok'); reload();
@@ -1677,6 +1730,7 @@ async function boot() {
   try {
     const me = await GET('/api/me');
     state.me = me; state.counts = { unread: me.unread, inbox_pending: me.inbox_pending, pending_decisions: me.pending_decisions };
+    if (me.must_change_password) { renderForcePassword(); return; }
     state.meta = await GET('/api/meta');
     renderShell(); openEvents(); await route();
     resyncPush();

@@ -10,6 +10,11 @@ function runScheduler({ dailyBackup } = {}) {
     const t = D.todayStr(); const tomorrow = D.addDays(t, 1);
     const due = all(`SELECT * FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN} AND due_date IN (?,?)`, t, tomorrow);
     for (const i of due) {
+      // المسؤول (موظف في المنصة) يُذكَّر أيضًا قبل الموعد
+      if (i.assignee_id) {
+        const u = get('SELECT id, member FROM users WHERE id=? AND active=1', i.assignee_id);
+        if (u && u.member) N.notify(u.id, { type: 'deadline_soon', title: `${i.due_date === t ? 'مستحقة اليوم' : 'مستحقة غدًا'}: ${i.title}`, body: i.ref, link: `#/item/${i.id}`, urgent: i.priority === 'urgent', dedupe: `due:${i.id}:${i.due_date}:${i.due_date === t ? 'today' : 'tomorrow'}` });
+      }
       N.notifyRole('manager', { type: 'deadline_soon', title: `${i.due_date === t ? 'مستحقة اليوم' : 'مستحقة غدًا'}: ${i.title}`, body: `${i.ref} — ${D.sectionName(i.section)}`, link: `#/item/${i.id}`, urgent: i.priority === 'urgent', dedupe: `due:${i.id}:${i.due_date}:${i.due_date === t ? 'today' : 'tomorrow'}` });
     }
     const overdue = all(`SELECT * FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN} AND due_date<?`, t);

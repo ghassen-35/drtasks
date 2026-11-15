@@ -138,16 +138,16 @@ function seed() {
 // موظفون تجريبيون (اسم الدخول يبدأ بـ demo.) — كلمة المرور الموحدة DEMO_PASSWORD
 const DEMO_PASSWORD = 'Demo#2026x';
 const DEMO_STAFF = [
-  { username: 'demo.saad', name: 'سعد (تجريبي)', grants: { scope: 'own', perms: [] } },
-  { username: 'demo.noura', name: 'نورة (تجريبي)', grants: { scope: 'sections', sections: ['dawah', 'association'], perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage'] } },
-  { username: 'demo.khalid', name: 'خالد (تجريبي)', grants: { scope: 'all', perms: ['task.create', 'subtask.create', 'item.edit', 'meetings.view', 'partners.view'] } },
+  { username: 'demo.saad', name: 'سعد (تجريبي)', title: 'منسّق ميداني', grants: { scope: 'own', perms: [] } },
+  { username: 'demo.noura', name: 'نورة (تجريبي)', title: 'منسّقة الجمعية والمشاريع الدعوية', grants: { scope: 'sections', sections: ['dawah', 'association'], perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage'] } },
+  { username: 'demo.khalid', name: 'خالد (تجريبي)', title: 'مساعد إداري', grants: { scope: 'all', perms: ['task.create', 'subtask.create', 'item.edit', 'meetings.view', 'partners.view'] } },
 ];
 async function ensureDemoStaff() {
   const ids = {};
   for (const u of DEMO_STAFF) {
     const ex = get('SELECT id FROM users WHERE username=?', u.username);
-    if (ex) { await S.updateUser(manager, ex.id, { active: true, grants: u.grants }); ids[u.username] = ex.id; }
-    else ids[u.username] = (await S.createUser(manager, { ...u, password: DEMO_PASSWORD })).id;
+    if (ex) { await S.updateUser(manager, ex.id, { active: true, grants: u.grants, title: u.title }); ids[u.username] = ex.id; }
+    else ids[u.username] = (await S.createUser(manager, { ...u, password: DEMO_PASSWORD, must_change_password: false })).id;
   }
   return ids;
 }

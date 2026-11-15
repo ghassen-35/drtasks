@@ -228,6 +228,25 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('المدير يختار حساب المسؤول والموعد عند التحويل', t2.assignee_id === w && t2.due_date === '2026-12-05');
 }
 
+// ---- المسمى الوظيفي، تغيير كلمة المرور الإلزامي، عبء العمل، تذكير المسؤول
+{
+  const { id: hId } = await S.createUser(mgr, { name: 'هند', username: 'hind', password: 'Hind#2026xx', title: 'سكرتيرة' });
+  const h = get('SELECT title, must_change_password FROM users WHERE id=?', hId);
+  t('الموظف الجديد بمسمى وظيفي ويُلزم بتغيير كلمة المرور', h.title === 'سكرتيرة' && h.must_change_password === 1);
+  await S.updateUser(mgr, hId, { password: 'Reset#2026xx' });
+  t('إعادة تعيين المدير لكلمة المرور تُلزم بتغييرها مجددًا', get('SELECT must_change_password m FROM users WHERE id=?', hId).m === 1);
+  const { id: zId } = await S.createUser(mgr, { name: 'زياد', username: 'ziyad', password: 'Ziyad#2026xx', must_change_password: false });
+  t('يمكن إنشاء حساب دون إلزام (للحسابات التجريبية)', get('SELECT must_change_password m FROM users WHERE id=?', zId).m === 0);
+  const tk = S.createTask(mgr, { title: 'مهمة هند', section: 'family', assignee_id: hId, due_date: D.addDays(today, -1) });
+  const r = D.report('week');
+  const row = r.by_person.find(p => p.user_id === hId);
+  t('تقرير عبء العمل يحسب مهام الموظف ومتأخراته', row && row.open >= 1 && row.overdue >= 1);
+  S.updateItem(mgr, tk.id, { due_date: D.addDays(today, 1) });
+  const n0 = get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND type='deadline_soon'", hId).c;
+  scheduler();
+  t('الموظف المسؤول يُذكَّر قبل الموعد', get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND type='deadline_soon'", hId).c === n0 + 1);
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

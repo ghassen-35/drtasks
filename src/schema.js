@@ -58,4 +58,9 @@ module.exports.migrations = [
   [
     'ALTER TABLE users ADD COLUMN grants TEXT',
   ],
+  // 4) المسمى الوظيفي للموظف، وإلزام تغيير كلمة المرور عند أول دخول أو بعد إعادة تعيينها
+  [
+    'ALTER TABLE users ADD COLUMN title TEXT',
+    'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0',
+  ],
 ];

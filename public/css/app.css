@@ -439,3 +439,10 @@ details.more-opts { border-top: 1px solid var(--line); margin-top: 6px; padding-
 details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size: .9rem; min-height: 44px; display: flex; align-items: center; }
 .toast.more { background: var(--brand); }
 @media (max-width: 560px) { .facts { grid-template-columns: 1fr 1fr; gap: 8px 12px; } }
+
+/* جدول عبء العمل */
+.table-wrap { overflow-x: auto; }
+.tbl { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.tbl th, .tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: start; white-space: nowrap; }
+.tbl th { color: var(--ink-3); font-weight: 500; font-size: .8rem; }
+.tbl td.late { color: var(--red); font-weight: 700; }

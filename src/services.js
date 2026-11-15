@@ -545,7 +545,7 @@ function withdrawApproval(user, aid) {
 const USERNAME_RE = /^[a-z0-9._-]{3,32}$/;
 function listUsers(actor) {
   require_(actor, 'users.manage');
-  return all(`SELECT id,username,name,${D.roleSql()} AS role,email,active,created_at,grants FROM users ORDER BY member, id`)
+  return all(`SELECT id,username,name,${D.roleSql()} AS role,email,active,created_at,grants,title,must_change_password FROM users ORDER BY member, id`)
     .map(u => ({ ...u, role_label: D.ROLE_LABELS[u.role], projects: memberProjects(u.id), grants: u.role === 'member' ? D.parseGrants(u.grants) : null }));
 }
 // حفظ صلاحيات الموظف بعد تنقيتها (قائمة بيضاء)، مع سجل التغيير وإشعار الموظف
@@ -582,7 +582,7 @@ async function createUser(actor, b) {
   const hash = await require('./auth').hashPassword(pw);
   return tx(() => {
     // role='manager' مع member=1 = عضو فريق (انظر D.roleSql). صلاحياته محددة بـ PERMS.member
-    const { id } = run("INSERT INTO users(username,name,role,email,password_hash,member) VALUES(?,?,'manager',?,?,1)", username, name, email, hash);
+    const { id } = run("INSERT INTO users(username,name,role,email,password_hash,member,title,must_change_password) VALUES(?,?,'manager',?,?,1,?,?)", username, name, email, hash, str(b.title, 60), b.must_change_password === false ? 0 : 1);
     audit('user', id, actor.id, 'created');
     setUserProjects(actor, id, b.project_ids);
     if (b.grants) setUserGrants(actor, id, b.grants);
@@ -597,13 +597,14 @@ async function updateUser(actor, id, b) {
   const hash = b.password ? (String(b.password).length < 8 ? (() => { throw bad('كلمة المرور يجب ألا تقل عن 8 أحرف'); })() : await require('./auth').hashPassword(String(b.password))) : null;
   return tx(() => {
     if (b.name !== undefined) { const n = str(b.name, 100); if (!n) throw bad('الاسم مطلوب'); run('UPDATE users SET name=? WHERE id=?', n, id); }
+    if (b.title !== undefined) run('UPDATE users SET title=? WHERE id=?', str(b.title, 60), id);
     if (b.email !== undefined) { const e = str(b.email, 200); if (e && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw bad('بريد إلكتروني غير صالح'); run('UPDATE users SET email=? WHERE id=?', e, id); }
     if (b.active !== undefined) {
       if (u.eff_role !== 'member') throw bad('لا يمكن إيقاف حساب رجل الأعمال أو مدير المكتب');
       run('UPDATE users SET active=? WHERE id=?', b.active ? 1 : 0, id);
       if (!b.active) { run('DELETE FROM sessions WHERE user_id=?', id); events.disconnect(id); }
     }
-    if (hash) { run('UPDATE users SET password_hash=? WHERE id=?', hash, id); if (id !== actor.id) { run('DELETE FROM sessions WHERE user_id=?', id); events.disconnect(id); } }
+    if (hash) { run('UPDATE users SET password_hash=?, must_change_password=? WHERE id=?', hash, id !== actor.id ? 1 : 0, id); if (id !== actor.id) { run('DELETE FROM sessions WHERE user_id=?', id); events.disconnect(id); } }
     if (b.project_ids !== undefined) setUserProjects(actor, id, b.project_ids);
     if (b.grants !== undefined) { if (u.eff_role !== 'member') throw bad('الصلاحيات تُخصص لحسابات الموظفين فقط'); setUserGrants(actor, id, b.grants); }
     audit('user', id, actor.id, 'updated');
