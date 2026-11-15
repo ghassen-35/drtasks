@@ -44,4 +44,14 @@ module.exports.migrations = [
     'ALTER TABLE items ADD COLUMN assignee_id INTEGER REFERENCES users(id)',
     'ALTER TABLE projects ADD COLUMN folder_id INTEGER REFERENCES folders(id)',
   ],
+  // 2) مجلدات فرعية، المبادرات (نوع للمشروع)، المهام الفرعية، المهام الدورية
+  [
+    'ALTER TABLE folders ADD COLUMN parent_id INTEGER REFERENCES folders(id)',
+    "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'project'", // project|initiative
+    'ALTER TABLE items ADD COLUMN parent_task_id INTEGER REFERENCES items(id)',
+    'ALTER TABLE items ADD COLUMN recurrence TEXT', // daily|weekly|monthly|yearly
+    'ALTER TABLE items ADD COLUMN next_occurrence_id INTEGER REFERENCES items(id)',
+    'CREATE INDEX IF NOT EXISTS idx_items_parent_task ON items(parent_task_id)',
+    'CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(parent_id)',
+  ],
 ];

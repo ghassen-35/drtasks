@@ -29,6 +29,12 @@ function clear() {
     for (const t of ['meetings', 'sops', 'partners']) run(`DELETE FROM ${t} WHERE is_demo=1`);
     run('UPDATE items SET project_id=NULL WHERE project_id IN (SELECT id FROM projects WHERE is_demo=1)');
     run('DELETE FROM projects WHERE is_demo=1');
+    // المجلدات التجريبية: تخرج منها العناصر الحقيقية أولًا ثم تُحذف
+    run('UPDATE items SET folder_id=NULL WHERE folder_id IN (SELECT id FROM folders WHERE is_demo=1)');
+    run('UPDATE projects SET folder_id=NULL WHERE folder_id IN (SELECT id FROM folders WHERE is_demo=1)');
+    run('UPDATE folders SET parent_id=NULL WHERE is_demo=0 AND parent_id IN (SELECT id FROM folders WHERE is_demo=1)');
+    run('UPDATE folders SET parent_id=NULL WHERE is_demo=1');
+    run('DELETE FROM folders WHERE is_demo=1');
     run("DELETE FROM notifications WHERE link LIKE '#/item/%' AND CAST(substr(link,9) AS INTEGER) NOT IN (SELECT id FROM items)");
     console.log(`حُذفت البيانات التجريبية (${ids.length} عنصر)`);
   });
@@ -43,6 +49,13 @@ function seed() {
     const p1 = proj('association', 'برنامج الحفاظ الصيفي');
     const p2 = proj('dawah', 'مشروع الدورات العلمية');
     proj('commercial', 'توسعة النشاط العقاري');
+    // مجلدات ومجلد فرعي، ومبادرة داخل المجلد الفرعي
+    const folder = (section, name, parent) => run('INSERT INTO folders(section,name,parent_id,is_demo) VALUES(?,?,?,1)', section, name, parent || null).id;
+    const fPrograms = folder('association', 'البرامج');
+    const fSummer = folder('association', 'البرامج الصيفية', fPrograms);
+    folder('association', 'التقارير والحوكمة');
+    run('UPDATE projects SET folder_id=? WHERE id=?', fSummer, p1);
+    const ini = run(`INSERT INTO projects(section,name,description,kind,folder_id,is_demo) VALUES(?,?,?,'initiative',?,1)`, 'association', 'مبادرة إفطار صائم', 'مبادرة تجريبية', fPrograms).id;
     const sop = run(`INSERT INTO sops(name,purpose,steps,responsible,section,approved_at,is_demo) VALUES(?,?,?,?,?,?,1)`,
       'إجراء رفع التقارير الشهرية للجمعية', 'توحيد طريقة إعداد التقرير الشهري واعتماده',
       'جمع بيانات البرامج من المشرفين\nإعداد مسودة التقرير وفق النموذج المعتمد\nمراجعة الأرقام مع المحاسب\nرفع التقرير لرجل الأعمال للاعتماد عبر المنصة\nإرسال النسخة المعتمدة للجهات ذات العلاقة',
@@ -57,6 +70,12 @@ function seed() {
     S.updateItem(manager, a1.id, { status: 'in_progress' });
     const a2 = mk(S.createAssignment, owner, { title: 'متابعة تجديد السجل التجاري', section: 'commercial', priority: 'urgent', due_date: d(1) });
     mk(S.createAssignment, owner, { title: 'ترتيب موعد الكشف الطبي السنوي', section: 'family', priority: 'normal', due_date: d(3) });
+    const r1 = mk(S.createTask, manager, { title: 'رفع التقرير الأسبوعي للجمعية', section: 'association', folder_id: fPrograms, recurrence: 'weekly', due_date: t });
+    S.createSubtask(manager, r1.id, { title: 'جمع أرقام الحلقات', is_demo: 1 });
+    S.createSubtask(manager, a1.id, { title: 'طلب عروض المشرفين', is_demo: 1 });
+    S.createSubtask(owner, a1.id, { title: 'تحديد الميزانية التقديرية', due_date: d(1), is_demo: 1 });
+    const i1 = mk(S.createTask, manager, { title: 'حصر المتطوعين لمبادرة الإفطار', section: 'association', project_id: ini, due_date: d(2) });
+    void i1;
     const t1 = mk(S.createTask, manager, { title: 'تجهيز محاضرة الدورة العلمية', section: 'dawah', project_id: p2, due_date: d(-2), priority: 'important' });
     S.updateItem(manager, t1.id, { status: 'in_progress' });
     const t2 = mk(S.createTask, manager, { title: 'الرد على مقترح الشراكة مع المؤسسة المانحة', section: 'partnerships', partner_id: partner, category: 'opportunity', due_date: t });

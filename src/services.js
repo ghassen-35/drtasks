@@ -34,6 +34,19 @@ function validPriority(p) { if (p && !D.PRIORITIES[p]) throw bad('أولوية �
 function validDate(d) { if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw bad('تاريخ غير صالح'); return d || null; }
 function validTime(t) { if (t && !/^\d{2}:\d{2}$/.test(t)) throw bad('وقت غير صالح'); return t || null; }
 function str(v, max = 5000) { return v == null ? null : String(v).trim().slice(0, max) || null; }
+function validRecurrence(r) { if (r && !D.RECURRENCES[r]) throw bad('تكرار غير صالح'); return r || null; }
+// الموعد التالي للمهمة الدورية (الشهري يثبت على آخر يوم في الشهر عند الحاجة: 31 يناير ← 28/29 فبراير)
+function advanceDate(d, r) {
+  const x = new Date(d + 'T12:00:00Z'); const day = x.getUTCDate();
+  if (r === 'daily') x.setUTCDate(day + 1);
+  else if (r === 'weekly') x.setUTCDate(day + 7);
+  else {
+    x.setUTCDate(1); r === 'monthly' ? x.setUTCMonth(x.getUTCMonth() + 1) : x.setUTCFullYear(x.getUTCFullYear() + 1);
+    const last = new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth() + 1, 0)).getUTCDate();
+    x.setUTCDate(Math.min(day, last));
+  }
+  return x.toISOString().slice(0, 10);
+}
 
 // ===== رؤية المهام: المالك والمدير يريان الكل؛ عضو الفريق يرى المهام المسندة إليه أو في مشاريعه فقط =====
 function scopeFor(user) {
@@ -55,6 +68,14 @@ function notifyAssignee(it, actor, payload) {
   if (!it.assignee_id || it.assignee_id === actor.id) return;
   const u = get('SELECT id, member FROM users WHERE id=? AND active=1', it.assignee_id);
   if (u && u.member) notify(u.id, payload);
+}
+
+function validProject(projectId, section) {
+  if (!projectId) return null;
+  const p = get('SELECT id,section FROM projects WHERE id=?', Number(projectId));
+  if (!p) throw bad('المشروع غير موجود');
+  if (section && p.section !== section) throw bad('المشروع أو المبادرة تتبع قسمًا آخر');
+  return p.id;
 }
 
 // المجلد والمسؤول (مستخدم في المنصة): يُتحقق منهما ثم يُحدَّثان مع سجل التغييرات
@@ -95,7 +116,9 @@ function createAssignment(user, b) {
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'assignment', 'owner', title, description,
       `${title}${description ? '\n\n' + description : ''}`, section, validPriority(b.priority), validDate(b.due_date), validTime(b.due_time), 'new', user.id, user.id, b.is_demo ? 1 : 0);
     audit('item', id, user.id, 'created', 'kind', null, 'assignment');
-    if (b.folder_id) applyOrg(user, id, { folder_id: b.folder_id });
+    if (b.project_id) run('UPDATE items SET project_id=? WHERE id=?', validProject(b.project_id, section), id);
+    if (b.recurrence) run('UPDATE items SET recurrence=? WHERE id=?', validRecurrence(b.recurrence), id);
+    if (b.folder_id || b.project_id) applyOrg(user, id, { folder_id: b.folder_id || undefined, project_id: b.project_id });
     sysMsg(id, user.id, `أُرسل التكليف ${ref} إلى مدير المكتب`);
     const urgent = b.priority === 'urgent';
     notifyRole('manager', { type: 'new_assignment', title: `${urgent ? 'تكليف عاجل' : 'تكليف جديد'}: ${title}`, body: `${D.sectionName(section)} — ${ref}`, link: link(id), urgent });
@@ -129,8 +152,8 @@ function createNote(user, b) {
 }
 
 // ===== 3) مدير المكتب ينشئ مهمة مباشرة =====
-function createTask(user, b) {
-  require_(user, 'task.create');
+function createTask(user, b, { internal = false } = {}) {
+  if (!internal) require_(user, 'task.create');
   const title = str(b.title, 300); if (!title) throw bad('عنوان المهمة مطلوب');
   const section = validSection(b.section); if (!section) throw bad('اختر القسم');
   if (b.category && !D.CATEGORIES[b.category]) throw bad('تصنيف غير صالح');
@@ -142,8 +165,10 @@ function createTask(user, b) {
       str(b.assignee, 200) || user.name, str(b.next_step, 500), b.requires_approval ? 1 : 0, b.sop_id || null, b.partner_id || null,
       b.meeting_id || null, b.decision_id || null, user.id, user.id, b.is_demo ? 1 : 0);
     audit('item', id, user.id, 'created', 'kind', null, 'task');
+    if (b.project_id) validProject(b.project_id, section);
+    run('UPDATE items SET recurrence=?, parent_task_id=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
-    sysMsg(id, user.id, `أنشأ ${user.name} المهمة ${ref}`);
+    sysMsg(id, user.id, `أنشأ ${user.name} ${b.parent_task_id ? 'المهمة الفرعية' : 'المهمة'} ${ref}`);
     events.broadcastChange({ item: id });
     return getItem(id);
   });
@@ -182,6 +207,7 @@ function convertToTask(user, id, b) {
       validPriority(b.priority || it.priority), str(b.next_step, 500), b.requires_approval ? 1 : 0, b.sop_id || null, b.partner_id || null,
       str(b.title, 300) || it.title, str(b.description) || it.description, at, user.id, at, user.id, id);
     audit('item', id, user.id, 'converted', 'kind', it.kind, 'task');
+    if (b.recurrence !== undefined) run('UPDATE items SET recurrence=? WHERE id=?', validRecurrence(b.recurrence), id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
     sysMsg(id, user.id, `حوّل ${user.name} ${it.kind === 'note' ? 'الملاحظة' : 'التكليف'} إلى مهمة منظمة في قسم ${D.sectionName(section)} — المسؤول: ${str(b.assignee, 200) || user.name}`, { event: 'converted' });
     if (it.source === 'owner') notify(it.created_by, { type: 'status_change', title: `بدأ تنظيم: ${it.title}`, body: `حُوّل إلى مهمة في ${D.sectionName(section)}`, link: link(id), collapse: `item:${id}:status` });
@@ -191,14 +217,18 @@ function convertToTask(user, id, b) {
 }
 
 // ===== 6) تعديل بيانات المهمة وحالتها =====
-const EDITABLE = ['title', 'description', 'section', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id'];
+const EDITABLE = ['title', 'description', 'section', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id', 'recurrence'];
 function updateItem(user, id, b) {
   const it = getItem(id);
-  // رجل الأعمال يستطيع إلغاء تكليفه فقط؛ بقية التعديلات لمدير المكتب
+  // رجل الأعمال: يعدّل بيانات أي مهمة (الموعد، الأولوية، التصنيف، المجلد، المشروع…)،
+  // أما الحالة فيلغي تكليفه فقط، ويُنجز أو يعيد فتح المهام الفرعية
   if (user.role === 'owner') {
-    if (Object.keys(b).some(k => k !== 'status') || b.status !== 'cancelled') throw forbidden();
-    if (it.created_by !== user.id) throw forbidden();
-    require_(user, 'item.cancel_own');
+    require_(user, 'item.edit');
+    if (b.status !== undefined) {
+      const ok = (b.status === 'cancelled' && it.created_by === user.id && D.can(user, 'item.cancel_own'))
+        || (it.parent_task_id && ['done', 'in_progress'].includes(b.status));
+      if (!ok) throw forbidden();
+    }
   } else if (user.role === 'member') {
     // عضو الفريق: يحدّث حالة المهام التي يراها فقط، وضمن حالات العمل
     require_(user, 'item.work'); assertCanSee(user, it);
@@ -216,22 +246,28 @@ function updateItem(user, id, b) {
       else if (k === 'due_date') v = validDate(v);
       else if (k === 'due_time') v = validTime(v);
       else if (k === 'requires_approval') v = v ? 1 : 0;
+      else if (k === 'recurrence') v = validRecurrence(v);
       else if (k === 'category') { if (!D.CATEGORIES[v]) throw bad('تصنيف غير صالح'); }
-      else if (['project_id', 'sop_id', 'partner_id'].includes(k)) v = v ? Number(v) : null;
+      else if (k === 'project_id') v = validProject(v, b.section !== undefined ? validSection(b.section) : it.section);
+      else if (['sop_id', 'partner_id'].includes(k)) v = v ? Number(v) : null;
       else v = str(v, k === 'description' ? 5000 : 500);
       if (k === 'title' && !v) throw bad('العنوان مطلوب');
       if (String(v ?? '') !== String(it[k] ?? '')) { changes.push([k, it[k], v]); run(`UPDATE items SET ${k}=? WHERE id=?`, v, id); }
     }
     for (const [k, o, n] of changes) audit('item', id, user.id, 'updated', k, o, n);
     if (['folder_id', 'assignee_id', 'project_id', 'section'].some(k => b[k] !== undefined)) applyOrg(user, id, b);
-    if (changes.length) sysMsg(id, user.id, `عدّل ${user.name}: ${changes.map(c => FIELD_LABELS[c[0]] || c[0]).join('، ')}`, { event: 'edited' });
+    if (changes.length) {
+      const what = changes.map(c => FIELD_LABELS[c[0]] || c[0]).join('، ');
+      sysMsg(id, user.id, `عدّل ${user.name}: ${what}`, { event: 'edited' });
+      if (user.role === 'owner') notifyRole('manager', { type: 'status_change', title: `عدّل رجل الأعمال: ${it.title}`, body: `${what} — ${it.ref}`, link: link(id), collapse: `item:${id}:edit` });
+    }
     if (b.status !== undefined && b.status !== it.status) setStatus(user, it, b.status, b.status_note);
     if (changes.length || b.status !== undefined) touch(id, user.id);
     events.broadcastChange({ item: id });
     return getItem(id);
   });
 }
-const FIELD_LABELS = { title: 'العنوان', description: 'الوصف', section: 'القسم', category: 'التصنيف', project_id: 'المشروع', assignee: 'المسؤول', due_date: 'الموعد', due_time: 'الوقت', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', sop_id: 'الإجراء المرتبط', partner_id: 'الجهة المرتبطة' };
+const FIELD_LABELS = { title: 'العنوان', description: 'الوصف', section: 'القسم', category: 'التصنيف', project_id: 'المشروع', assignee: 'المسؤول', due_date: 'الموعد', due_time: 'الوقت', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', sop_id: 'الإجراء المرتبط', partner_id: 'الجهة المرتبطة', recurrence: 'التكرار' };
 
 function hasApprovedFinal(itemId) {
   return !!get("SELECT id FROM approvals WHERE item_id=? AND kind='final' AND status='approved'", itemId);
@@ -257,12 +293,62 @@ function setStatus(user, it, status, note) {
   if (user.role === 'manager' && it.source === 'owner' && target) {
     notify(target, { type: 'status_change', title: `${D.STATUSES[status]}: ${it.title}`, body: it.ref, link: link(it.id), urgent: status === 'stalled', collapse: `item:${it.id}:status` });
   } else if (user.role === 'owner') {
-    notifyRole('manager', { type: 'status_change', title: `ألغى رجل الأعمال: ${it.title}`, body: it.ref, link: link(it.id) });
+    notifyRole('manager', { type: 'status_change', title: status === 'cancelled' ? `ألغى رجل الأعمال: ${it.title}` : `${D.STATUSES[status]} (رجل الأعمال): ${it.title}`, body: it.ref, link: link(it.id), collapse: `item:${it.id}:status` });
   } else if (user.role === 'member') {
     notifyRole('manager', { type: 'status_change', title: `${D.STATUSES[status]}: ${it.title}`, body: `${user.name} — ${it.ref}`, link: link(it.id), urgent: status === 'stalled', collapse: `item:${it.id}:status` });
   }
   if (user.role !== 'member') notifyAssignee(it, user, { type: 'status_change', title: `${D.STATUSES[status]}: ${it.title}`, body: it.ref, link: link(it.id), collapse: `item:${it.id}:status` });
+  if (status === 'done' && it.recurrence && !it.next_occurrence_id) spawnNextOccurrence(user, it);
 }
+
+// ===== المهام الدورية: إنجاز المهمة ينشئ الموعد التالي تلقائيًا (مرة واحدة فقط لكل موعد) =====
+function spawnNextOccurrence(user, it) {
+  const full = get('SELECT * FROM items WHERE id=?', it.id);
+  const t = D.todayStr();
+  let next = advanceDate(full.due_date || t, full.recurrence);
+  for (let n = 0; next < t && n < 2000; n++) next = advanceDate(next, full.recurrence);
+  const ref = nextRef('MH');
+  const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,category,project_id,folder_id,priority,due_date,due_time,status,assignee,assignee_id,
+      requires_approval,sop_id,partner_id,recurrence,acknowledged_at,acknowledged_by,created_by,updated_by,is_demo)
+    VALUES(?,'task',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, full.source, full.title, full.description, full.original_text, full.section, full.category,
+    full.project_id, full.folder_id, full.priority, next, full.due_time, full.acknowledged_at ? 'acknowledged' : 'new', full.assignee, full.assignee_id,
+    full.requires_approval, full.sop_id, full.partner_id, full.recurrence, full.acknowledged_at ? nowIso() : null, full.acknowledged_at ? full.acknowledged_by : null,
+    full.created_by, user.id, full.is_demo);
+  // المهام الفرعية تتكرر معها مفتوحة من جديد
+  for (const st of all("SELECT * FROM items WHERE parent_task_id=? AND status!='cancelled'", full.id)) {
+    run(`INSERT INTO items(ref,kind,source,title,description,section,category,project_id,folder_id,priority,status,assignee,assignee_id,parent_task_id,created_by,updated_by,is_demo)
+      VALUES(?,'task',?,?,?,?,?,?,?,?,'new',?,?,?,?,?,?)`, nextRef('MH'), st.source, st.title, st.description, st.section, st.category, st.project_id, st.folder_id, st.priority,
+      st.assignee, st.assignee_id, id, st.created_by, user.id, st.is_demo);
+  }
+  run('UPDATE items SET next_occurrence_id=? WHERE id=?', id, full.id);
+  audit('item', id, user.id, 'created', 'recurrence_of', null, full.id);
+  sysMsg(id, user.id, `أُنشئت تلقائيًا (مهمة ${D.RECURRENCES[full.recurrence]}) بعد إنجاز ${full.ref}`, { event: 'recurring', from: full.id });
+  sysMsg(full.id, user.id, `الموعد التالي لهذه المهمة الدورية: ${ref} بتاريخ ${next}`, { event: 'recurring', next: id });
+  return id;
+}
+
+// ===== المهام الفرعية: تحت مهمة أو تكليف، وترث القسم والمجلد والمشروع =====
+function createSubtask(user, parentId, b) {
+  if (!D.can(user, 'task.create') && !D.can(user, 'item.edit')) throw forbidden();
+  const parent = getItem(parentId);
+  if (!['task', 'assignment'].includes(parent.kind)) throw bad('المهام الفرعية تُضاف تحت مهمة أو تكليف');
+  if (parent.parent_task_id) throw bad('لا يمكن إضافة مهمة فرعية تحت مهمة فرعية');
+  if (parent.closed_at) throw bad('المهمة مغلقة نهائيًا');
+  return tx(() => {
+    const st = createTask(user, {
+      title: b.title, description: b.description, section: parent.section, category: parent.category, project_id: parent.project_id, folder_id: parent.folder_id,
+      priority: b.priority || parent.priority, due_date: b.due_date || null, assignee_id: b.assignee_id || parent.assignee_id || undefined,
+      assignee: b.assignee_id ? undefined : (parent.assignee || (user.role === 'owner' ? 'مدير المكتب' : undefined)), parent_task_id: parent.id, source: user.role === 'owner' ? 'owner' : undefined, is_demo: b.is_demo || parent.is_demo,
+    }, { internal: true });
+    if (user.role === 'owner') run("UPDATE items SET source='owner' WHERE id=?", st.id);
+    sysMsg(parent.id, user.id, `أضاف ${user.name} مهمة فرعية: ${st.title}`, { event: 'subtask', id: st.id });
+    touch(parent.id, user.id);
+    if (user.role === 'owner') notifyRole('manager', { type: 'new_assignment', title: `مهمة فرعية جديدة من رجل الأعمال: ${st.title}`, body: `تحت ${parent.ref} — ${parent.title}`, link: link(parent.id) });
+    events.broadcastChange({ item: parent.id });
+    return getItem(st.id);
+  });
+}
+const subtasksOf = (id) => all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.parent_task_id=? ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, COALESCE(i.due_date,'9999'), i.id`, id).map(x => D.decorate(x));
 
 function closeItem(user, id) {
   require_(user, 'item.manage');
@@ -369,6 +455,7 @@ function decide(user, aid, b) {
     if (newStatus !== it.status) {
       run(`UPDATE items SET status=?${newStatus === 'done' ? ', completed_at=?' : ''} WHERE id=?`, ...(newStatus === 'done' ? [newStatus, at, a.item_id] : [newStatus, a.item_id]));
       audit('item', a.item_id, user.id, 'status', 'status', it.status, newStatus);
+      if (newStatus === 'done' && it.recurrence && !it.next_occurrence_id) spawnNextOccurrence(user, it);
     }
     const txt = `قرار رجل الأعمال على «${a.title}»: ${DECISIONS[decision]}${chosen ? ` — ${chosen}` : ''}${note ? `\n${note}` : ''}`;
     sysMsg(a.item_id, user.id, txt, { event: 'decision', approval_id: aid, decision }, 'decision');
@@ -470,5 +557,6 @@ function decisionToTask(user, did, b) {
 
 module.exports = {
   AppError, bad, forbidden, notFound, require_, audit, getItem, scopeFor, canSee, assertCanSee, memberProjects, listUsers, createUser, updateUser, createAssignment, createNote, createTask, acknowledge, convertToTask,
+  createSubtask, subtasksOf, spawnNextOccurrence, advanceDate, validProject, validRecurrence,
   updateItem, closeItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,
 };

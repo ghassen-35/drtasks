@@ -129,7 +129,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    approval_kinds: D.APPROVAL_KINDS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -209,8 +209,11 @@ function createApp(P) {
     if (it.sop_id) extra.sop = get('SELECT id,name FROM sops WHERE id=?', it.sop_id);
     if (it.partner_id && D.can(req.user, 'partners.view')) extra.partner = get('SELECT id,name FROM partners WHERE id=?', it.partner_id);
     if (it.meeting_id && !D.can(req.user, 'meetings.view')) delete extra.meeting;
+    extra.subtasks = S.subtasksOf(it.id).filter(x => S.canSee(req.user, x));
+    if (it.parent_task_id) { const pt = get('SELECT id,ref,title FROM items WHERE id=?', it.parent_task_id); if (pt && S.canSee(req.user, pt)) extra.parent_task = pt; }
     return { item: it, ...th, ...extra };
   }));
+  app.post('/api/items/:id/subtasks', wrap(req => S.createSubtask(req.user, Number(req.params.id), req.body)));
   app.post('/api/items/:id/ack', wrap(req => S.acknowledge(req.user, Number(req.params.id))));
   app.post('/api/items/:id/convert', wrap(req => S.convertToTask(req.user, Number(req.params.id), req.body)));
   app.patch('/api/items/:id', wrap(req => S.updateItem(req.user, Number(req.params.id), req.body)));
@@ -306,9 +309,10 @@ function createApp(P) {
   }
   app.post('/api/projects', wrap(req => {
     S.require_(req.user, 'projects.manage');
-    const name = S.str(req.body.name, 200); if (!name) throw S.bad('اسم المشروع مطلوب');
+    const name = S.str(req.body.name, 200); if (!name) throw S.bad(req.body.kind === 'initiative' ? 'اسم المبادرة مطلوب' : 'اسم المشروع مطلوب');
     const section = S.validSection(req.body.section); if (!section) throw S.bad('اختر القسم');
-    const { id } = run('INSERT INTO projects(section,name,description,folder_id) VALUES(?,?,?,?)', section, name, S.str(req.body.description), validFolder(req.body.folder_id, section));
+    const kind = D.PROJECT_KINDS[req.body.kind] ? req.body.kind : 'project';
+    const { id } = run('INSERT INTO projects(section,name,description,folder_id,kind) VALUES(?,?,?,?,?)', section, name, S.str(req.body.description), validFolder(req.body.folder_id, section), kind);
     S.audit('project', id, req.user.id, 'created'); events.broadcastChange({ project: id });
     return get('SELECT * FROM projects WHERE id=?', id);
   }));
@@ -316,6 +320,7 @@ function createApp(P) {
     S.require_(req.user, 'projects.manage');
     const p = get('SELECT * FROM projects WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound();
     const b = req.body;
+    if (D.PROJECT_KINDS[b.kind] && b.kind !== p.kind) run('UPDATE projects SET kind=? WHERE id=?', b.kind, p.id);
     run('UPDATE projects SET name=?, description=?, status=?, folder_id=? WHERE id=?', S.str(b.name, 200) || p.name, b.description !== undefined ? S.str(b.description) : p.description, ['active', 'paused', 'done'].includes(b.status) ? b.status : p.status,
       b.folder_id !== undefined ? validFolder(b.folder_id, p.section) : p.folder_id, p.id);
     S.audit('project', p.id, req.user.id, 'updated'); events.broadcastChange({ project: p.id });
@@ -441,8 +446,15 @@ function createApp(P) {
   app.patch('/api/partners/:id', wrap(req => { const p = get('SELECT * FROM partners WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound(); return partnerSave(req, p); }));
 
   // ===== المجلدات: القسم ← المجلد ← المشاريع والمهام =====
+  // مسار المجلد من الأعلى إلى الأسفل (للتنقل والقوائم)
+  function folderPath(id) {
+    const path = [];
+    for (let f = get('SELECT id,name,parent_id FROM folders WHERE id=?', id), n = 0; f && n < 20; f = f.parent_id ? get('SELECT id,name,parent_id FROM folders WHERE id=?', f.parent_id) : null, n++) path.unshift({ id: f.id, name: f.name });
+    return path;
+  }
   const folderCounts = (f) => ({
     ...f, section_name: D.sectionName(f.section),
+    subfolders: get('SELECT COUNT(*) c FROM folders WHERE parent_id=?', f.id).c,
     projects: get('SELECT COUNT(*) c FROM projects WHERE folder_id=?', f.id).c,
     open_tasks: get(`SELECT COUNT(*) c FROM items i WHERE i.kind IN ${D.TASK_KINDS} AND i.${D.OPEN} AND (i.folder_id=? OR i.project_id IN (SELECT id FROM projects WHERE folder_id=?))`, f.id, f.id).c,
   });
@@ -454,13 +466,21 @@ function createApp(P) {
   app.get('/api/folders/:id', wrap(req => {
     S.require_(req.user, 'folders.view');
     const f = get('SELECT * FROM folders WHERE id=?', Number(req.params.id)); if (!f) throw S.notFound('المجلد غير موجود');
-    return folderCounts(f);
+    return { ...folderCounts(f), path: folderPath(f.id), children: all('SELECT * FROM folders WHERE parent_id=? ORDER BY name', f.id).map(folderCounts) };
   }));
   app.post('/api/folders', wrap(req => {
     S.require_(req.user, 'projects.manage');
     const name = S.str(req.body.name, 200); if (!name) throw S.bad('اسم المجلد مطلوب');
-    const section = S.validSection(req.body.section); if (!section) throw S.bad('اختر القسم');
-    const { id } = run('INSERT INTO folders(section,name,description) VALUES(?,?,?)', section, name, S.str(req.body.description, 1000));
+    let section = S.validSection(req.body.section); let parentId = null;
+    if (req.body.parent_id) { // مجلد فرعي: يرث قسم المجلد الأب
+      const parent = get('SELECT * FROM folders WHERE id=?', Number(req.body.parent_id)); if (!parent) throw S.bad('المجلد الأب غير موجود');
+      if (section && section !== parent.section) throw S.bad('المجلد الأب يتبع قسمًا آخر');
+      if (folderPath(parent.id).length >= 8) throw S.bad('لا يمكن إنشاء أكثر من 8 مستويات من المجلدات');
+      section = parent.section; parentId = parent.id;
+    }
+    if (!section) throw S.bad('اختر القسم');
+    if (get('SELECT id FROM folders WHERE section=? AND parent_id IS ? AND name=?', section, parentId, name)) throw S.bad('يوجد مجلد بالاسم نفسه في هذا المكان');
+    const { id } = run('INSERT INTO folders(section,name,description,parent_id) VALUES(?,?,?,?)', section, name, S.str(req.body.description, 1000), parentId);
     S.audit('folder', id, req.user.id, 'created'); events.broadcastChange({ folder: id });
     return folderCounts(get('SELECT * FROM folders WHERE id=?', id));
   }));

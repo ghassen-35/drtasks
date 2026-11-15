@@ -107,6 +107,40 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('تغيير القسم يُخرج المهمة من مجلد القسم القديم', S.getItem(tk.id).folder_id === null);
 }
 
+// ---- تعديل رجل الأعمال، المهام الفرعية، المهام الدورية، المبادرات، المجلدات الفرعية
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status; } };
+  const tk = S.createTask(mgr, { title: 'مهمة يعدلها رجل الأعمال', section: 'association' });
+  S.updateItem(owner, tk.id, { priority: 'urgent', due_date: today, category: 'commitment' });
+  const ed = S.getItem(tk.id);
+  t('رجل الأعمال يعدّل الأولوية والموعد والتصنيف', ed.priority === 'urgent' && ed.due_date === today && ed.category === 'commitment');
+  t('رجل الأعمال لا يغيّر حالة مهمة ليست فرعية', err(() => S.updateItem(owner, tk.id, { status: 'done' })) === 403);
+
+  const st = S.createSubtask(owner, tk.id, { title: 'خطوة أولى' });
+  t('المهمة الفرعية ترث القسم وتظهر تحت أصلها', st.parent_task_id === tk.id && st.section === 'association' && S.subtasksOf(tk.id).length === 1);
+  t('لا مهمة فرعية تحت مهمة فرعية', err(() => S.createSubtask(mgr, st.id, { title: 'x' })) === 400);
+  S.updateItem(owner, st.id, { status: 'done' });
+  t('رجل الأعمال يُنجز المهمة الفرعية والتقدم يُحسب', S.getItem(tk.id).subtasks_done === 1 && S.getItem(tk.id).subtasks_total === 1);
+
+  t('حساب المواعيد الدورية (نهاية الشهر والأسبوع والسنة)', S.advanceDate('2026-01-31', 'monthly') === '2026-02-28' && S.advanceDate('2026-11-15', 'weekly') === '2026-11-22'
+    && S.advanceDate('2028-02-29', 'yearly') === '2029-02-28' && S.advanceDate('2026-12-31', 'daily') === '2027-01-01');
+  const rec = S.createTask(mgr, { title: 'تقرير أسبوعي', section: 'association', recurrence: 'weekly', due_date: today });
+  S.createSubtask(mgr, rec.id, { title: 'جمع الأرقام' });
+  S.updateItem(mgr, rec.id, { status: 'done' });
+  const r1 = S.getItem(rec.id); const nx = r1.next_occurrence_id && S.getItem(r1.next_occurrence_id);
+  t('إنجاز المهمة الدورية ينشئ الموعد التالي مع مهامها الفرعية', nx && nx.due_date === D.addDays(today, 7) && nx.recurrence === 'weekly' && nx.is_open && !nx.completed_at && S.subtasksOf(nx.id).length === 1);
+  S.updateItem(mgr, rec.id, { status: 'in_progress' }); S.updateItem(mgr, rec.id, { status: 'done' });
+  t('إعادة فتح المهمة الدورية وإنجازها لا يكرر الموعد التالي', get("SELECT COUNT(*) c FROM items WHERE title='تقرير أسبوعي' AND parent_task_id IS NULL").c === 2);
+  t('تكرار غير صالح يُرفض', err(() => S.createTask(mgr, { title: 'x', section: 'family', recurrence: 'hourly' })) === 400);
+
+  const ini = run("INSERT INTO projects(section,name,kind) VALUES('dawah','مبادرة تجريبية','initiative')").id;
+  const it = S.createTask(mgr, { title: 'ضمن مبادرة', section: 'dawah', project_id: ini });
+  t('المهمة ضمن مبادرة تحمل نوعها', S.getItem(it.id).project_kind === 'initiative');
+  t('لا تُربط مهمة بمبادرة من قسم آخر', err(() => S.createTask(mgr, { title: 'x', section: 'family', project_id: ini })) === 400);
+  const asg = S.createAssignment(owner, { title: 'تكليف دوري ضمن مبادرة', section: 'dawah', project_id: ini, recurrence: 'monthly' });
+  t('تكليف رجل الأعمال يقبل المبادرة والتكرار', asg.project_id === ini && asg.recurrence === 'monthly');
+}
+
 // ---- التشفير: Web Push وكلمات المرور
 {
   const nodeCrypto = require('crypto'); const ece = require('http_ece'); const push = require('../src/push'); const auth = require('../src/auth');

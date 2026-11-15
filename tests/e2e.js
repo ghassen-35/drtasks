@@ -97,7 +97,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   try {
     await check('يسجل رجل الأعمال الدخول (جوال)', async () => {
       await login(owner, 'owner', 'Owner#2026x');
-      assert(await owner.isVisible('text=تكليف جديد'), 'زر التكليف غير ظاهر');
+      assert(await owner.isVisible('#btnAdd') && await owner.isVisible('#btnToday'), 'زر الإضافة أو مهام اليوم غير ظاهر');
       assert((await owner.$$('main .ribbon')).length === 1 && await owner.isVisible('main .ribbon.follow'), 'يجب أن يكون هناك شريط متابعة واحد');
       assert((await owner.textContent('.topbar .brand b')).includes('مكتب عبدالله عبدالعزيز التويجري'), 'اسم المنصة غير صحيح');
       // المربعات على الجوال: عمودان وشكل قريب من المربع
@@ -117,7 +117,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     await mgr.goto(BASE + '/#/inbox'); await mgr.waitForSelector('h1:has-text("الوارد من رجل الأعمال")');
 
     await check('يرسل رجل الأعمال تكليفًا يتعلق بالجمعية (مع مرفق)', async () => {
-      await owner.click('#btnAssign');
+      await owner.click('#btnAdd'); await owner.click('.modal [data-k=task]'); await owner.waitForSelector('.modal input[name=title]');
       await owner.fill('.modal input[name=title]', TITLE);
       await owner.fill('.modal textarea[name=description]', 'أرجو إعداد التقرير السنوي متضمنًا الأرقام والإنجازات، ورفعه لي للاعتماد.');
       await owner.click('.modal .seg label:has-text("الجمعية")');
@@ -359,8 +359,9 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await mgr.click('.modal button:has-text("حفظ")');
       await mgr.waitForSelector('.row:has-text("برنامج الحفظ المكثف")');
       projectId = (await apiAs(mgr, 'GET', '/api/projects?folder_id=' + folderId)).body[0].id;
-      await mgr.click('#addT'); await mgr.waitForSelector('.modal select[name=project_id]');
+      await mgr.click('#addT'); await mgr.click('.modal [data-k=task]'); await mgr.waitForSelector('.modal input[name=title]');
       await mgr.fill('.modal input[name=title]', 'تجهيز جدول حلقات الفصل');
+      await mgr.click('.modal .seg label:has-text("ضمن مشروع")');
       await mgr.selectOption('.modal select[name=project_id]', String(projectId));
       await mgr.click('.modal button:has-text("حفظ")');
       await mgr.waitForSelector('h1:has-text("تجهيز جدول حلقات الفصل")');
@@ -368,6 +369,42 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(t.folder_id === folderId && t.project_id === projectId, 'المهمة لم تُربط بالمجلد والمشروع');
       await mgr.goto(BASE + '/#/section/association'); await mgr.waitForSelector('.folder-card:has-text("الحلقات")');
       await mgr.goto(BASE + '/#/folder/' + folderId); await mgr.waitForSelector('#res .row:has-text("تجهيز جدول حلقات الفصل")');
+    });
+
+    await check('مجلد فرعي، تعديل رجل الأعمال للمهمة، مهام فرعية، مهمة دورية، ومهام اليوم مع النسخ', async () => {
+      // مجلد فرعي داخل «الحلقات»
+      await mgr.goto(BASE + '/#/folder/' + folderId); await mgr.click('#addSub');
+      await mgr.fill('.modal input[name=name]', 'حلقات المساء'); await mgr.click('.modal button:has-text("حفظ")');
+      await mgr.waitForSelector('h1:has-text("حلقات المساء")');
+      assert((await mgr.textContent('.crumbs')).includes('الحلقات'), 'مسار المجلد الفرعي لا يظهر المجلد الأب');
+      // رجل الأعمال يفتح مهمة ويعدّل أولويتها وموعدها ويجعلها دورية
+      const t = (await apiAs(owner, 'GET', '/api/items?kind=tasks&q=' + encodeURIComponent('تجهيز جدول حلقات'))).body[0];
+      const today = (await apiAs(owner, 'GET', '/api/meta')).body.today;
+      await owner.goto(BASE + '/#/item/' + t.id); await owner.click('#editTop'); await owner.waitForSelector('.modal select[name=section]');
+      await owner.click('.modal input[name=priority][value=urgent] + span');
+      await owner.fill('.modal input[name=due_date]', today);
+      await owner.click('.modal button:has-text("حفظ")'); await owner.waitForSelector('.modal-bg', { state: 'detached' });
+      const e = (await apiAs(owner, 'GET', '/api/items/' + t.id)).body.item;
+      assert(e.priority === 'urgent' && e.due_date === today && e.project_id === projectId, 'لم تُحفظ تعديلات رجل الأعمال: ' + JSON.stringify([e.priority, e.due_date, e.project_id]));
+      // تحويل مهمة أخرى إلى «دورية» من نموذج التعديل
+      const r = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'مراجعة الحضور', section: 'association' })).body;
+      await owner.goto(BASE + '/#/item/' + r.id); await owner.click('#editTop'); await owner.waitForSelector('.modal select[name=section]');
+      await owner.click('.modal .seg label:has-text("دورية")'); await owner.selectOption('.modal select[name=recurrence]', 'monthly');
+      await owner.click('.modal button:has-text("حفظ")'); await owner.waitForSelector('.modal-bg', { state: 'detached' });
+      assert((await apiAs(owner, 'GET', '/api/items/' + r.id)).body.item.recurrence === 'monthly', 'لم تُحفظ المهمة كدورية');
+      await owner.goto(BASE + '/#/item/' + t.id); await owner.waitForSelector('#subAdd');
+      // مهام فرعية: رجل الأعمال يضيف، ومدير المكتب يُنجز
+      await owner.fill('#subAdd input[name=title]', 'حجز القاعة'); await owner.click('#subAdd button');
+      await owner.waitForSelector('.subtask:has-text("حجز القاعة")');
+      await mgr.goto(BASE + '/#/item/' + t.id); await mgr.waitForSelector('.subtask:has-text("حجز القاعة")');
+      await mgr.check('.subtask:has-text("حجز القاعة") input[type=checkbox]'); await mgr.waitForSelector('.subtask.done:has-text("حجز القاعة")');
+      // مهام اليوم: تظهر المهمة، وزر النسخ ينسخ نصًا فيه عنوانها
+      await owner.context().grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => { });
+      await owner.click('#btnToday'); await owner.waitForSelector('.modal .today-row:has-text("تجهيز جدول حلقات الفصل")');
+      await owner.click('#copyToday'); await owner.waitForSelector('.toast:has-text("نُسخت")');
+      const clip = await owner.evaluate(() => navigator.clipboard.readText()).catch(() => null);
+      assert(clip === null || (clip.includes('مهام اليوم') && clip.includes('تجهيز جدول حلقات الفصل')), 'نص النسخ غير صحيح');
+      await owner.click('.modal [data-close]');
     });
 
     await check('الإعدادات: إضافة مستخدم وربطه بمشروع', async () => {
@@ -387,11 +424,12 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await mem.click('button:has-text("دخول")'); await mem.waitForSelector('h2:has-text("مهامي المفتوحة")');
       assert(await mem.isVisible('.row:has-text("تجهيز جدول حلقات الفصل")'), 'لا يرى مهمة مشروعه');
       assert(!(await mem.isVisible(`.row:has-text("${TITLE}")`)), 'يرى مهمة لا تخصه');
-      assert(!(await mem.isVisible('#btnTask')) && !(await mem.isVisible('#btnAssign')), 'يظهر للعضو زر إنشاء');
+      assert(!(await mem.isVisible('#btnAdd')), 'يظهر للعضو زر إنشاء');
       assert((await apiAs(mem, 'GET', `/api/items/${itemId}`)).status === 404, 'فتح مهمة لا تخصه');
       assert((await apiAs(mem, 'GET', '/api/approvals')).status === 403 && (await apiAs(mem, 'GET', '/api/reports')).status === 403 && (await apiAs(mem, 'GET', '/api/admin/users')).status === 403, 'وصول العضو لما لا يخصه');
       const all = (await apiAs(mem, 'GET', '/api/items?kind=all')).body;
-      assert(all.length === 1 && all[0].title === 'تجهيز جدول حلقات الفصل', 'قائمة المهام تكشف غير مهامه: ' + all.length);
+      // مهمة المشروع ومهمتها الفرعية (ترث المشروع) فقط
+      assert(all.length === 2 && all.every(x => x.project_id === projectId) && all.some(x => x.title === 'تجهيز جدول حلقات الفصل') && all.some(x => x.title === 'حجز القاعة'), 'قائمة المهام تكشف غير مهامه: ' + all.map(x => x.title).join('، '));
       await mem.click('.row a.title:has-text("تجهيز جدول حلقات الفصل")');
       await mem.click('#acts button:has-text("بدء التنفيذ")'); await mem.waitForSelector('.item-head .chip.st-in_progress');
       await mem.fill('#cmp textarea[name=body]', 'جهزت مسودة الجدول وأرسلتها للمعلمين.'); await mem.click('#cmp button:has-text("إرسال")');
