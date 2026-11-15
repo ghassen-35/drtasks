@@ -137,6 +137,25 @@ function fmtDateAr(d) {
   if (!d) return '';
   try { return new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(d.slice(0, 10) + 'T12:00:00Z')); } catch { return d; }
 }
+// التاريخ المحلي (بتوقيت المنصة) لطابع زمني ISO
+function localDate(iso) { return iso ? todayStr(new Date(iso)) : null; }
+// الالتزام بالمواعيد: من المهام المنجزة ذات الموعد، كم أُنجز في موعده أو قبله
+function onTimeStats(fromDate, toDate, extraSql = '', params = []) {
+  const rows = all(`SELECT i.due_date, i.completed_at, i.assignee_id, i.assignee FROM items i WHERE i.kind IN ${TASK_KINDS} AND i.status='done' AND i.due_date IS NOT NULL AND i.completed_at IS NOT NULL ${extraSql}`, ...params)
+    .filter(r => { const d = localDate(r.completed_at); return d >= fromDate && d <= toDate; });
+  const onTime = rows.filter(r => localDate(r.completed_at) <= r.due_date).length;
+  return { total: rows.length, on_time: onTime, rate: rows.length ? Math.round(onTime * 100 / rows.length) : null, rows };
+}
+// ما يحتاج تدخل المدير: مهمة متعثرة، أو مهمة «مهم/عاجل» متأخرة 3 أيام فأكثر
+function needsAttention() {
+  const t = todayStr(); const limit = addDays(t, -3);
+  return all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE i.kind IN ${TASK_KINDS} AND i.${OPEN} AND (i.status='stalled' OR (i.priority IN ('important','urgent') AND i.due_date<=?))
+    ORDER BY CASE i.status WHEN 'stalled' THEN 0 ELSE 1 END, i.due_date LIMIT 100`, limit).map(i => {
+    const x = decorate(i, t);
+    x.attention_reason = i.status === 'stalled' ? 'متعثرة' : `متأخرة ${Math.round((new Date(t) - new Date(i.due_date)) / 864e5)} أيام`;
+    return x;
+  });
+}
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
 }
@@ -287,11 +306,15 @@ function report(period = 'week') {
     FROM items i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.kind IN ${TASK_KINDS}
     GROUP BY COALESCE(CAST(i.assignee_id AS TEXT), (SELECT 'u' || x.id FROM users x WHERE x.name=i.assignee LIMIT 1), 'n:' || COALESCE(NULLIF(i.assignee,''), 'غير محدد'))
     HAVING open > 0 OR completed > 0 ORDER BY overdue DESC, open DESC LIMIT 50`, t, t, week, fromIso);
+  const ot = onTimeStats(from, t);
+  r.on_time = { total: ot.total, on_time: ot.on_time, rate: ot.rate };
+  const otBy = {}; for (const x of ot.rows) { const k = x.assignee_id || `n:${x.assignee || ''}`; (otBy[k] = otBy[k] || { t: 0, o: 0 }); otBy[k].t++; if (localDate(x.completed_at) <= x.due_date) otBy[k].o++; }
+  for (const p of r.by_person) { const k = p.user_id || `n:${p.name}`; const v = otBy[k]; p.on_time_rate = v ? Math.round(v.o * 100 / v.t) : null; }
   r.completed_items = all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND status='done' AND completed_at>=? ORDER BY completed_at DESC LIMIT 50`, fromIso).map(i => decorate(i, t));
   return r;
 }
 
 module.exports = {
   get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS, CHANNELS, IMPORTANCE,
-  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, localDate, onTimeStats, needsAttention, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

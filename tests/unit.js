@@ -314,6 +314,30 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('مدير المكتب لا يقرر بنفسه دون «نيابةً»', err(() => S.decide(mgr, S.requestApproval(mgr, tk.id, { kind: 'approval', title: 'آخر' }), { decision: 'approved' })) === 403);
 }
 
+// ---- لوحة القيادة: الالتزام بالمواعيد، ما يحتاج تدخل المدير، التصعيد وتذكير الاجتماعات
+{
+  const a = S.createTask(mgr, { title: 'أُنجزت في موعدها', section: 'personal', due_date: today });
+  S.updateItem(mgr, a.id, { status: 'done' });
+  const b = S.createTask(mgr, { title: 'أُنجزت بعد موعدها', section: 'personal', due_date: D.addDays(today, -2) });
+  S.updateItem(mgr, b.id, { status: 'done' });
+  const ot = D.onTimeStats(D.addDays(today, -1), today, 'AND i.id IN (?,?)', [a.id, b.id]);
+  t('نسبة الالتزام بالمواعيد تحسب المنجز في موعده', ot.total === 2 && ot.on_time === 1 && ot.rate === 50);
+  const late = S.createTask(mgr, { title: 'مهمة مهمة متأخرة 4 أيام', section: 'personal', priority: 'important', due_date: D.addDays(today, -4) });
+  const late1 = S.createTask(mgr, { title: 'مهمة مهمة متأخرة يومًا', section: 'personal', priority: 'important', due_date: D.addDays(today, -1) });
+  const normalLate = S.createTask(mgr, { title: 'عادية متأخرة كثيرًا', section: 'personal', due_date: D.addDays(today, -9) });
+  const att = D.needsAttention().map(i => i.id);
+  t('«تحتاج تدخل المدير»: المهم المتأخر 3 أيام فأكثر فقط', att.includes(late.id) && !att.includes(late1.id) && !att.includes(normalLate.id));
+  const n0 = get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title LIKE 'تحتاج تدخلك:%'", owner.id).c;
+  scheduler(); scheduler();
+  const n1 = get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title=?", owner.id, 'تحتاج تدخلك: مهمة مهمة متأخرة 4 أيام').c;
+  t('التصعيد يصل المدير مرة واحدة لكل حالة', n1 === 1 && get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title LIKE 'تحتاج تدخلك:%'", owner.id).c > n0);
+  const m = run("INSERT INTO meetings(title,starts_at,status) VALUES('اجتماع مجلس المدارس',?, 'scheduled')", D.addDays(today, 1) + 'T09:00').id;
+  scheduler(); scheduler();
+  t('تذكير الاجتماع قبله بيوم مرة واحدة', get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND link=?", mgr.id, `#/meeting/${m}`).c === 1);
+  const r = D.report('week');
+  t('التقرير يتضمن الالتزام بالمواعيد للمكتب ولكل مسؤول', r.on_time && r.on_time.total >= 2 && r.by_person.some(p => p.on_time_rate !== undefined));
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

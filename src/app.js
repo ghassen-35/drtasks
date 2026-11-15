@@ -187,6 +187,10 @@ function createApp(P) {
     if (q.priority) { where.push('i.priority=?'); p.push(q.priority); }
     if (q.project_id) { where.push('i.project_id=?'); p.push(Number(q.project_id)); }
     if (q.category) { where.push('i.category=?'); p.push(q.category); }
+    if (q.assignee_id) { where.push('i.assignee_id=?'); p.push(Number(q.assignee_id)); }
+    if (q.assignee && !q.assignee_id) { where.push('i.assignee_id IS NULL AND i.assignee=?'); p.push(String(q.assignee).slice(0, 200)); }
+    if (q.directive_id) { where.push('i.directive_id=?'); p.push(Number(q.directive_id)); }
+    if (q.done_since && /^\d{4}-\d{2}-\d{2}$/.test(q.done_since)) { where.push("i.status='done' AND i.completed_at>=?"); p.push(new Date(q.done_since + 'T00:00:00+03:00').toISOString()); }
     if (q.scope === 'open') where.push(`i.${D.OPEN}`);
     if (q.scope === 'overdue') { where.push(`i.${D.OPEN} AND i.due_date<?`); p.push(t); }
     if (q.scope === 'today') { where.push(`i.${D.OPEN} AND i.due_date=?`); p.push(t); }
@@ -517,6 +521,41 @@ function createApp(P) {
     run('UPDATE folders SET name=?, description=? WHERE id=?', S.str(req.body.name, 200) || f.name, req.body.description !== undefined ? S.str(req.body.description, 1000) : f.description, f.id);
     S.audit('folder', f.id, req.user.id, 'updated'); events.broadcastChange({ folder: f.id });
     return folderCounts(get('SELECT * FROM folders WHERE id=?', f.id));
+  }));
+
+  // ===== لوحة القيادة: صورة المكتب كاملة، وكل رقم يفتح تفاصيله =====
+  app.get('/api/command', wrap(req => {
+    if (!(D.can(req.user, 'item.view') && req.user.role !== 'member')) throw S.forbidden();
+    const t = D.todayStr(); const c = (sql, ...p) => get(sql, ...p).c;
+    const weekStart = D.addDays(t, -6), monthStart = D.addDays(t, -29), prevFrom = D.addDays(t, -59), prevTo = D.addDays(t, -30);
+    const iso = (d) => new Date(d + 'T00:00:00+03:00').toISOString();
+    const TK = `kind IN ${D.TASK_KINDS}`;
+    const month = D.onTimeStats(monthStart, t), prev = D.onTimeStats(prevFrom, prevTo);
+    const rep = D.report('week');
+    const regDirectives = all("SELECT * FROM directives WHERE status='open'").map(d => S.directiveRow(d, req.user));
+    const decisionsOpen = c(`SELECT COUNT(*) c FROM decisions d LEFT JOIN items i ON i.id=d.task_id WHERE COALESCE(i.status,d.status) NOT IN ('done','cancelled')`);
+    return {
+      today: t, week_start: weekStart, month_start: monthStart,
+      kpis: {
+        open: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND ${D.OPEN}`),
+        done_week: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND status='done' AND completed_at>=?`, iso(weekStart)),
+        done_month: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND status='done' AND completed_at>=?`, iso(monthStart)),
+        overdue: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND ${D.OPEN} AND due_date<?`, t),
+        urgent: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND ${D.OPEN} AND priority='urgent'`),
+        stalled: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND status='stalled'`),
+        awaiting_approval: c("SELECT COUNT(*) c FROM approvals WHERE status='pending'"),
+        meetings_week: c("SELECT COUNT(*) c FROM meetings WHERE status='scheduled' AND substr(starts_at,1,10) BETWEEN ? AND ?", t, D.addDays(t, 7)),
+        directives_open: regDirectives.length, directives_at_risk: regDirectives.filter(d => d.state === 'at_risk' || d.is_overdue).length,
+        decisions_open: decisionsOpen,
+        on_time_rate: month.rate, on_time_total: month.total, on_time_prev: prev.rate,
+      },
+      attention: D.needsAttention(),
+      approvals: all(`SELECT a.id, a.title, a.kind, a.blocking, a.requested_at, i.id AS item_id, i.ref, i.title AS item_title FROM approvals a JOIN items i ON i.id=a.item_id WHERE a.status='pending' ORDER BY a.blocking DESC, a.id LIMIT 20`)
+        .map(a => ({ ...a, kind_label: D.APPROVAL_KINDS[a.kind] })),
+      directives: regDirectives.filter(d => d.state !== 'ready').slice(0, 8), directives_ready: regDirectives.filter(d => d.state === 'ready'),
+      meetings: all("SELECT * FROM meetings WHERE status='scheduled' AND substr(starts_at,1,10)>=? ORDER BY starts_at LIMIT 5", t),
+      workload: rep.by_person,
+    };
   }));
 
   // ===== سجل التوجيهات والقرارات =====

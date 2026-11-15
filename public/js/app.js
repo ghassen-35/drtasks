@@ -291,6 +291,7 @@ function navItems() {
   ];
   if (isOwner()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
+    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
     { h: '#/my', i: 'list', t: 'طلباتي وتكليفاتي' },
     { h: '#/decisions', i: 'gavel', t: 'بانتظار قراري', n: c.pending_decisions },
     { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
@@ -298,6 +299,7 @@ function navItems() {
   ];
   return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
+    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
     { h: '#/inbox', i: 'inbox', t: 'الوارد من ' + OT() + '', n: c.inbox_pending },
     { h: '#/dashboard', i: 'alert', t: 'لوحة المتابعة' },
     { h: '#/tasks', i: 'list', t: 'كل المهام' },
@@ -370,7 +372,8 @@ const routes = [
   [/^#\/approvals$/, viewDecisions],
   [/^#\/inbox$/, viewInbox],
   [/^#\/dashboard$/, viewDashboard],
-  [/^#\/tasks$/, viewTasks],
+  [/^#\/tasks(?:\?(.*))?$/, viewTasks],
+  [/^#\/command$/, viewCommand],
   [/^#\/meetings$/, viewMeetings],
   [/^#\/meeting\/(\d+)$/, viewMeeting],
   [/^#\/sops$/, viewSops],
@@ -582,9 +585,10 @@ async function viewHome(main) {
       return;
     }
     const s = h.summary;
-    let roleHtml = '';
+    const cmdLink = `<a class="cmd-link section-gap" href="#/command">${I('chart')}<span><b>لوحة القيادة</b><small>المؤشرات، ما يحتاج تدخلك، توزيع العمل، والتوجيهات</small></span>${I('back', 'chev')}</a>`;
+    let roleHtml = cmdLink;
     if (isOwner()) {
-      roleHtml = `
+      roleHtml += `
       <div class="card section-gap"><div class="card-h"><h2>ملخص المكتب</h2></div>
         <div class="kpis">
           <a class="kpi blue" href="#/my"><b>${s.open_assignments}</b><span>تكليفاتي المفتوحة</span></a>
@@ -611,7 +615,7 @@ async function viewHome(main) {
     } else {
       const inbox = await GET('/api/items?kind=inbox');
       const pendingInbox = inbox.filter(inboxPending);
-      roleHtml = `
+      roleHtml += `
       <div class="card section-gap"><div class="card-h">${I('inbox')}<h2>الوارد من ${OT()}</h2><span class="chip ${pendingInbox.length ? 'p-urgent' : ''}">${pendingInbox.length} يحتاج إجراء</span><span class="spacer"></span><a class="btn sm" href="#/inbox">صندوق الوارد</a></div>
         ${listOrEmpty(pendingInbox.slice(0, 5), i => itemRow(i, { actions: inboxActions(i) }), 'لا يوجد وارد جديد')}
       </div>
@@ -818,9 +822,13 @@ function bindFilters(root, f, reload) {
 }
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
-async function viewTasks(main) {
+async function viewTasks(main, query) {
   const f = { scope: 'open' };
-  main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
+  // فلاتر قادمة من لوحة القيادة (مثل #/tasks?scope=overdue&priority=urgent)
+  const from = new URLSearchParams(query || '');
+  for (const k of ['scope', 'status', 'priority', 'section', 'assignee_id', 'assignee', 'done_since', 'q', 'category']) if (from.has(k)) f[k] = from.get(k);
+  const ctxLabel = from.get('label');
+  main.innerHTML = `${ctxLabel ? `<div class="btn-row crumbs"><a class="btn sm ghost" href="#/command">${I('back')} لوحة القيادة</a><b>${esc(ctxLabel)}</b></div>` : ''}<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
   async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${countTxt(items.length, 'نتيجة', 'نتيجتان', 'نتائج')}</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
@@ -881,6 +889,50 @@ async function viewSection(main, key) {
     } else if (tab === 'partners') {
       await renderPartnersInto(tc);
     }
+  }
+  await load(); return { refresh: load };
+}
+
+// ===== لوحة القيادة: ماذا لدينا؟ من المسؤول؟ ماذا أُنجز وتأخر؟ ما الذي يحتاج تدخل المدير؟ =====
+async function viewCommand(main) {
+  async function load() {
+    const d = await GET('/api/command'); const k = d.kpis;
+    const link = (params, label) => `#/tasks?${qs({ ...params, label })}`;
+    const kpi = (tone, n, label, href, sub = '') => `<a class="kpi ${tone}" href="${href}"><b>${n ?? '—'}</b><span>${label}${sub ? `<small class="muted"> ${sub}</small>` : ''}</span></a>`;
+    const trend = k.on_time_rate == null || k.on_time_prev == null ? '' : k.on_time_rate > k.on_time_prev ? `↑ من ${k.on_time_prev}%` : k.on_time_rate < k.on_time_prev ? `↓ من ${k.on_time_prev}%` : 'كالشهر السابق';
+    const attText = `ما يحتاج تدخل ${OT()} (${d.attention.length}):\n` + d.attention.map((i, n) => `${n + 1}. ${i.title} — ${i.attention_reason}${i.assignee ? ` (${i.assignee})` : ''}`).join('\n');
+    main.innerHTML = `<div class="page-h">${I('chart')}<h1>لوحة القيادة</h1><span class="spacer"></span><span class="small muted">${esc(fmtDate(d.today))}</span></div>
+      <div class="kpis cmd">
+        ${kpi('blue', k.open, 'مهام مفتوحة', link({ scope: 'open' }, 'المهام المفتوحة'))}
+        ${kpi('red', k.overdue, 'متأخرة', link({ scope: 'overdue' }, 'المهام المتأخرة'))}
+        ${kpi('red', k.urgent, 'عاجلة', link({ scope: 'open', priority: 'urgent' }, 'المهام العاجلة'))}
+        ${kpi('red', k.stalled, 'متعثرة', link({ scope: 'open', status: 'stalled' }, 'المهام المتعثرة'))}
+        ${kpi('orange', k.awaiting_approval, `تنتظر قرار ${OT()}`, isOwner() ? '#/decisions' : '#/approvals')}
+        ${kpi('green', k.done_week, 'أُنجزت هذا الأسبوع', link({ scope: 'closed', status: 'done', done_since: d.week_start }, 'المنجزة خلال 7 أيام'), `• ${k.done_month} خلال 30 يومًا`)}
+        ${kpi(k.on_time_rate == null ? '' : k.on_time_rate >= 80 ? 'green' : k.on_time_rate >= 60 ? 'orange' : 'red', k.on_time_rate == null ? '—' : k.on_time_rate + '%', 'الالتزام بالمواعيد (30 يومًا)', '#/reports', k.on_time_total ? `${trend}` : 'لا بيانات كافية')}
+        ${kpi('orange', k.directives_open + k.decisions_open, 'توجيهات وقرارات لم تُنفَّذ', '#/directives', k.directives_at_risk ? `• ${k.directives_at_risk} متأخر` : '')}
+        ${kpi('', k.meetings_week, 'اجتماعات خلال 7 أيام', '#/meetings')}
+      </div>
+      <div class="cols section-gap">
+        <div class="card ${d.attention.length ? 'attn' : ''}"><div class="card-h">${I('alert')}<h2>تحتاج تدخل ${esc(OT())}</h2><span class="chip ${d.attention.length ? 'p-urgent' : ''}">${d.attention.length}</span><span class="spacer"></span>
+            ${d.attention.length && isManager() ? shareLinks(attText, `ما يحتاج تدخل ${OT()}`) : ''}</div>
+          <p class="small muted">مهام متعثرة، أو مهمة/عاجلة متأخرة 3 أيام فأكثر.</p>
+          ${listOrEmpty(d.attention.slice(0, 8), i => `<a class="row p-urgent" href="#/item/${i.id}"><div class="main"><span class="title">${esc(i.title)}</span>
+            <div class="meta"><span class="chip overdue">${esc(i.attention_reason)}</span>${i.assignee ? `<span class="txt">${esc(i.assignee)}</span>` : ''}<span class="txt">${esc(i.section_name || '')}</span></div></div></a>`, 'لا شيء يحتاج تدخلك الآن 👍')}</div>
+        <div class="card"><div class="card-h">${I('gavel')}<h2>تنتظر القرار</h2><span class="chip">${d.approvals.length}</span><span class="spacer"></span><a class="btn sm" href="${isOwner() ? '#/decisions' : '#/approvals'}">الكل</a></div>
+          ${listOrEmpty(d.approvals.slice(0, 6), a => `<a class="row ${a.blocking ? 'p-urgent' : 'p-important'}" href="#/item/${a.item_id}"><div class="main"><span class="title">${esc(a.title)}</span>
+            <div class="meta"><span class="chip st-waiting_approval">${esc(a.kind_label)}</span>${a.blocking ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}<span class="txt">منذ ${esc(fmtTs(a.requested_at).replace('منذ ', ''))}</span></div></div></a>`, 'لا توجد طلبات معلقة')}</div>
+        <div class="card"><div class="card-h">${I('users')}<h2>توزيع العمل والالتزام</h2><span class="spacer"></span><a class="btn sm" href="#/reports">التقارير</a></div>
+          ${d.workload.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>أُنجزت (أسبوع)</th><th>في الموعد</th></tr></thead><tbody>
+            ${d.workload.map(p => { const ln = link(p.user_id ? { scope: 'open', assignee_id: p.user_id } : { scope: 'open', assignee: p.name }, `مهام ${p.name}`);
+              return `<tr><td><a href="${ln}">${esc(p.name)}</a></td><td><a href="${ln}">${p.open}</a></td><td class="${p.overdue ? 'late' : ''}">${p.overdue ? `<a href="${link(p.user_id ? { scope: 'overdue', assignee_id: p.user_id } : { scope: 'overdue', assignee: p.name }, `متأخرات ${p.name}`)}">${p.overdue}</a>` : 0}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`; }).join('')}
+            </tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
+        <div class="card"><div class="card-h">${I('flag')}<h2>التوجيهات الجارية</h2><span class="spacer"></span><a class="btn sm" href="#/directives">السجل</a></div>
+          ${d.directives_ready.length ? `<div class="info-box" style="margin-bottom:8px">${d.directives_ready.length} ${d.directives_ready.length === 1 ? 'توجيه اكتملت مهامه' : 'توجيهات اكتملت مهامها'} — تحتاج تسجيل النتيجة.</div>` : ''}
+          ${listOrEmpty(d.directives, directiveRowHtml, 'لا توجد توجيهات جارية')}</div>
+        <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2><span class="spacer"></span><a class="btn sm" href="#/meetings">الكل</a></div>
+          ${listOrEmpty(d.meetings, meetingRow, 'لا توجد اجتماعات قادمة')}</div>
+      </div>`;
   }
   await load(); return { refresh: load };
 }
@@ -1698,14 +1750,15 @@ async function viewReports(main) {
         <div class="kpi green"><b>${r.completed}</b><span>مهام مكتملة</span></div><div class="kpi red"><b>${r.overdue_now}</b><span>متأخرة حاليًا</span></div>
         <div class="kpi"><b>${r.decisions_made}</b><span>قرارات واعتمادات صدرت</span></div><div class="kpi orange"><b>${r.approvals_pending}</b><span>طلبات تنتظر القرار</span></div>
         <div class="kpi green"><b>${r.meeting_decisions_done}</b><span>قرارات اجتماعات منفذة</span></div><div class="kpi orange"><b>${r.meeting_decisions_pending}</b><span>قرارات تنتظر التنفيذ</span></div>
+        <div class="kpi ${r.on_time.rate == null ? '' : r.on_time.rate >= 80 ? 'green' : r.on_time.rate >= 60 ? 'orange' : 'red'}"><b>${r.on_time.rate == null ? '—' : r.on_time.rate + '%'}</b><span>الالتزام بالمواعيد${r.on_time.total ? ` (${r.on_time.on_time} من ${r.on_time.total})` : ' — لا مهام منجزة ذات موعد'}</span></div>
         <div class="kpi"><b>${r.avg_completion_days ?? '—'}</b><span>متوسط مدة الإنجاز (يوم)${r.avg_completion_days == null ? ' — بيانات غير كافية' : ''}</span></div>
       </div>
       <div class="card section-gap"><div class="card-h"><h2>توزيع المهام حسب الأقسام الستة</h2><span class="spacer"></span><span class="small muted"><span class="chip st-in_progress">مفتوحة</span> <span class="chip st-done">مكتملة في الفترة</span> <span class="chip overdue">منها متأخرة</span></span></div>
         <div class="bars">${r.by_section.map(s => `<div class="bar"><span>${esc(s.name)}</span><div class="track" title="مفتوحة ${s.open} • مكتملة ${s.completed} • متأخرة ${s.overdue}">
           <div class="fill late" style="width:${s.overdue / max * 100}%"></div><div class="fill" style="width:${(s.open - s.overdue) / max * 100}%"></div><div class="fill done" style="width:${s.completed / max * 100}%"></div></div><b>${s.open + s.completed}</b></div>`).join('')}</div></div>
       <div class="card"><div class="card-h">${I('users')}<h2>عبء العمل حسب المسؤول</h2></div>
-        ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th></tr></thead><tbody>
-          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
+        ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th><th>في الموعد</th></tr></thead><tbody>
+          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
       <div class="card"><div class="card-h"><h2>المهام المكتملة في الفترة</h2></div>${listOrEmpty(r.completed_items, i => itemRow(i), 'لا توجد مهام مكتملة في هذه الفترة')}</div>`;
     $$('[data-p]', main).forEach(b => b.onclick = () => { period = b.dataset.p; load(); });
     $('#pdf', main).onclick = () => window.print();
