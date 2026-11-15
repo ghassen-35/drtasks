@@ -207,7 +207,7 @@ function createTask(user, b, { internal = false } = {}) {
       b.meeting_id || null, b.decision_id || null, user.id, user.id, b.is_demo ? 1 : 0);
     audit('item', id, user.id, 'created', 'kind', null, 'task');
     if (b.project_id) validProject(b.project_id, section);
-    run('UPDATE items SET recurrence=?, parent_task_id=?, directive_id=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, directiveId, id);
+    run('UPDATE items SET recurrence=?, parent_task_id=?, directive_id=?, deliverable=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, directiveId, str(b.deliverable, 1000), id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
     // الموظف لا ينشئ ما لا يستطيع رؤيته (قسم خارج نطاقه أو مسند لغيره خارج مشاريعه)
     if (user.role === 'member' && !canSee(user, { id })) throw forbidden('لا يمكنك إنشاء مهمة خارج نطاق صلاحياتك (القسم أو المسؤول)');
@@ -261,7 +261,7 @@ function convertToTask(user, id, b) {
 }
 
 // ===== 6) تعديل بيانات المهمة وحالتها =====
-const EDITABLE = ['title', 'description', 'section', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id', 'recurrence'];
+const EDITABLE = ['title', 'description', 'section', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id', 'recurrence', 'deliverable'];
 function updateItem(user, id, b) {
   const it = getItem(id);
   // رجل الأعمال: يعدّل بيانات أي مهمة (الموعد، الأولوية، التصنيف، المجلد، المشروع…)،
@@ -342,7 +342,7 @@ function updateItem(user, id, b) {
     return getItem(id);
   });
 }
-const FIELD_LABELS = { title: 'العنوان', description: 'الوصف', section: 'القسم', category: 'التصنيف', project_id: 'المشروع', assignee: 'المسؤول', due_date: 'الموعد', due_time: 'الوقت', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', sop_id: 'الإجراء المرتبط', partner_id: 'الجهة المرتبطة', recurrence: 'التكرار' };
+const FIELD_LABELS = { title: 'العنوان', description: 'الوصف', section: 'القسم', category: 'التصنيف', project_id: 'المشروع', assignee: 'المسؤول', due_date: 'الموعد', due_time: 'الوقت', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', sop_id: 'الإجراء المرتبط', partner_id: 'الجهة المرتبطة', recurrence: 'التكرار', deliverable: 'المخرج المطلوب' };
 
 function hasApprovedFinal(itemId) {
   return !!get("SELECT id FROM approvals WHERE item_id=? AND kind='final' AND status='approved'", itemId);
@@ -683,6 +683,20 @@ function directiveRow(d, user) {
     channel_label: D.CHANNELS[d.channel] || '', importance_label: D.IMPORTANCE[d.importance] || '', section_name: d.section ? D.sectionName(d.section) : null,
     is_overdue: d.status === 'open' && !!d.due_date && d.due_date < t };
 }
+// تطبيق الإجراء التشغيلي: خطواته تصبح قائمة تحقق (مهام فرعية) للمهمة — دون تكرار ما أُضيف سابقًا
+function applySop(user, itemId) {
+  const it = getItem(itemId); assertCanSee(user, it);
+  if (!it.sop_id) throw bad('المهمة غير مرتبطة بإجراء تشغيلي');
+  const sop = get('SELECT * FROM sops WHERE id=?', it.sop_id); if (!sop) throw bad('الإجراء غير موجود');
+  const steps = (sop.steps || '').split('\n').map(x => x.trim().replace(/^\d+[.)-]\s*/, '')).filter(Boolean);
+  if (!steps.length) throw bad('لا توجد خطوات في هذا الإجراء');
+  const have = new Set(all('SELECT title FROM items WHERE parent_task_id=?', it.id).map(r => r.title));
+  let n = 0;
+  return tx(() => {
+    for (const s of steps.slice(0, 40)) if (!have.has(s.slice(0, 300))) { createSubtask(user, it.id, { title: s.slice(0, 300) }); n++; }
+    return { added: n, total: steps.length };
+  });
+}
 function createDirective(user, b) {
   require_(user, 'directives.manage');
   const title = str(b.title, 300); if (!title) throw bad('نص التوجيه مطلوب');
@@ -744,7 +758,7 @@ function checkDirectiveReady(directiveId) {
 }
 
 module.exports = {
-  createDirective, updateDirective, directiveRow, checkDirectiveReady,
+  createDirective, updateDirective, directiveRow, checkDirectiveReady, applySop,
   AppError, bad, forbidden, notFound, require_, audit, getItem, scopeFor, canSee, assertCanSee, memberProjects, listUsers, createUser, updateUser, createAssignment, createNote, createTask, acknowledge, convertToTask,
   allowedSections, assertSectionAllowed, createSubtask, subtasksOf, spawnNextOccurrence, advanceDate, validProject, validRecurrence,
   updateItem, closeItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,

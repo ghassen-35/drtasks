@@ -166,7 +166,7 @@ const OPEN = "status NOT IN ('done','cancelled')";
 const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
   i.status,i.assignee,i.next_step,i.requires_approval,i.acknowledged_at,i.converted_at,i.created_at,i.updated_at,i.closed_at,i.completed_at,i.is_demo,
   i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name, i.folder_id, i.assignee_id,
-  i.parent_task_id, i.recurrence, i.next_occurrence_id, i.directive_id,
+  i.parent_task_id, i.recurrence, i.next_occurrence_id, i.directive_id, i.deliverable,
   (SELECT d.ref FROM directives d WHERE d.id=i.directive_id) AS directive_ref,
   (SELECT pt.title FROM items pt WHERE pt.id=i.parent_task_id) AS parent_task_title,
   (SELECT p.kind FROM projects p WHERE p.id=i.project_id) AS project_kind,

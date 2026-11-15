@@ -338,6 +338,15 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('التقرير يتضمن الالتزام بالمواعيد للمكتب ولكل مسؤول', r.on_time && r.on_time.total >= 2 && r.by_person.some(p => p.on_time_rate !== undefined));
 }
 
+// ---- الإجراء التشغيلي كقائمة تحقق، والمخرج المطلوب
+{
+  const sop = run("INSERT INTO sops(name,steps) VALUES('إجراء إعداد الاختبار', ?)", '1. تجهيز الأسئلة\n2. مراجعة الأسئلة\n3. طباعة النماذج').id;
+  const tk = S.createTask(mgr, { title: 'إعداد اختبار الفصل', section: 'personal', sop_id: sop, deliverable: 'نموذج اختبار معتمد' });
+  t('المخرج المطلوب يُحفظ مع المهمة', S.getItem(tk.id).deliverable === 'نموذج اختبار معتمد');
+  const r1 = S.applySop(mgr, tk.id), r2 = S.applySop(mgr, tk.id);
+  t('خطوات الإجراء تصبح مهامًا فرعية مرة واحدة', r1.added === 3 && r2.added === 0 && S.subtasksOf(tk.id).map(x => x.title).join('|') === 'تجهيز الأسئلة|مراجعة الأسئلة|طباعة النماذج');
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

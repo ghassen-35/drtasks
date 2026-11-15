@@ -1,7 +1,7 @@
 'use strict';
 // واجهة API — تعمل بلا تغيير على Node (Hono + node-server) وعلى Cloudflare (Worker/Durable Object)
 const { Hono } = require('hono');
-const { get, all, run, nowIso } = require('./db');
+const { get, all, run, tx, nowIso } = require('./db');
 const cfg = require('./config');
 const D = require('./domain');
 const S = require('./services');
@@ -230,6 +230,7 @@ function createApp(P) {
     return { item: it, ...th, ...extra };
   }));
   app.post('/api/items/:id/subtasks', wrap(req => S.createSubtask(req.user, Number(req.params.id), req.body)));
+  app.post('/api/items/:id/apply-sop', wrap(req => S.applySop(req.user, Number(req.params.id))));
   app.post('/api/items/:id/ack', wrap(req => S.acknowledge(req.user, Number(req.params.id))));
   app.post('/api/items/:id/convert', wrap(req => S.convertToTask(req.user, Number(req.params.id), req.body)));
   app.patch('/api/items/:id', wrap(req => S.updateItem(req.user, Number(req.params.id), req.body)));
@@ -406,6 +407,25 @@ function createApp(P) {
     S.audit('decision', id, req.user.id, 'created'); events.broadcastChange({ meeting: m.id });
     if (req.body.to_task) S.decisionToTask(req.user, id, req.body);
     return { id };
+  }));
+  // قرارات متعددة دفعة واحدة (سطر لكل قرار)، ويمكن تحويلها كلها إلى مهام
+  app.post('/api/meetings/:id/decisions/bulk', wrap(req => {
+    S.require_(req.user, 'meetings.manage');
+    const m = get('SELECT * FROM meetings WHERE id=?', Number(req.params.id)); if (!m) throw S.notFound();
+    const lines = String(req.body.text || '').split('\n').map(x => x.trim().replace(/^[-•*\d.)]+\s*/, '')).filter(Boolean).slice(0, 30);
+    if (!lines.length) throw S.bad('اكتب قرارًا واحدًا على الأقل (سطر لكل قرار)');
+    const section = S.validSection(req.body.section || m.section);
+    if (req.body.to_task && !section) throw S.bad('اختر قسم المهام');
+    const ids = [];
+    tx(() => {
+      for (const text of lines) {
+        const { id } = run('INSERT INTO decisions(meeting_id,text,responsible,due_date) VALUES(?,?,?,?)', m.id, text.slice(0, 2000), S.str(req.body.responsible, 200), S.validDate(req.body.due_date));
+        S.audit('decision', id, req.user.id, 'created'); ids.push(id);
+        if (req.body.to_task) S.decisionToTask(req.user, id, { section, assignee_id: req.body.assignee_id || undefined, due_date: req.body.due_date || undefined });
+      }
+    });
+    events.broadcastChange({ meeting: m.id });
+    return { created: ids.length };
   }));
   app.patch('/api/decisions/:id', wrap(req => {
     S.require_(req.user, 'meetings.manage');
@@ -622,6 +642,17 @@ function createApp(P) {
     return c.json(out);
   });
   const INLINE = /^(image\/(png|jpeg|gif|webp)|audio\/|video\/(mp4|webm)|application\/pdf)/;
+  // أرشيف الملفات: كل ما يحق للمستخدم رؤيته، مع العنصر الذي ينتمي إليه، وبحث بالاسم
+  app.get('/api/files', wrap(req => {
+    const u = req.user; const q = String(req.query.q || '').slice(0, 100);
+    const rows = all(`SELECT f.id,f.original_name,f.mime,f.size,f.is_voice,f.created_at,f.item_id,f.meeting_id,f.sop_id,f.uploader_id,
+        i.ref AS item_ref, i.title AS item_title, i.section AS item_section, m.title AS meeting_title, s.name AS sop_name, us.name AS uploader_name
+      FROM files f LEFT JOIN items i ON i.id=f.item_id LEFT JOIN meetings m ON m.id=f.meeting_id LEFT JOIN sops s ON s.id=f.sop_id LEFT JOIN users us ON us.id=f.uploader_id
+      WHERE f.is_voice=0 AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL)${q ? ' AND (instr(lower(f.original_name), lower(?))>0 OR instr(lower(COALESCE(i.title,"")), lower(?))>0 OR instr(lower(COALESCE(m.title,"")), lower(?))>0)' : ''}
+      ORDER BY f.id DESC LIMIT 400`, ...(q ? [q, q, q] : []));
+    return rows.filter(f => (f.item_id && S.canSee(u, { id: f.item_id })) || (f.meeting_id && D.can(u, 'meetings.view')) || (f.sop_id && D.can(u, 'sops.view')))
+      .map(f => ({ ...f, section_name: f.item_section ? D.sectionName(f.item_section) : null })).slice(0, 200);
+  }));
   app.get('/api/files/:id', async (c) => {
     const user = c.get('user');
     const f = get('SELECT * FROM files WHERE id=?', Number(c.req.param('id')));

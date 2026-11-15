@@ -32,6 +32,9 @@ function clear() {
     run('DELETE FROM decisions WHERE meeting_id IN (SELECT id FROM meetings WHERE is_demo=1)');
     for (const t of ['meetings', 'sops', 'partners']) run(`DELETE FROM ${t} WHERE is_demo=1`);
     run('UPDATE items SET project_id=NULL WHERE project_id IN (SELECT id FROM projects WHERE is_demo=1)');
+    run('UPDATE items SET directive_id=NULL WHERE directive_id IN (SELECT id FROM directives WHERE is_demo=1)');
+    run("DELETE FROM audit_log WHERE entity='directive' AND entity_id IN (SELECT id FROM directives WHERE is_demo=1)");
+    run('DELETE FROM directives WHERE is_demo=1');
     run('DELETE FROM project_members WHERE project_id IN (SELECT id FROM projects WHERE is_demo=1)');
     run('DELETE FROM projects WHERE is_demo=1');
     // المجلدات التجريبية: تخرج منها العناصر الحقيقية أولًا ثم تُحذف
@@ -114,6 +117,12 @@ function seed() {
       else if (status) S.updateItem(manager, it.id, { status, status_note: status === 'stalled' ? 'لم يرد الطرف الآخر بعد ثلاث محاولات' : undefined });
       if (x.title.startsWith('تنسيق حفل')) for (const sub of ['حجز القاعة', 'دعوة أولياء الأمور', 'تجهيز الجوائز']) S.createSubtask(manager, it.id, { title: sub, is_demo: 1 });
     }
+    // توجيهات من المدير وردت بقنوات مختلفة، تحولت إلى مهام
+    S.createDirective(manager, { title: 'إعداد خطة متابعة الحلقات للفصل الثاني', channel: 'whatsapp', importance: 'important', section: 'association', due_date: d(14), is_demo: 1,
+      tasks: [{ title: 'جمع تقارير المشرفين عن الفصل الأول', assignee_id: st('demo.noura'), due_date: d(5) }, { title: 'إعداد مسودة الخطة', assignee_id: st('demo.khalid'), due_date: d(10) }] });
+    const dv = S.createDirective(manager, { title: 'مراجعة عقود الصيانة قبل التجديد', channel: 'verbal', importance: 'urgent', section: 'commercial', due_date: d(-1), is_demo: 1,
+      tasks: [{ title: 'حصر العقود المنتهية خلال شهرين', assignee_id: st('demo.saad'), due_date: d(-2) }] });
+    void dv;
     // موظفو المشاريع
     if (st('demo.saad')) run('INSERT OR IGNORE INTO project_members(project_id,user_id) VALUES(?,?)', p2, st('demo.saad'));
     const t1 = mk(S.createTask, manager, { title: 'تجهيز محاضرة الدورة العلمية', section: 'dawah', project_id: p2, due_date: d(-2), priority: 'important' });

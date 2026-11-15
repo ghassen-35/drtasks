@@ -283,10 +283,12 @@ function navItems() {
     { h: '#/sops', i: 'book', t: 'الإجراءات التشغيلية' },
     { h: '#/partners', i: 'handshake', t: 'العلاقات والشراكات' },
     { h: '#/reports', i: 'chart', t: 'التقارير والإنجازات' },
+    { h: '#/files', i: 'folder', t: 'الأرشيف والملفات' },
   ];
   if (isMember()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
     { h: '#/tasks', i: 'list', t: state.me.grants && state.me.grants.scope !== 'own' ? 'المهام' : 'مهامي' },
+    { h: '#/files', i: 'folder', t: 'الملفات' },
     ...common.filter(n => n.h === '#/sops' || can({ '#/meetings': 'meetings.view', '#/partners': 'partners.view', '#/reports': 'reports.view' }[n.h])),
   ];
   if (isOwner()) return [
@@ -374,6 +376,7 @@ const routes = [
   [/^#\/dashboard$/, viewDashboard],
   [/^#\/tasks(?:\?(.*))?$/, viewTasks],
   [/^#\/command$/, viewCommand],
+  [/^#\/files$/, viewFiles],
   [/^#\/meetings$/, viewMeetings],
   [/^#\/meeting\/(\d+)$/, viewMeeting],
   [/^#\/sops$/, viewSops],
@@ -721,13 +724,14 @@ function modalPostpone(i, after) {
     body: `<p class="small muted">الموعد الحالي: ${esc(fmtDue(i))}</p>
       <div class="btn-row" style="margin:8px 0 12px">${opts.map(([l, d]) => `<button type="button" class="btn" data-pp="${d}">${l}${fmtDate(d) !== l ? ` <span class="small muted">(${esc(fmtDate(d))})</span>` : ''}</button>`).join('')}</div>
       ${field('أو اختر تاريخًا', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
-      ${field('سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
+      ${field(i.is_overdue ? 'سبب التأخير * (يُحفظ في سجل المهمة)' : 'سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
     init: (form) => $$('[data-pp]', form).forEach(b => b.onclick = async () => { try { await save(b.dataset.pp, form.elements.reason.value); m.close(); } catch (e) { showErr(e); } }),
     onSubmit: async (d) => { if (!d.due_date) throw new Error('اختر التاريخ'); await save(d.due_date, d.reason); },
   });
   async function save(date, reason) {
+    if (i.is_overdue && !(reason || '').trim()) throw new Error('المهمة متأخرة: اكتب سبب التأخير قبل التأجيل');
     await api('PATCH', `/api/items/${i.id}`, { due_date: date });
-    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `تأجيل الموعد إلى ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
+    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `${i.is_overdue ? 'سبب التأخير' : 'تأجيل الموعد'} — الموعد الجديد ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
     toast(`أُجّل الموعد إلى ${fmtDate(date)}`, 'ok'); after && after();
   }
 }
@@ -760,6 +764,11 @@ const STALL_REASONS = ['طرف خارجي لم يرد', 'نقص معلومات �
 async function changeStatus(i, status, after) {
   const done = async (body) => { await api('PATCH', `/api/items/${i.id}`, body); toast('تم تحديث الحالة', 'ok'); after && after(); };
   if (status === 'stalled') return modalStalled(i, done);
+  if (status === 'in_progress' && ['done', 'cancelled'].includes(i.status)) return openModal({
+    title: i.status === 'done' ? 'إعادة المهمة للتعديل' : 'إعادة فتح المهمة', submit: 'إعادة فتح',
+    body: field('ما المطلوب تعديله أو سبب إعادة الفتح؟ *', '<textarea name="note" required style="min-height:70px"></textarea>') + '<p class="small muted">يصل السبب إلى المسؤول ويُحفظ في سجل المهمة.</p>',
+    onSubmit: async (d) => { if (!(d.note || '').trim()) throw new Error('اكتب السبب'); await done({ status: 'in_progress', status_note: d.note.trim() }); },
+  });
   if (status === 'done') return modalDone(i, done, after);
   if (status === 'cancelled' && !confirm('تأكيد إلغاء المهمة؟')) return;
   try { await done({ status }); } catch (e) { showErr(e); }
@@ -785,6 +794,7 @@ function modalDone(i, done) {
     body: `${open > 0 ? `<div class="warn-box" style="margin-bottom:10px">في هذه المهمة ${open === 1 ? 'مهمة فرعية مفتوحة' : `${open} مهام فرعية مفتوحة`}.</div>
         <div class="radios" style="margin-bottom:10px"><label class="check"><input type="radio" name="subs" value="all" checked> إنجازها معها</label>
         <label class="check"><input type="radio" name="subs" value="keep"> إبقاؤها مفتوحة</label></div>` : ''}
+      ${i.deliverable ? `<div class="info-box" style="margin-bottom:10px"><b>المخرج المطلوب:</b> ${esc(i.deliverable)} — أرفقه أو صِف ما سُلّم.</div>` : ''}
       ${field('ما الذي أُنجز؟ (اختياري)', '<textarea name="body" style="min-height:70px" placeholder="ملخص قصير للنتيجة يصل إلى مدير المكتب"></textarea>')}
       ${field('مرفقات (اختياري)', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
@@ -890,6 +900,23 @@ async function viewSection(main, key) {
       await renderPartnersInto(tc);
     }
   }
+  await load(); return { refresh: load };
+}
+
+// ===== الأرشيف: كل الملفات المرتبطة بالمهام والاجتماعات والإجراءات، مع البحث =====
+async function viewFiles(main) {
+  let q = '';
+  async function load() {
+    const files = await GET('/api/files?' + qs({ q }));
+    const where = (f) => f.item_id ? `<a href="#/item/${f.item_id}">${esc(f.item_ref || '')} — ${esc(f.item_title || '')}</a>` : f.meeting_id ? `<a href="#/meeting/${f.meeting_id}">اجتماع: ${esc(f.meeting_title || '')}</a>` : `<a href="#/sop/${f.sop_id}">إجراء: ${esc(f.sop_name || '')}</a>`;
+    $('#fl', main).innerHTML = `<p class="small muted">${countTxt(files.length, 'ملف', 'ملفان', 'ملفات')}</p>` + listOrEmpty(files, f => `<div class="row"><div class="main">
+      <a class="title" href="/api/files/${f.id}" target="_blank" rel="noopener">${I('file')} ${esc(f.original_name)}</a>
+      <div class="meta"><span class="txt">${where(f)}</span>${f.section_name ? `<span class="chip">${esc(f.section_name)}</span>` : ''}<span class="txt">${esc(f.uploader_name || '')} • ${fmtTs(f.created_at)}</span></div></div></div>`, q ? 'لا توجد ملفات مطابقة' : 'لا توجد ملفات بعد');
+  }
+  main.innerHTML = `<div class="page-h">${I('folder')}<h1>الأرشيف والملفات</h1></div>
+    <p class="small muted">كل مرفقات المهام والاجتماعات والإجراءات التي يحق لك الاطلاع عليها، مع المكان الذي تنتمي إليه.</p>
+    <div class="filters-top" style="margin-bottom:10px"><input type="search" id="fq" placeholder="بحث باسم الملف أو المهمة أو الاجتماع" aria-label="بحث"></div><div id="fl"></div>`;
+  let t; $('#fq', main).oninput = (e) => { clearTimeout(t); t = setTimeout(() => { q = e.target.value; load(); }, 300); };
   await load(); return { refresh: load };
 }
 
@@ -1154,6 +1181,7 @@ async function viewItem(main, id) {
       <dl class="facts">
         ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
+        ${i.deliverable ? fact('المخرج المطلوب', esc(i.deliverable)) : ''}
         ${i.directive_id ? fact('ضمن التوجيه', can('directives.view') ? `<a href="#/directive/${i.directive_id}">${esc(i.directive_ref)}</a>` : esc(i.directive_ref || '')) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
         ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
@@ -1227,6 +1255,7 @@ async function viewItem(main, id) {
     }
     if (canEditItem(i) && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
     if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
+    if (i.sop_id && i.is_open && !i.parent_task_id && canAddSub() && (!isMember() || i.kind === 'task')) a.push(`<button class="btn" data-a="applySop">${I('book')} خطوات الإجراء كقائمة تحقق</button>`);
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     bar.innerHTML = a.join('');
     bar.classList.toggle('hidden', !a.length);
@@ -1243,6 +1272,7 @@ async function viewItem(main, id) {
         else if (act === 'edit') modalTask(data.item, load);
         else if (act === 'noteOn') modalNote({ parent_id: data.item.id });
         else if (act === 'postpone') modalPostpone(data.item, load);
+        else if (act === 'applySop') { const r = await POST(`/api/items/${id}/apply-sop`); toast(r.added ? `أُضيفت ${r.added} خطوات كمهام فرعية` : 'كل خطوات الإجراء مضافة مسبقًا', 'ok'); await load(); }
       } catch (e) { showErr(e); }
     });
   }
@@ -1441,6 +1471,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
   const people = state.meta.users.filter(u => u.role !== 'owner');
   return `${field('العنوان *', `<input type="text" name="title" required value="${esc(i.title || '')}">`)}
     ${withDesc ? field('الوصف', `<textarea name="description">${esc(i.description || '')}</textarea>`) : ''}
+    ${field('المخرج المطلوب (ما الذي يُسلَّم عند الإنجاز؟)', `<input type="text" name="deliverable" maxlength="1000" value="${esc(i.deliverable || '')}" placeholder="مثل: تقرير معتمد، جدول نهائي، خطاب مرسل">`)}
     <div class="grid2">
       ${field('القسم *', sectionSelect(i.section, 'section', true))}
       ${can('folders.view') ? field('المجلد', folderSelect(folders, i.folder_id, '— بدون —')) : ''}
@@ -1621,9 +1652,18 @@ async function viewMeeting(main, id) {
       ${m.topics ? `<h3 class="section-gap">الموضوعات</h3><div class="desc">${esc(m.topics)}</div>` : ''}
       ${m.minutes ? `<h3 class="section-gap">محضر الاجتماع</h3><div class="orig">${esc(m.minutes)}</div>` : ''}
       ${filesHtml(m.files)}</div>
-      <div class="card"><div class="card-h"><h2>القرارات الصادرة</h2><span class="spacer"></span>${can('meetings.manage') ? `<button class="btn sm primary" id="addD">${I('plus')} قرار</button>` : ''}</div>
+      <div class="card"><div class="card-h"><h2>القرارات الصادرة</h2><span class="chip">${m.decisions.length}</span><span class="spacer"></span>${can('meetings.manage') ? `<button class="btn sm" id="addMany">${I('list')} عدة قرارات</button><button class="btn sm primary" id="addD">${I('plus')} قرار</button>` : ''}</div>
+      <div class="btn-row no-print" style="margin-bottom:8px">${shareLinks(`محضر: ${m.title} — ${fmtDate(m.starts_at.slice(0, 10))}${m.minutes ? '\n\n' + m.minutes : ''}${m.decisions.length ? '\n\nالقرارات:\n' + m.decisions.map((x, n) => `${n + 1}. ${x.text}${x.responsible ? ` — ${x.responsible}` : ''}${x.due_date ? ` (${fmtDate(x.due_date)})` : ''}`).join('\n') : ''}`, `محضر ${m.title}`)}</div>
       ${listOrEmpty(m.decisions, decisionRowHtml, 'لا توجد قرارات مسجلة')}</div>`;
     const e = $('#edit', main); if (e) e.onclick = () => modalMeeting(m);
+    const mm = $('#addMany', main); if (mm) mm.onclick = () => openModal({
+      title: 'إضافة عدة قرارات', submit: 'حفظ القرارات', wide: true,
+      body: `${field('القرارات * (سطر لكل قرار)', '<textarea name="text" required style="min-height:140px" placeholder="اعتماد خطة الفصل الثاني\nتشكيل لجنة الاختبارات\n…"></textarea>')}
+        <label class="check"><input type="checkbox" name="to_task" checked> إنشاء مهمة لكل قرار فورًا</label>
+        <div class="grid2">${field('قسم المهام', sectionSelect(m.section, 'section', true))}${field('المسؤول (اختياري)', `<select name="assignee_id">${opt('', '— يُحدَّد لاحقًا —')}${state.meta.users.filter(u => u.role !== 'owner').map(u => opt(u.id, u.name)).join('')}</select>`)}
+        ${field('الموعد (اختياري)', '<input type="date" name="due_date">')}</div>`,
+      onSubmit: async (d) => { if (d.to_task && !d.section) throw new Error('اختر قسم المهام'); if (!d.assignee_id) delete d.assignee_id; const r = await POST(`/api/meetings/${id}/decisions/bulk`, d); toast(`سُجّل ${r.created} قرارات`, 'ok'); load(); },
+    });
     const ad = $('#addD', main); if (ad) ad.onclick = () => openModal({
       title: 'قرار جديد',
       body: `${field('نص القرار *', '<textarea name="text" required></textarea>')}<div class="grid2">${field('المسؤول', '<input type="text" name="responsible">')}${field('الموعد النهائي', '<input type="date" name="due_date">')}</div>
@@ -1674,6 +1714,7 @@ async function viewSop(main, id) {
       ${s.files.length ? `<h3 class="section-gap">النماذج والملفات</h3>${filesHtml(s.files)}` : ''}</div>
       <div class="card"><div class="card-h"><h2>مهام مرتبطة بهذا الإجراء</h2></div>${listOrEmpty(s.tasks, i => itemRow(i), 'لا توجد')}</div>`;
     const e = $('#edit', main); if (e) e.onclick = () => modalSop(s);
+    if (can('task.create')) { $('.page-h', main).insertAdjacentHTML('beforeend', `<button class="btn primary" id="useSop">${I('plus')} مهمة تتبع هذا الإجراء</button>`); $('#useSop', main).onclick = () => modalTask({ sop_id: s.id, section: s.section, title: s.name }); }
   }
   await load(); return { refresh: load };
 }

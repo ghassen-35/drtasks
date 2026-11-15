@@ -71,4 +71,8 @@ module.exports.migrations = [
     'ALTER TABLE approvals ADD COLUMN decided_channel TEXT',
     'ALTER TABLE approvals ADD COLUMN recorded_by INTEGER REFERENCES users(id)',
   ],
+  // 6) المخرج المطلوب من المهمة (ما الذي يُسلَّم عند الإنجاز)
+  [
+    'ALTER TABLE items ADD COLUMN deliverable TEXT',
+  ],
 ];
