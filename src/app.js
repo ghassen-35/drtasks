@@ -137,7 +137,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    owner_title: D.ownerTitle(), approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -258,8 +258,8 @@ function createApp(P) {
         { key: 'overdue', title: 'المهام المتأخرة', tone: 'red', items: q(`${TK} AND i.due_date<?`, t) },
         { key: 'unack', title: 'تكليفات جديدة غير مؤكدة الاستلام', tone: 'orange', items: q("i.kind IN ('assignment','note') AND i.acknowledged_at IS NULL AND i.status!='cancelled'") },
         { key: 'not_started', title: 'مهام لم يبدأ تنفيذها', tone: 'gray', items: q(`${TK} AND i.status IN ('new','acknowledged')`) },
-        { key: 'waiting_info', title: 'تنتظر معلومات من رجل الأعمال', tone: 'gray', items: q(`${TK} AND i.status='waiting_info'`) },
-        { key: 'waiting_approval', title: 'تنتظر اعتماد رجل الأعمال', tone: 'gray', items: q(`${TK} AND i.status='waiting_approval'`) },
+        { key: 'waiting_info', title: 'تنتظر معلومات من ' + D.ownerTitle() + '', tone: 'gray', items: q(`${TK} AND i.status='waiting_info'`) },
+        { key: 'waiting_approval', title: 'تنتظر اعتماد ' + D.ownerTitle() + '', tone: 'gray', items: q(`${TK} AND i.status='waiting_approval'`) },
         { key: 'waiting_reply', title: 'تنتظر أطرافًا خارجية', tone: 'gray', items: q(`${TK} AND i.status='waiting_reply'`) },
         { key: 'stalled', title: 'تحتاج تدخلًا أو تصعيدًا', tone: 'red', items: q(`${TK} AND i.status='stalled'`) },
         { key: 'to_close', title: 'مكتملة تنتظر الإغلاق النهائي', tone: 'green', items: q("i.kind IN ('assignment','task') AND i.status='done' AND i.closed_at IS NULL") },

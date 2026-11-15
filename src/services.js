@@ -312,7 +312,7 @@ function updateItem(user, id, b) {
     if (changes.length) {
       const what = changes.map(c => FIELD_LABELS[c[0]] || c[0]).join('، ');
       sysMsg(id, user.id, `عدّل ${user.name}: ${what}`, { event: 'edited' });
-      if (user.role === 'owner') notifyRole('manager', { type: 'status_change', title: `عدّل رجل الأعمال: ${it.title}`, body: `${what} — ${it.ref}`, link: link(id), collapse: `item:${id}:edit` });
+      if (user.role === 'owner') notifyRole('manager', { type: 'status_change', title: `عدّل ${D.ownerTitle()}: ${it.title}`, body: `${what} — ${it.ref}`, link: link(id), collapse: `item:${id}:edit` });
     }
     if (b.status !== undefined && b.status !== it.status) setStatus(user, it, b.status, b.status_note);
     // «إنجاز الكل»: إنجاز المهام الفرعية المفتوحة مع أمها
@@ -350,7 +350,7 @@ function setStatus(user, it, status, note) {
   if (!D.STATUSES[status]) throw bad('حالة غير صالحة');
   if (status === 'acknowledged' && !it.acknowledged_at) throw bad('استخدم زر «تأكيد الاستلام»');
   // سياسة الإغلاق: المهمة التي تتطلب اعتمادًا لا تكتمل إلا بعد اعتماد النتيجة النهائية
-  if (status === 'done' && it.requires_approval && !hasApprovedFinal(it.id)) throw bad('هذه المهمة تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل اكتمالها. استخدم «رفع النتيجة النهائية».');
+  if (status === 'done' && it.requires_approval && !hasApprovedFinal(it.id)) throw bad('هذه المهمة تتطلب اعتماد ' + D.ownerTitle() + ' للنتيجة النهائية قبل اكتمالها. استخدم «رفع النتيجة النهائية».');
   if (status === 'waiting_approval' && !get("SELECT id FROM approvals WHERE item_id=? AND status='pending'", it.id)) throw bad('استخدم «طلب اعتماد» لإرسال ما يحتاج إلى قرار');
   const at = nowIso();
   const sets = ['status=?']; const vals = [status];
@@ -367,7 +367,7 @@ function setStatus(user, it, status, note) {
   if (user.role === 'manager' && it.source === 'owner' && target) {
     notify(target, { type: 'status_change', title: `${D.STATUSES[status]}: ${it.title}`, body: it.ref, link: link(it.id), urgent: status === 'stalled', collapse: `item:${it.id}:status` });
   } else if (user.role === 'owner') {
-    notifyRole('manager', { type: 'status_change', title: status === 'cancelled' ? `ألغى رجل الأعمال: ${it.title}` : `${D.STATUSES[status]} (رجل الأعمال): ${it.title}`, body: it.ref, link: link(it.id), collapse: `item:${it.id}:status` });
+    notifyRole('manager', { type: 'status_change', title: status === 'cancelled' ? `ألغى ${D.ownerTitle()}: ${it.title}` : `${D.STATUSES[status]} (${D.ownerTitle()}): ${it.title}`, body: it.ref, link: link(it.id), collapse: `item:${it.id}:status` });
   } else if (user.role === 'member') {
     notifyRole('manager', { type: 'status_change', title: `${D.STATUSES[status]}: ${it.title}`, body: `${user.name} — ${it.ref}`, link: link(it.id), urgent: status === 'stalled', collapse: `item:${it.id}:status` });
   }
@@ -418,7 +418,7 @@ function createSubtask(user, parentId, b) {
     if (user.role === 'owner') run("UPDATE items SET source='owner' WHERE id=?", st.id);
     sysMsg(parent.id, user.id, `أضاف ${user.name} مهمة فرعية: ${st.title}`, { event: 'subtask', id: st.id });
     touch(parent.id, user.id);
-    if (user.role === 'owner') notifyRole('manager', { type: 'new_assignment', title: `مهمة فرعية جديدة من رجل الأعمال: ${st.title}`, body: `تحت ${parent.ref} — ${parent.title}`, link: link(parent.id) });
+    if (user.role === 'owner') notifyRole('manager', { type: 'new_assignment', title: `مهمة فرعية جديدة من ${D.ownerTitle()}: ${st.title}`, body: `تحت ${parent.ref} — ${parent.title}`, link: link(parent.id) });
     events.broadcastChange({ item: parent.id });
     return getItem(st.id);
   });
@@ -455,7 +455,7 @@ function addMessage(user, id, b, fileIds = []) {
     if (b.next_step !== undefined && user.role === 'manager') { run('UPDATE items SET next_step=? WHERE id=?', str(b.next_step, 500), id); audit('item', id, user.id, 'updated', 'next_step', it.next_step, b.next_step); }
     touch(id, user.id);
     audit('item', id, user.id, kind === 'update' ? 'update_posted' : 'message');
-    const title = user.role === 'owner' ? `ملاحظة من رجل الأعمال على: ${it.title}` : kind === 'update' ? `تحديث من ${user.name}: ${it.title}` : `رسالة من ${user.name}: ${it.title}`;
+    const title = user.role === 'owner' ? `ملاحظة من ${D.ownerTitle()} على: ${it.title}` : kind === 'update' ? `تحديث من ${user.name}: ${it.title}` : `رسالة من ${user.name}: ${it.title}`;
     const payload = { type: 'new_message', title, body: (body || 'ملف مرفق').slice(0, 200), link: link(id), collapse: `item:${id}:msg:${user.id}` };
     if (user.role === 'member') notifyRole('manager', payload); else notifyRole(otherRole(user), payload);
     notifyAssignee(it, user, payload);
@@ -533,7 +533,7 @@ function decide(user, aid, b) {
       audit('item', a.item_id, user.id, 'status', 'status', it.status, newStatus);
       if (newStatus === 'done' && it.recurrence && !it.next_occurrence_id) spawnNextOccurrence(user, it);
     }
-    const txt = `قرار رجل الأعمال على «${a.title}»: ${DECISIONS[decision]}${chosen ? ` — ${chosen}` : ''}${note ? `\n${note}` : ''}`;
+    const txt = `قرار ${D.ownerTitle()} على «${a.title}»: ${DECISIONS[decision]}${chosen ? ` — ${chosen}` : ''}${note ? `\n${note}` : ''}`;
     sysMsg(a.item_id, user.id, txt, { event: 'decision', approval_id: aid, decision }, 'decision');
     touch(a.item_id, user.id);
     notifyRole('manager', { type: 'decision', title: `${DECISIONS[decision]}: ${a.title}`, body: `${it.ref} — ${note || chosen || ''}`.slice(0, 200), link: link(a.item_id) });
@@ -610,7 +610,7 @@ async function updateUser(actor, id, b) {
   require_(actor, 'users.manage');
   const u = get(`SELECT *, ${D.roleSql()} AS eff_role FROM users WHERE id=?`, id); if (!u) throw notFound('المستخدم غير موجود');
   if (u.eff_role !== 'member' && u.id !== actor.id && ['name', 'email', 'password', 'active', 'grants'].some(k => b[k] !== undefined))
-    throw forbidden('حسابا رجل الأعمال ومدير المكتب يعدّلهما صاحباهما فقط');
+    throw forbidden('حسابا ' + D.ownerTitle() + ' ومدير المكتب يعدّلهما صاحباهما فقط');
   const hash = b.password ? (String(b.password).length < 8 ? (() => { throw bad('كلمة المرور يجب ألا تقل عن 8 أحرف'); })() : await require('./auth').hashPassword(String(b.password))) : null;
   let cut = false;
   const out = tx(() => {
@@ -618,7 +618,7 @@ async function updateUser(actor, id, b) {
     if (b.title !== undefined) run('UPDATE users SET title=? WHERE id=?', str(b.title, 60), id);
     if (b.email !== undefined) { const e = str(b.email, 200); if (e && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw bad('بريد إلكتروني غير صالح'); run('UPDATE users SET email=? WHERE id=?', e, id); }
     if (b.active !== undefined) {
-      if (u.eff_role !== 'member') throw bad('لا يمكن إيقاف حساب رجل الأعمال أو مدير المكتب');
+      if (u.eff_role !== 'member') throw bad('لا يمكن إيقاف حساب ' + D.ownerTitle() + ' أو مدير المكتب');
       run('UPDATE users SET active=? WHERE id=?', b.active ? 1 : 0, id);
       if (!b.active) { run('DELETE FROM sessions WHERE user_id=?', id); cut = true; }
     }

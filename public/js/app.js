@@ -52,6 +52,7 @@ const dueChip = (i) => !i.due_date ? '' : `<span class="chip ${i.is_overdue ? 'o
 const kindLabel = (i) => i.kind === 'assignment' ? 'تكليف' : i.kind === 'note' ? (i.msg_type_label || 'ملاحظة') : 'مهمة';
 const sectionName = (k) => (state.meta.sections.find(s => s.key === k) || {}).name || '—';
 const demoChip = (x) => x.is_demo ? '<span class="chip demo">بيانات تجريبية</span>' : '';
+const OT = () => (state.meta && state.meta.owner_title) || 'مدير الشؤون التعليمية'; // مسمى الحساب الأعلى
 const isOwner = () => state.me.role === 'owner';
 const isManager = () => state.me.role === 'manager';
 const isMember = () => state.me.role === 'member';
@@ -296,7 +297,7 @@ function navItems() {
   ];
   return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/inbox', i: 'inbox', t: 'الوارد من رجل الأعمال', n: c.inbox_pending },
+    { h: '#/inbox', i: 'inbox', t: 'الوارد من ' + OT() + '', n: c.inbox_pending },
     { h: '#/dashboard', i: 'alert', t: 'لوحة المتابعة' },
     { h: '#/tasks', i: 'list', t: 'كل المهام' },
     { h: '#/approvals', i: 'gavel', t: 'طلبات الاعتماد', n: c.pending_decisions, o: true },
@@ -607,7 +608,7 @@ async function viewHome(main) {
       const inbox = await GET('/api/items?kind=inbox');
       const pendingInbox = inbox.filter(inboxPending);
       roleHtml = `
-      <div class="card section-gap"><div class="card-h">${I('inbox')}<h2>الوارد من رجل الأعمال</h2><span class="chip ${pendingInbox.length ? 'p-urgent' : ''}">${pendingInbox.length} يحتاج إجراء</span><span class="spacer"></span><a class="btn sm" href="#/inbox">صندوق الوارد</a></div>
+      <div class="card section-gap"><div class="card-h">${I('inbox')}<h2>الوارد من ${OT()}</h2><span class="chip ${pendingInbox.length ? 'p-urgent' : ''}">${pendingInbox.length} يحتاج إجراء</span><span class="spacer"></span><a class="btn sm" href="#/inbox">صندوق الوارد</a></div>
         ${listOrEmpty(pendingInbox.slice(0, 5), i => itemRow(i, { actions: inboxActions(i) }), 'لا يوجد وارد جديد')}
       </div>
       <div class="cols section-gap">
@@ -616,7 +617,7 @@ async function viewHome(main) {
             <a class="kpi blue" href="#/tasks"><b>${s.open}</b><span>مهام مفتوحة</span></a>
             <a class="kpi red" href="#/dashboard"><b>${s.overdue}</b><span>متأخرة</span></a>
             <a class="kpi red" href="#/dashboard"><b>${s.urgent}</b><span>عاجلة</span></a>
-            <a class="kpi orange" href="#/approvals"><b>${s.pending_decisions}</b><span>تنتظر قرار رجل الأعمال</span></a>
+            <a class="kpi orange" href="#/approvals"><b>${s.pending_decisions}</b><span>تنتظر قرار ${OT()}</span></a>
           </div></div>
         <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2></div>${listOrEmpty(h.meetings, meetingRow, 'لا توجد اجتماعات قادمة')}</div>
       </div>`;
@@ -659,7 +660,7 @@ async function viewInbox(main) {
   async function load() {
     const items = await GET('/api/items?kind=inbox');
     const shown = tab === 'pending' ? items.filter(inboxPending) : items;
-    main.innerHTML = `<div class="page-h">${I('inbox')}<h1>الوارد من رجل الأعمال</h1></div>
+    main.innerHTML = `<div class="page-h">${I('inbox')}<h1>الوارد من ${OT()}</h1></div>
       <div class="tabs"><button data-tab="pending" class="${tab === 'pending' ? 'active' : ''}">يحتاج إجراء (${items.filter(inboxPending).length})</button><button data-tab="all" class="${tab === 'all' ? 'active' : ''}">الكل (${items.length})</button></div>
       ${listOrEmpty(shown, i => itemRow(i, { actions: inboxActions(i), showUpdated: true }), 'لا يوجد وارد يحتاج إجراء')}`;
     $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
@@ -935,7 +936,7 @@ async function viewItem(main, id) {
   main.innerHTML = `<div id="ih"></div><div id="subs"></div>
     <div class="card section-gap"><div class="card-h">${I('note')}<h2>المحادثة والتحديثات والقرارات</h2></div><div class="timeline" id="tl"></div></div>
     <form class="composer no-print" id="cmp">
-      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا لرجل الأعمال…')}" aria-label="نص الرسالة"></textarea>
+      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا ل" + OT() + "…')}" aria-label="نص الرسالة"></textarea>
       ${!isOwner() ? `<div class="grid2" style="margin-top:8px"><select name="kind" aria-label="نوع الرسالة">${opt('update', 'تحديث تنفيذ')}${opt('message', 'رسالة / استفسار')}</select>${isManager() ? '<input type="text" name="next_step" placeholder="الخطوة التالية (اختياري)">' : ''}</div>` : ''}
       <div class="tools">${fileFieldHtml()}<span class="spacer" style="flex:1"></span><button class="btn primary" type="submit">${I('send')} إرسال</button></div>
     </form>
@@ -975,7 +976,7 @@ async function viewItem(main, id) {
         ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
-        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
+        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
@@ -984,7 +985,7 @@ async function viewItem(main, id) {
         ${data.partner ? fact('الجهة', `<a href="#/partner/${data.partner.id}">${esc(data.partner.name)}</a>`) : ''}
       </dl>
       ${i.description ? `<div class="desc">${esc(i.description)}</div>` : ''}
-      ${i.original_text && i.source === 'owner' ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">النص الأصلي كما أرسله رجل الأعمال</summary><div class="orig">${esc(i.original_text)}</div></details>` : ''}
+      ${i.original_text && i.source === 'owner' ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">النص الأصلي كما أرسله ${OT()}</summary><div class="orig">${esc(i.original_text)}</div></details>` : ''}
       ${data.files.length ? `<div style="margin-top:10px"><div class="small muted">المرفقات</div>${filesHtml(data.files)}</div>` : ''}
       <div class="actions-bar no-print" id="acts"></div>
     </div>`;
@@ -1053,7 +1054,7 @@ async function viewItem(main, id) {
     $$('[data-a]', bar).forEach(b => b.onclick = async () => {
       const act = b.dataset.a;
       try {
-        if (act === 'ack') { await POST(`/api/items/${id}/ack`); toast('تم تأكيد الاستلام وإبلاغ رجل الأعمال', 'ok'); await load(); }
+        if (act === 'ack') { await POST(`/api/items/${id}/ack`); toast('تم تأكيد الاستلام وإبلاغ ' + OT() + '', 'ok'); await load(); }
         else if (act === 'convert') modalConvert(data.item, load);
         else if (act === 'noteDone') { await api('PATCH', `/api/items/${id}`, { status: 'done' }); await load(); }
         else if (act === 'approval') modalApproval(data.item, load);
@@ -1081,7 +1082,7 @@ async function viewItem(main, id) {
           <button class="btn red sm" data-d="rejected">رفض</button>`}
         </div></form>`;
     } else if (!decided && isManager()) {
-      ctl = `<div class="btn-row" style="margin-top:6px"><span class="small muted">بانتظار قرار رجل الأعمال</span><button class="btn sm ghost" data-withdraw="${ap.id}">سحب الطلب</button></div>`;
+      ctl = `<div class="btn-row" style="margin-top:6px"><span class="small muted">بانتظار قرار ${OT()}</span><button class="btn sm ghost" data-withdraw="${ap.id}">سحب الطلب</button></div>`;
     }
     return `<div class="approval ${decided ? 'decided-' + ap.status : ''}">
       <div class="who">${I('gavel')}<b>${esc(ap.kind_label)}</b> • ${esc(ap.requested_by_name)} • ${fmtTs(ap.requested_at)} ${ap.blocking && !decided ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}</div>
@@ -1272,7 +1273,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
       ${can('sops.view') ? field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`) : ''}
       ${can('partners.view') ? field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`) : ''}
     </div>
-    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}
+    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد ${OT()} للنتيجة النهائية قبل الإغلاق</label>`}
     </details>`;
 }
 // في نموذج المهمة: المجلدات والمشاريع تتبع القسم المختار، واختيار مشروع يضبط مجلده
@@ -1341,26 +1342,26 @@ async function modalConvert(i, after) {
 function modalApproval(i, after, preset = {}) {
   const kinds = Object.entries(state.meta.approval_kinds).filter(([k]) => k !== 'final');
   openModal({
-    title: 'طلب اعتماد أو قرار من رجل الأعمال', submit: 'إرسال الطلب',
+    title: 'طلب اعتماد أو قرار من ' + OT() + '', submit: 'إرسال الطلب',
     body: `${field('نوع الطلب', `<select name="kind">${kinds.map(([k, v]) => opt(k, v, preset.kind || 'report')).join('')}</select>`)}
       ${field('العنوان *', `<input type="text" name="title" required value="${esc(preset.title || '')}">`)}
       ${field('التفاصيل', '<textarea name="body" placeholder="ملخص ما يحتاج إلى قرار، والتوصية إن وجدت"></textarea>')}
       ${field('بدائل مقترحة (اختياري — كل بديل في سطر)', '<textarea name="options" style="min-height:70px"></textarea>')}
       <label class="check"><input type="checkbox" name="blocking" checked> هذا القرار يعطل التنفيذ (يظهر في شريط المهام العاجلة)</label>
       ${field('المرفقات (تقرير، عرض…)', fileFieldHtml('file_ids', false))}`,
-    onSubmit: async (d) => { await POST(`/api/items/${i.id}/approvals`, d); toast('أُرسل الطلب إلى رجل الأعمال', 'ok'); after && after(); },
+    onSubmit: async (d) => { await POST(`/api/items/${i.id}/approvals`, d); toast('أُرسل الطلب إلى ' + OT() + '', 'ok'); after && after(); },
   });
 }
 function modalResult(i, after) {
   openModal({
     title: 'رفع النتيجة النهائية', submit: i.requires_approval ? 'رفع النتيجة وطلب الاعتماد' : 'رفع النتيجة وإكمال المهمة', submitClass: 'green',
-    body: `${i.requires_approval ? '<div class="warn-box" style="margin-bottom:10px">هذه المهمة تتطلب اعتماد رجل الأعمال؛ ستُرسل النتيجة إليه وتكتمل المهمة بعد اعتماده.</div>' : ''}
+    body: `${i.requires_approval ? '<div class="warn-box" style="margin-bottom:10px">هذه المهمة تتطلب اعتماد ' + OT() + '؛ ستُرسل النتيجة إليه وتكتمل المهمة بعد اعتماده.</div>' : ''}
       ${field('ملخص النتيجة *', '<textarea name="body" required></textarea>')}${field('المرفقات', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
       if (!d.body.trim()) throw new Error('اكتب ملخص النتيجة');
       if (i.requires_approval) await POST(`/api/items/${i.id}/approvals`, { kind: 'final', title: i.title, body: d.body, file_ids: d.file_ids, blocking: true });
       else { await POST(`/api/items/${i.id}/messages`, { body: d.body, kind: 'result', file_ids: d.file_ids }); await api('PATCH', `/api/items/${i.id}`, { status: 'done' }); }
-      toast(i.requires_approval ? 'أُرسلت النتيجة لاعتماد رجل الأعمال' : 'اكتملت المهمة', 'ok'); after && after();
+      toast(i.requires_approval ? 'أُرسلت النتيجة لاعتماد ' + OT() + '' : 'اكتملت المهمة', 'ok'); after && after();
     },
   });
 }
@@ -1670,7 +1671,7 @@ function grantsEditorHtml(g = { scope: 'own', sections: [], perms: [] }) {
     ${field('ماذا يستطيع أن يفعل؟', `<div class="radios">
       <label class="check"><input type="checkbox" checked disabled> تحديث حالة مهامه وإضافة التحديثات والمرفقات (دائمًا)</label>
       ${Object.entries(m.grantable).map(([k, v]) => `<label class="check"><input type="checkbox" name="g_perms" data-multi="1" value="${k}" ${g.perms.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`)}
-    <p class="small muted">لا يملك الموظف أبدًا: الاعتماد والقرارات، إغلاق المهام نهائيًا، الوارد من رجل الأعمال، إدارة المستخدمين.</p></fieldset>`;
+    <p class="small muted">لا يملك الموظف أبدًا: الاعتماد والقرارات، إغلاق المهام نهائيًا، الوارد من ${OT()}، إدارة المستخدمين.</p></fieldset>`;
 }
 function bindGrantsEditor(form) {
   const m = state.meta;
@@ -1716,9 +1717,9 @@ async function renderUsersAdmin(el) {
       body: `<div class="grid2">${field('الاسم', `<input type="text" name="name" value="${esc(u.name)}" required>`)}${field('البريد', `<input type="email" name="email" dir="ltr" value="${esc(u.email || '')}">`)}
         ${field(u.id === state.me.id || u.role === 'member' ? 'كلمة مرور جديدة (اتركها فارغة للإبقاء)' + (u.role === 'member' ? ' — سيُطلب منه تغييرها عند دخوله' : '') : 'كلمة المرور', u.id === state.me.id || u.role === 'member' ? '<input type="password" name="password" dir="ltr" autocomplete="new-password">' : '<p class="small muted">يغيّرها صاحب الحساب من إعداداته.</p>')}
         ${u.role === 'member' ? field('المسمى الوظيفي', `<input type="text" name="title" maxlength="60" value="${esc(u.title || '')}">`) : ''}</div>
-        ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
+        ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">' + OT() + ' ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
       onSubmit: async (d) => {
-        if (u.id !== state.me.id && u.role !== 'member') { toast('حسابا رجل الأعمال ومدير المكتب يعدّلهما صاحباهما من الإعدادات', 'err'); return; }
+        if (u.id !== state.me.id && u.role !== 'member') { toast('حسابا ' + OT() + ' ومدير المكتب يعدّلهما صاحباهما من الإعدادات', 'err'); return; }
         const body = { name: d.name, email: d.email };
         if (u.role === 'member') body.title = d.title;
         if (d.password) body.password = d.password;
