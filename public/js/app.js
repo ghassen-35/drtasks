@@ -89,10 +89,10 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
 const countTxt = (n, one, two, many) => n === 0 ? 'لا نتائج' : n === 1 ? `${one} واحدة` : n === 2 ? two : `${n} ${n <= 10 ? many : one}`;
 const listOrEmpty = (items, fn, empty = 'لا توجد عناصر') => items.length ? `<div class="list">${items.map(fn).join('')}</div>` : `<div class="empty">${empty}</div>`;
 
-function toast(msg, kind = '', onClick) {
-  if (kind !== 'urgent') $$('#toasts .toast:not(.urgent):not(.more)').forEach(t => t.remove()); // تنبيه واحد في كل مرة
-  // التنبيهات العاجلة: اثنان على الأكثر، والباقي يُجمع في تنبيه واحد يفتح الإشعارات
-  if (kind === 'urgent' && $$('#toasts .toast.urgent').length >= 2) {
+// نوعان: نتيجة إجراء المستخدم (تظهر دائمًا وتحل محل سابقتها)، والإشعارات الواردة (واحد ظاهر، والبقية تُجمع في «تنبيهات أخرى»)
+function toast(msg, kind = '', onClick, { notif = false } = {}) {
+  if (!notif) $$('#toasts .toast.act').forEach(t => t.remove());
+  if (notif && $$('#toasts .toast.notif').length >= 1) {
     let more = $('#toasts .toast.more');
     if (!more) { more = document.createElement('div'); more.className = 'toast more'; more.dataset.n = '0'; more.setAttribute('role', 'status'); more.onclick = () => { more.remove(); location.hash = '#/notifications'; }; $('#toasts').appendChild(more); }
     more.dataset.n = String(Number(more.dataset.n) + 1);
@@ -100,9 +100,9 @@ function toast(msg, kind = '', onClick) {
     clearTimeout(more._t); more._t = setTimeout(() => more.remove(), 9000);
     return;
   }
-  const el = document.createElement('div'); el.className = `toast ${kind}`; el.textContent = msg; el.setAttribute('role', 'status');
+  const el = document.createElement('div'); el.className = `toast ${kind} ${notif ? 'notif' : 'act'}`; el.textContent = msg; el.setAttribute('role', 'status');
   el.onclick = () => { el.remove(); onClick && onClick(); };
-  $('#toasts').appendChild(el); setTimeout(() => el.remove(), kind === 'urgent' ? 9000 : 4500);
+  $('#toasts').appendChild(el); setTimeout(() => el.remove(), kind === 'urgent' ? 9000 : notif ? 6000 : 4500);
 }
 const showErr = (e) => toast(e.message || String(e), 'err');
 
@@ -478,7 +478,7 @@ async function systemNotify(n) {
 let es = null, ws = null, wsWanted = false, wsTries = 0, wsPing = null;
 function onNotification(n) {
   systemNotify(n);
-  toast(n.title, n.urgent ? 'urgent' : '', () => { if (n.link) location.hash = n.link.replace(/^#/, ''); });
+  toast(n.title, n.urgent ? 'urgent' : '', () => { if (n.link) location.hash = n.link.replace(/^#/, ''); }, { notif: true });
   refreshCounts();
 }
 function connectWs() {

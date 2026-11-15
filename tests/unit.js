@@ -347,6 +347,15 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('خطوات الإجراء تصبح مهامًا فرعية مرة واحدة', r1.added === 3 && r2.added === 0 && S.subtasksOf(tk.id).map(x => x.title).join('|') === 'تجهيز الأسئلة|مراجعة الأسئلة|طباعة النماذج');
 }
 
+// ---- عبء العمل: الحساب والاسم المكتوب للشخص نفسه صف واحد
+{
+  S.createTask(mgr, { title: 'باسم مكتوب', section: 'family', assignee: mgr.name });
+  run('UPDATE items SET assignee_id=NULL, assignee=? WHERE title=?', mgr.name, 'باسم مكتوب');
+  S.createTask(mgr, { title: 'بالحساب', section: 'family', assignee_id: mgr.id });
+  const rows = D.report('week').by_person.filter(p => p.name === mgr.name);
+  t('الحساب والاسم المكتوب لنفس الشخص يظهران صفًا واحدًا', rows.length === 1);
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

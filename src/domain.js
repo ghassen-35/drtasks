@@ -298,13 +298,13 @@ function report(period = 'week') {
     : null; // بيانات غير كافية
   // عبء العمل حسب المسؤول: المفتوحة، المتأخرة، المستحقة خلال أسبوع، والمنجزة في الفترة
   const week = addDays(t, 7);
-  r.by_person = all(`SELECT COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد') AS name, COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS user_id,
+  r.by_person = all(`SELECT COALESCE(u.name, (SELECT x.name FROM users x WHERE x.name=i.assignee LIMIT 1), NULLIF(i.assignee,''), 'غير محدد') AS name, COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS user_id,
       SUM(CASE WHEN i.${OPEN} THEN 1 ELSE 0 END) AS open,
       SUM(CASE WHEN i.${OPEN} AND i.due_date<? THEN 1 ELSE 0 END) AS overdue,
       SUM(CASE WHEN i.${OPEN} AND i.due_date BETWEEN ? AND ? THEN 1 ELSE 0 END) AS due_week,
       SUM(CASE WHEN i.status='done' AND i.completed_at>=? THEN 1 ELSE 0 END) AS completed
     FROM items i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.kind IN ${TASK_KINDS}
-    GROUP BY COALESCE(CAST(i.assignee_id AS TEXT), (SELECT 'u' || x.id FROM users x WHERE x.name=i.assignee LIMIT 1), 'n:' || COALESCE(NULLIF(i.assignee,''), 'غير محدد'))
+    GROUP BY COALESCE(CAST(COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS TEXT), 'n:' || COALESCE(NULLIF(i.assignee,''), 'غير محدد'))
     HAVING open > 0 OR completed > 0 ORDER BY overdue DESC, open DESC LIMIT 50`, t, t, week, fromIso);
   const ot = onTimeStats(from, t);
   r.on_time = { total: ot.total, on_time: ot.on_time, rate: ot.rate };
