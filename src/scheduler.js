@@ -23,7 +23,16 @@ function runScheduler({ dailyBackup } = {}) {
     if (hour >= 7) {
       const h = { today: D.todayRibbon().length, urgent: D.urgentRibbon().length, overdue: overdue.length, approvals: get("SELECT COUNT(*) c FROM approvals WHERE status='pending'").c };
       const body = `مهام اليوم: ${h.today} • عاجلة: ${h.urgent} • متأخرة: ${h.overdue} • بانتظار قرار: ${h.approvals}`;
-      for (const u of all('SELECT id FROM users WHERE active=1')) N.notify(u.id, { type: 'digest', title: `الملخص اليومي ${t}`, body, link: '#/', dedupe: `digest:${t}` });
+      const S = require('./services');
+      for (const u of all(`SELECT id,name,grants,${D.roleSql()} AS role FROM users WHERE active=1`)) {
+        let b = body;
+        if (u.role === 'member') { // الموظف: أرقامه هو فقط
+          const sc = S.scopeFor(u);
+          const n = (cond, ...p) => get(`SELECT COUNT(*) c FROM items i WHERE i.kind IN ${D.TASK_KINDS} AND i.${D.OPEN} AND ${cond}${sc.sql}`, ...p, ...sc.params).c;
+          b = `مهامك اليوم: ${n('i.due_date=?', t)} • متأخرة: ${n('i.due_date<?', t)} • عاجلة: ${n("i.priority='urgent'")}`;
+        }
+        N.notify(u.id, { type: 'digest', title: 'الملخص اليومي', body: b, link: '#/', dedupe: `digest:${t}` });
+      }
       if (dailyBackup) dailyBackup();
     }
     run('DELETE FROM sessions WHERE expires_at<?', nowIso());

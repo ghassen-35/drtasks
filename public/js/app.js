@@ -291,7 +291,7 @@ function navItems() {
 }
 function bottomItems() {
   const c = state.counts;
-  if (isMember()) return [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/tasks', i: 'list', t: 'مهامي' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/settings', i: 'settings', t: 'الإعدادات' }];
+  if (isMember()) return [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/tasks', i: 'list', t: 'المهام' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
   return isOwner()
     ? [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/my', i: 'list', t: 'طلباتي' }, { h: '#/decisions', i: 'gavel', t: 'قراري', n: c.pending_decisions }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }]
     : [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/inbox', i: 'inbox', t: 'الوارد', n: c.inbox_pending }, { h: '#/dashboard', i: 'alert', t: 'المتابعة' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
@@ -806,7 +806,7 @@ async function viewItem(main, id) {
   main.innerHTML = `<div id="ih"></div><div id="subs"></div>
     <div class="card section-gap"><div class="card-h">${I('note')}<h2>المحادثة والتحديثات والقرارات</h2></div><div class="timeline" id="tl"></div></div>
     <form class="composer no-print" id="cmp">
-      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : 'اكتب رسالة أو تحديثًا لرجل الأعمال…'}" aria-label="نص الرسالة"></textarea>
+      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا لرجل الأعمال…')}" aria-label="نص الرسالة"></textarea>
       ${!isOwner() ? `<div class="grid2" style="margin-top:8px"><select name="kind" aria-label="نوع الرسالة">${opt('update', 'تحديث تنفيذ')}${opt('message', 'رسالة / استفسار')}</select>${isManager() ? '<input type="text" name="next_step" placeholder="الخطوة التالية (اختياري)">' : ''}</div>` : ''}
       <div class="tools">${fileFieldHtml()}<span class="spacer" style="flex:1"></span><button class="btn primary" type="submit">${I('send')} إرسال</button></div>
     </form>
@@ -846,7 +846,7 @@ async function viewItem(main, id) {
         ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
-        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : 'مدير المكتب')}
+        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
@@ -1566,7 +1566,7 @@ async function viewMore(main) {
   main.innerHTML = `<div class="page-h"><h1>المزيد</h1></div><div class="list">
     ${navItems().map(n => `<a class="row" href="${n.h}"><div class="main"><span class="title">${I(n.i)} ${n.t}</span></div>${n.n ? `<span class="chip p-urgent">${n.n}</span>` : ''}</a>`).join('')}
     ${can('folders.view') ? `<div class="lbl small muted" style="margin-top:8px">الأقسام</div>
-    ${state.meta.sections.map(s => `<a class="row" href="#/section/${s.key}"><div class="main"><span class="title">${I(s.icon)} ${s.name}</span></div></a>`).join('')}` : ''}
+    ${mySections().map(s => `<a class="row" href="#/section/${s.key}"><div class="main"><span class="title">${I(s.icon)} ${s.name}</span></div></a>`).join('')}` : ''}
     <a class="row" href="#/settings"><div class="main"><span class="title">${I('settings')} الإعدادات والإشعارات</span></div></a>
     <a class="row" href="#" id="lo"><div class="main"><span class="title">${I('logout')} تسجيل الخروج</span></div></a></div>`;
   $('#lo', main).onclick = (e) => { e.preventDefault(); logout(); };
