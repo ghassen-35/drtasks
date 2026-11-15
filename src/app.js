@@ -335,7 +335,9 @@ function createApp(P) {
   }));
 
   // ===== الاجتماعات والقرارات =====
-  function decisionRow(d, t = D.todayStr()) {
+  function decisionRow(d, t = D.todayStr(), user = null) {
+    // من لا يرى المهمة المرتبطة لا يرى رقمها ولا حالتها
+    if (user && d.task_id && !S.canSee(user, { id: d.task_id })) { d = { ...d, task_ref: null, task_status: null, task_hidden: 1 }; }
     const st = d.task_status || d.status;
     return { ...d, effective_status: st, status_label: D.STATUSES[st] || ({ pending: 'لم يبدأ' })[st] || st, is_overdue: !['done', 'cancelled'].includes(st) && d.due_date && d.due_date < t };
   }
@@ -346,12 +348,12 @@ function createApp(P) {
   }));
   app.get('/api/decisions', wrap(req => {
     S.require_(req.user, 'meetings.view');
-    return all(`SELECT d.*, m.title AS meeting_title, m.section AS meeting_section, m.starts_at, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id ORDER BY COALESCE(d.due_date,'9999')`).map(d => decisionRow(d));
+    return all(`SELECT d.*, m.title AS meeting_title, m.section AS meeting_section, m.starts_at, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id ORDER BY COALESCE(d.due_date,'9999')`).map(d => decisionRow(d, undefined, req.user));
   }));
   app.get('/api/meetings/:id', wrap(req => {
     S.require_(req.user, 'meetings.view');
     const m = get('SELECT * FROM meetings WHERE id=?', Number(req.params.id)); if (!m) throw S.notFound();
-    m.decisions = all('SELECT d.*, m.section AS meeting_section, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id WHERE d.meeting_id=? ORDER BY d.id', m.id).map(d => decisionRow(d));
+    m.decisions = all('SELECT d.*, m.section AS meeting_section, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id WHERE d.meeting_id=? ORDER BY d.id', m.id).map(d => decisionRow(d, undefined, req.user));
     m.files = all('SELECT id,original_name,mime,size FROM files WHERE meeting_id=?', m.id);
     m.section_name = m.section ? D.sectionName(m.section) : null;
     return m;

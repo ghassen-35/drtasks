@@ -24,6 +24,7 @@ export class OfficeDO extends DurableObject {
     events.setTransport({
       sendTo: (userId, event, data) => { for (const ws of ctx.getWebSockets(`u${userId}`)) try { ws.send(JSON.stringify({ event, data })); } catch { /* اتصال مغلق */ } },
       broadcast: (event, data) => { for (const ws of ctx.getWebSockets()) try { ws.send(JSON.stringify({ event, data })); } catch { /* اتصال مغلق */ } },
+      disconnect: (userId) => { for (const ws of ctx.getWebSockets(`u${userId}`)) try { ws.send(JSON.stringify({ event: 'logout', data: {} })); ws.close(4001, 'logout'); } catch { /* مغلق */ } },
     });
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong')); // نبض الاتصال دون إيقاظ الكائن
     const blobs = {

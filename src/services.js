@@ -583,9 +583,9 @@ async function updateUser(actor, id, b) {
     if (b.active !== undefined) {
       if (u.eff_role !== 'member') throw bad('لا يمكن إيقاف حساب رجل الأعمال أو مدير المكتب');
       run('UPDATE users SET active=? WHERE id=?', b.active ? 1 : 0, id);
-      if (!b.active) run('DELETE FROM sessions WHERE user_id=?', id);
+      if (!b.active) { run('DELETE FROM sessions WHERE user_id=?', id); events.disconnect(id); }
     }
-    if (hash) { run('UPDATE users SET password_hash=? WHERE id=?', hash, id); if (id !== actor.id) run('DELETE FROM sessions WHERE user_id=?', id); }
+    if (hash) { run('UPDATE users SET password_hash=? WHERE id=?', hash, id); if (id !== actor.id) { run('DELETE FROM sessions WHERE user_id=?', id); events.disconnect(id); } }
     if (b.project_ids !== undefined) setUserProjects(actor, id, b.project_ids);
     if (b.grants !== undefined) { if (u.eff_role !== 'member') throw bad('الصلاحيات تُخصص لحسابات الموظفين فقط'); setUserGrants(actor, id, b.grants); }
     audit('user', id, actor.id, 'updated');

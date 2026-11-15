@@ -193,6 +193,17 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('لا تُخصص صلاحيات لحساب المدير', (await S.updateUser(mgr, mgr.id, { grants: { scope: 'all' } }).then(() => null, e => e.status)) === 400);
 }
 
+// ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
+{
+  const events = require('../src/events');
+  const cut = []; events.setTransport({ sendTo() { }, broadcast() { }, disconnect: (id) => cut.push(id) });
+  const { id: uId } = await S.createUser(mgr, { name: 'مؤقت', username: 'tmp.cut', password: 'Tmp#2026xx' });
+  await S.updateUser(mgr, uId, { password: 'Other#2026xx' });
+  await S.updateUser(mgr, uId, { active: false });
+  t('إيقاف الحساب وتغيير كلمة مروره يقطعان اتصاله الفوري', cut.filter(x => x === uId).length === 2);
+  events.setTransport({ sendTo() { }, broadcast() { } });
+}
+
 // ---- التشفير: Web Push وكلمات المرور
 {
   const nodeCrypto = require('crypto'); const ece = require('http_ece'); const push = require('../src/push'); const auth = require('../src/auth');

@@ -461,7 +461,7 @@ function connectWs() {
   ws.onmessage = (e) => {
     if (e.data === 'pong') return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
-    if (m.event === 'change') refreshView(); else if (m.event === 'notification') onNotification(m.data);
+    if (m.event === 'change') refreshView(); else if (m.event === 'notification') onNotification(m.data); else if (m.event === 'logout') forcedLogout();
   };
   ws.onclose = () => { clearInterval(wsPing); if (wsWanted) setTimeout(connectWs, Math.min(30000, 1000 * 2 ** Math.min(wsTries++, 5))); };
 }
@@ -471,8 +471,11 @@ function openEvents() {
   es = new EventSource('/api/events');
   es.addEventListener('change', refreshView);
   es.addEventListener('notification', (e) => onNotification(JSON.parse(e.data)));
+  es.addEventListener('logout', forcedLogout);
   es.onerror = () => { /* يعيد المتصفح الاتصال تلقائيًا */ };
 }
+// أوقف المدير الحساب أو غيّر كلمة مروره: خروج فوري
+function forcedLogout() { closeEvents(); state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); }
 function closeEvents() {
   if (es) { es.close(); es = null; }
   wsWanted = false; clearInterval(wsPing);
