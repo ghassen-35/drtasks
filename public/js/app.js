@@ -651,7 +651,7 @@ async function viewDashboard(main) {
       <div class="kpis" style="margin-bottom:14px">${d.groups.map(g => `<a class="kpi ${g.tone === 'gray' ? 'blue' : g.tone}" href="#g-${g.key}"><b>${g.items.length}</b><span>${esc(g.title)}</span></a>`).join('')}</div>
       ${d.groups.map(g => `<div class="card" id="g-${g.key}"><div class="card-h"><h2>${esc(g.title)}</h2><span class="chip">${g.items.length}</span></div>
         ${listOrEmpty(g.items.slice(0, 30), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }), 'لا يوجد')}</div>`).join('')}`;
-    bindInboxActions(main); bindQuickStatus(main);
+    bindInboxActions(main); bindQuickStatus(main, d.groups.flatMap(g => g.items));
   }
   await load(); return { refresh: load };
 }
@@ -660,11 +660,51 @@ function quickStatus(i) {
   return `<select class="qs" data-id="${i.id}" aria-label="تحديث الحالة" style="min-height:36px;width:auto">
     ${opt('', 'تحديث سريع للحالة…')}${['in_progress', 'waiting_reply', 'waiting_info', 'stalled', 'done'].filter(s => s !== i.status).map(s => opt(s, state.meta.statuses[s])).join('')}</select>`;
 }
-function bindQuickStatus(root) {
+function bindQuickStatus(root, items = []) {
   $$('select.qs', root).forEach(s => s.onchange = async () => {
     if (!s.value) return;
-    try { await api('PATCH', `/api/items/${s.dataset.id}`, { status: s.value }); toast('تم تحديث الحالة', 'ok'); refreshView(); }
-    catch (e) { showErr(e); s.value = ''; }
+    const it = items.find(x => x.id == s.dataset.id) || { id: Number(s.dataset.id) };
+    const v = s.value; s.value = '';
+    changeStatus(it, v, refreshView);
+  });
+}
+
+// ===== تغيير الحالة: نوافذ «أنجزت» و«متعثرة» بدل نوافذ المتصفح =====
+const STALL_REASONS = ['طرف خارجي لم يرد', 'نقص معلومات أو مستندات', 'تعارض مع أولوية أخرى', 'عائق مالي أو إداري'];
+async function changeStatus(i, status, after) {
+  const done = async (body) => { await api('PATCH', `/api/items/${i.id}`, body); toast('تم تحديث الحالة', 'ok'); after && after(); };
+  if (status === 'stalled') return modalStalled(i, done);
+  if (status === 'done') return modalDone(i, done, after);
+  if (status === 'cancelled' && !confirm('تأكيد إلغاء المهمة؟')) return;
+  try { await done({ status }); } catch (e) { showErr(e); }
+}
+function modalStalled(i, done) {
+  openModal({
+    title: 'المهمة متعثرة — ما السبب؟', submit: 'حفظ', submitClass: 'red',
+    body: `<div class="radios">${STALL_REASONS.map((r, n) => `<label class="check"><input type="radio" name="reason" value="${esc(r)}" ${n ? '' : 'checked'}> ${esc(r)}</label>`).join('')}
+        <label class="check"><input type="radio" name="reason" value=""> سبب آخر</label></div>
+      ${field('تفاصيل (مطلوبة عند اختيار «سبب آخر»)', '<textarea name="note" style="min-height:70px" placeholder="ما الذي يعيق التنفيذ؟ وما المطلوب لحله؟"></textarea>')}
+      <p class="small muted">تظهر المهمة المتعثرة في المهام العاجلة ويُبلَّغ بها مدير المكتب.</p>`,
+    onSubmit: async (d) => {
+      const note = [d.reason, (d.note || '').trim()].filter(Boolean).join(' — ');
+      if (!note) throw new Error('اكتب سبب التعثر');
+      await done({ status: 'stalled', status_note: note });
+    },
+  });
+}
+function modalDone(i, done) {
+  const open = (i.subtasks_total || 0) - (i.subtasks_done || 0);
+  openModal({
+    title: 'إنجاز المهمة', submit: 'تم الإنجاز', submitClass: 'green',
+    body: `${open > 0 ? `<div class="warn-box" style="margin-bottom:10px">في هذه المهمة ${open === 1 ? 'مهمة فرعية مفتوحة' : `${open} مهام فرعية مفتوحة`}.</div>
+        <div class="radios" style="margin-bottom:10px"><label class="check"><input type="radio" name="subs" value="all" checked> إنجازها معها</label>
+        <label class="check"><input type="radio" name="subs" value="keep"> إبقاؤها مفتوحة</label></div>` : ''}
+      ${field('ما الذي أُنجز؟ (اختياري)', '<textarea name="body" style="min-height:70px" placeholder="ملخص قصير للنتيجة يصل إلى مدير المكتب"></textarea>')}
+      ${field('مرفقات (اختياري)', fileFieldHtml('file_ids', false))}`,
+    onSubmit: async (d) => {
+      if ((d.body || '').trim() || (d.file_ids || []).length) await POST(`/api/items/${i.id}/messages`, { body: d.body, file_ids: d.file_ids, kind: isManager() ? 'result' : 'update' });
+      await done({ status: 'done', complete_subtasks: d.subs !== 'keep' });
+    },
   });
 }
 
@@ -691,7 +731,7 @@ async function viewTasks(main) {
   const f = { scope: 'open' };
   main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
-  async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${items.length} نتيجة</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main); }
+  async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${items.length} نتيجة</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
 }
 
@@ -736,7 +776,7 @@ async function viewSection(main, key) {
       const addF = $('#addF', tc); if (addF) addF.onclick = () => modalFolder({ section: key });
     } else if (tab === 'tasks') {
       tc.innerHTML = filtersHtml(f, { section: false }) + '<div id="res"></div>';
-      const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', tc).innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(tc); };
+      const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', tc).innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(tc, items); };
       bindFilters(tc, f, loadTasks); await loadTasks();
     } else if (tab === 'projects') {
       tc.innerHTML = `${can('projects.manage') ? `<div class="btn-row" style="margin-bottom:10px"><button class="btn" id="addP">${I('briefcase')} مشروع جديد</button><button class="btn" id="addI">${I('flag')} مبادرة جديدة</button></div>` : ''}
@@ -798,7 +838,7 @@ async function viewFolder(main, id) {
     $$('[data-pf]', main).forEach(b => b.onclick = () => { f.project_id = b.dataset.pf; load(); });
     const clr = $('#clrP', main); if (clr) clr.onclick = () => { delete f.project_id; load(); };
     const res = $('#res', main);
-    const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); res.innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(main); };
+    const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); res.innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(main, items); };
     bindFilters(main, f, loadTasks); await loadTasks();
   }
   await load(); return { refresh: load };
@@ -921,13 +961,7 @@ async function viewItem(main, id) {
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     bar.innerHTML = a.join('');
     bar.classList.toggle('hidden', !a.length);
-    $$('[data-s]', bar).forEach(b => b.onclick = async () => {
-      const s = b.dataset.s;
-      if (s === 'cancelled' && !confirm('تأكيد الإلغاء؟')) return;
-      let note = '';
-      if (s === 'stalled') { note = prompt('سبب التعثر (اختياري):') || ''; }
-      try { await api('PATCH', `/api/items/${id}`, { status: s, status_note: note }); toast('تم تحديث الحالة', 'ok'); await load(); } catch (e) { showErr(e); }
-    });
+    $$('[data-s]', bar).forEach(b => b.onclick = () => changeStatus(data.item, b.dataset.s, load));
     $$('[data-a]', bar).forEach(b => b.onclick = async () => {
       const act = b.dataset.a;
       try {

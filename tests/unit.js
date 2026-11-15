@@ -193,6 +193,18 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('لا تُخصص صلاحيات لحساب المدير', (await S.updateUser(mgr, mgr.id, { grants: { scope: 'all' } }).then(() => null, e => e.status)) === 400);
 }
 
+// ---- إنجاز المهمة الأم مع فرعياتها
+{
+  const p = S.createTask(mgr, { title: 'أم بفرعيات', section: 'family' });
+  const a = S.createSubtask(mgr, p.id, { title: 'أ' }); const b = S.createSubtask(mgr, p.id, { title: 'ب' });
+  S.updateItem(mgr, a.id, { status: 'done' });
+  S.updateItem(mgr, p.id, { status: 'done', complete_subtasks: true });
+  t('«إنجاز الكل» يُنجز الفرعيات المفتوحة مع أمها', S.getItem(b.id).status === 'done' && S.getItem(p.id).subtasks_done === 2);
+  const p2 = S.createTask(mgr, { title: 'أم تبقى فرعيتها', section: 'family' }); const c = S.createSubtask(mgr, p2.id, { title: 'ج' });
+  S.updateItem(mgr, p2.id, { status: 'done' });
+  t('بدون «إنجاز الكل» تبقى الفرعيات مفتوحة', S.getItem(c.id).status !== 'done');
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

@@ -262,7 +262,7 @@ function updateItem(user, id, b) {
     // عضو الفريق: يحدّث حالة المهام التي يراها، وضمن حالات العمل؛ وتعديل التفاصيل لمن مُنح item.edit
     require_(user, 'item.work'); assertCanSee(user, it);
     if (it.kind !== 'task') throw forbidden('التكليفات والملاحظات يعالجها مدير المكتب');
-    const allowed = ['status', 'status_note', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
+    const allowed = ['status', 'status_note', 'complete_subtasks', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
     if (Object.keys(b).some(k => !allowed.includes(k))) throw forbidden('ليست لديك صلاحية تعديل هذا الحقل');
     if (b.status !== undefined && b.status !== it.status) {
       if (it.status === 'cancelled') throw forbidden('المهمة ملغاة؛ إعادة فتحها لمدير المكتب');
@@ -300,6 +300,17 @@ function updateItem(user, id, b) {
       if (user.role === 'owner') notifyRole('manager', { type: 'status_change', title: `عدّل رجل الأعمال: ${it.title}`, body: `${what} — ${it.ref}`, link: link(id), collapse: `item:${id}:edit` });
     }
     if (b.status !== undefined && b.status !== it.status) setStatus(user, it, b.status, b.status_note);
+    // «إنجاز الكل»: إنجاز المهام الفرعية المفتوحة مع أمها
+    if (b.status === 'done' && b.complete_subtasks) {
+      const open = all("SELECT * FROM items WHERE parent_task_id=? AND status NOT IN ('done','cancelled') AND closed_at IS NULL", id);
+      const at = nowIso();
+      for (const st of open) {
+        run("UPDATE items SET status='done', completed_at=?, updated_at=?, updated_by=? WHERE id=?", at, at, user.id, st.id);
+        audit('item', st.id, user.id, 'status', 'status', st.status, 'done');
+        sysMsg(st.id, user.id, `أُنجزت مع المهمة الأم ${it.ref} (${user.name})`, { event: 'status', from: st.status, to: 'done' });
+      }
+      if (open.length) sysMsg(id, user.id, `أنجز ${user.name} ${open.length} ${open.length === 1 ? 'مهمة فرعية مفتوحة' : 'مهام فرعية مفتوحة'} مع المهمة`, { event: 'subtasks_done' });
+    }
     if (changes.length || b.status !== undefined) touch(id, user.id);
     if (user.role === 'member' && !canSee(user, it)) throw forbidden('هذا التعديل يُخرج المهمة من نطاق صلاحياتك');
     events.broadcastChange({ item: id });
