@@ -188,7 +188,9 @@ function createApp(P) {
     if (q.q) { where.push('(' + ['i.title', 'i.description', 'i.ref', 'i.assignee'].map(c => `instr(lower(${c}), lower(?)) > 0`).join(' OR ') + ')'); const s = String(q.q).slice(0, 100); p.push(s, s, s, s); }
     return all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE ${where.join(' AND ')}
       ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, CASE i.priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(i.due_date,'9999'), i.id DESC LIMIT 500`, ...p)
-      .map(i => D.decorate(i, t));
+      .map(i => D.decorate(i, t))
+      // المهام الفرعية تظهر تحت أمها (مع عداد التقدم) لا كبنود مستقلة — إلا في البحث ومهام اليوم والمتأخرة، أو إن كانت الأم لا تُرى
+      .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
   }
   app.get('/api/items', wrap(req => listItems(req.query, req.user)));
 
@@ -568,7 +570,7 @@ function createApp(P) {
   app.get('/api/items-export.csv', (c) => {
     const user = c.get('user');
     if (!D.can(user, 'item.view') && !D.can(user, 'item.view_scoped')) return c.body(null, 403);
-    const rows = listItems({ kind: 'tasks', ...c.req.query() }, user);
+    const rows = listItems({ kind: 'tasks', ...c.req.query(), subtasks: '1' }, user);
     const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; }; // منع حقن الصيغ في Excel
     const head = ['الرقم المرجعي', 'العنوان', 'النوع', 'القسم', 'المجلد', 'المشروع/المبادرة', 'المسؤول', 'الحالة', 'الأولوية', 'الموعد النهائي', 'الوقت', 'متأخرة', 'مهمة فرعية من', 'تكرار', 'آخر تحديث', 'تاريخ الإنجاز'];
     const lines = [head, ...rows.map(i => [i.ref, i.title, i.kind === 'assignment' ? 'تكليف' : 'مهمة', i.section_name, i.folder_name, i.project_name, i.assignee, D.STATUSES[i.status], D.PRIORITIES[i.priority],

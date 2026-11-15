@@ -428,8 +428,10 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert((await apiAs(mem, 'GET', `/api/items/${itemId}`)).status === 404, 'فتح مهمة لا تخصه');
       assert((await apiAs(mem, 'GET', '/api/approvals')).status === 403 && (await apiAs(mem, 'GET', '/api/reports')).status === 403 && (await apiAs(mem, 'GET', '/api/admin/users')).status === 403, 'وصول العضو لما لا يخصه');
       const all = (await apiAs(mem, 'GET', '/api/items?kind=all')).body;
-      // مهمة المشروع ومهمتها الفرعية (ترث المشروع) فقط
-      assert(all.length === 2 && all.every(x => x.project_id === projectId) && all.some(x => x.title === 'تجهيز جدول حلقات الفصل') && all.some(x => x.title === 'حجز القاعة'), 'قائمة المهام تكشف غير مهامه: ' + all.map(x => x.title).join('، '));
+      // مهمة المشروع فقط؛ ومهمتها الفرعية (ترث المشروع) تظهر تحتها لا كبند مستقل
+      assert(all.length === 1 && all[0].title === 'تجهيز جدول حلقات الفصل' && all[0].project_id === projectId && all[0].subtasks_total === 1, 'قائمة المهام تكشف غير مهامه: ' + all.map(x => x.title).join('، '));
+      const withSubs = (await apiAs(mem, 'GET', '/api/items?kind=all&subtasks=1')).body;
+      assert(withSubs.length === 2 && withSubs.every(x => x.project_id === projectId) && withSubs.some(x => x.title === 'حجز القاعة'), 'المهمة الفرعية غير متاحة للعضو');
       await mem.click('.row a.title:has-text("تجهيز جدول حلقات الفصل")');
       await mem.click('#acts button:has-text("بدء التنفيذ")'); await mem.waitForSelector('.item-head .chip.st-in_progress');
       await mem.fill('#cmp textarea[name=body]', 'جهزت مسودة الجدول وأرسلتها للمعلمين.'); await mem.click('#cmp button:has-text("إرسال")');

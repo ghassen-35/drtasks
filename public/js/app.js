@@ -66,7 +66,7 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
     <div class="main">
       <a class="title" href="#/item/${i.id}">${esc(i.title)}</a>
       <div class="meta">
-        <span class="chip kind">${esc(kindLabel(i))}</span>
+        ${i.kind !== 'task' ? `<span class="chip kind">${esc(kindLabel(i))}</span>` : ''}
         ${statusChip(i.status)} ${prioChip(i.priority)} ${dueChip(i)}
         ${i.recurrence ? `<span class="chip rec">${I('repeat')}${esc(state.meta.recurrences[i.recurrence] || '')}</span>` : ''}
         ${i.subtasks_total ? `<span class="chip">${I('list')}${i.subtasks_done}/${i.subtasks_total}</span>` : ''}
@@ -87,6 +87,16 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
 const listOrEmpty = (items, fn, empty = 'لا توجد عناصر') => items.length ? `<div class="list">${items.map(fn).join('')}</div>` : `<div class="empty">${empty}</div>`;
 
 function toast(msg, kind = '', onClick) {
+  if (kind !== 'urgent') $$('#toasts .toast:not(.urgent):not(.more)').forEach(t => t.remove()); // تنبيه واحد في كل مرة
+  // التنبيهات العاجلة: اثنان على الأكثر، والباقي يُجمع في تنبيه واحد يفتح الإشعارات
+  if (kind === 'urgent' && $$('#toasts .toast.urgent').length >= 2) {
+    let more = $('#toasts .toast.more');
+    if (!more) { more = document.createElement('div'); more.className = 'toast more'; more.dataset.n = '0'; more.setAttribute('role', 'status'); more.onclick = () => { more.remove(); location.hash = '#/notifications'; }; $('#toasts').appendChild(more); }
+    more.dataset.n = String(Number(more.dataset.n) + 1);
+    more.textContent = `+${more.dataset.n} ${Number(more.dataset.n) === 1 ? 'تنبيه آخر' : 'تنبيهات أخرى'} — اضغط لعرض الإشعارات`;
+    clearTimeout(more._t); more._t = setTimeout(() => more.remove(), 9000);
+    return;
+  }
   const el = document.createElement('div'); el.className = `toast ${kind}`; el.textContent = msg; el.setAttribute('role', 'status');
   el.onclick = () => { el.remove(); onClick && onClick(); };
   $('#toasts').appendChild(el); setTimeout(() => el.remove(), kind === 'urgent' ? 9000 : 4500);
@@ -657,9 +667,18 @@ async function viewDashboard(main) {
   async function load() {
     const d = await GET('/api/dashboard');
     main.innerHTML = `<div class="page-h">${I('alert')}<h1>لوحة المتابعة التنفيذية</h1></div>
-      <div class="kpis" style="margin-bottom:14px">${d.groups.map(g => `<a class="kpi ${g.tone === 'gray' ? 'blue' : g.tone}" href="#g-${g.key}"><b>${g.items.length}</b><span>${esc(g.title)}</span></a>`).join('')}</div>
-      ${d.groups.map(g => `<div class="card" id="g-${g.key}"><div class="card-h"><h2>${esc(g.title)}</h2><span class="chip">${g.items.length}</span></div>
-        ${listOrEmpty(g.items.slice(0, 30), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }), 'لا يوجد')}</div>`).join('')}`;
+      <div class="kpis" style="margin-bottom:14px">${d.groups.map(g => `<a class="kpi ${g.tone === 'gray' ? 'blue' : g.tone}" href="javascript:void(0)" data-open-g="${g.key}"><b>${g.items.length}</b><span>${esc(g.title)}</span></a>`).join('')}</div>
+      ${d.groups.filter(g => g.items.length).map(g => `<details class="card dgroup" id="g-${g.key}" ${['urgent', 'today', 'overdue', 'unack', 'stalled'].includes(g.key) ? 'open' : ''}>
+        <summary><div class="card-h"><h2>${esc(g.title)}</h2><span class="chip">${g.items.length}</span><span class="spacer"></span>${I('back', 'chev')}</div></summary>
+        ${listOrEmpty(g.items.slice(0, 10), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }), 'لا يوجد')}
+        ${g.items.length > 10 ? `<button type="button" class="btn sm ghost" data-more="${g.key}" style="margin-top:8px">عرض الكل (${g.items.length})</button>` : ''}</details>`).join('')}
+      ${d.groups.every(g => !g.items.length) ? '<div class="empty">لا توجد متابعات مفتوحة 🎉</div>' : ''}`;
+    $$('[data-open-g]', main).forEach(k => k.onclick = () => { const el = $('#g-' + k.dataset.openG, main); if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+    $$('[data-more]', main).forEach(b => b.onclick = () => {
+      const g = d.groups.find(x => x.key === b.dataset.more);
+      b.previousElementSibling.outerHTML = listOrEmpty(g.items.slice(0, 100), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }));
+      b.remove(); bindInboxActions(main); bindQuickStatus(main, d.groups.flatMap(x => x.items));
+    });
     bindInboxActions(main); bindQuickStatus(main, d.groups.flatMap(g => g.items));
   }
   await load(); return { refresh: load };
@@ -1185,20 +1204,24 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
     ${withDesc ? field('الوصف', `<textarea name="description">${esc(i.description || '')}</textarea>`) : ''}
     <div class="grid2">
       ${field('القسم *', sectionSelect(i.section, 'section', true))}
-      ${field('التصنيف', `<select name="category">${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, i.category || 'general')).join('')}</select>`)}
-      ${field('المجلد', folderSelect(folders, i.folder_id, '— بدون —'))}
+      ${can('folders.view') ? field('المجلد', folderSelect(folders, i.folder_id, '— بدون —')) : ''}
       ${assigneeFieldHtml(i, people)}
       ${field('الموعد النهائي', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
-      ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}
     </div>
-    ${classifyHtml(i, projects)}
     ${field('الأولوية', prioSeg(i.priority || 'normal'))}
+    ${classifyHtml(i, projects)}
+    <details class="more-opts" ${i.id ? 'open' : ''}><summary>خيارات إضافية: الوقت، التصنيف، الخطوة التالية، الإجراء، الجهة${isMember() ? '' : '، اشتراط الاعتماد'}</summary>
+    <div class="grid2">
+      ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}
+      ${field('التصنيف', `<select name="category">${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, i.category || 'general')).join('')}</select>`)}
+    </div>
     ${field('الخطوة التالية', `<input type="text" name="next_step" value="${esc(i.next_step || '')}">`)}
     <div class="grid2">
-      ${field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`)}
-      ${field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`)}
+      ${can('sops.view') ? field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`) : ''}
+      ${can('partners.view') ? field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`) : ''}
     </div>
-    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}`;
+    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}
+    </details>`;
 }
 // في نموذج المهمة: المجلدات والمشاريع تتبع القسم المختار، واختيار مشروع يضبط مجلده
 // حقل مسؤول واحد: حسابات المنصة، أو «شخص خارج المنصة» يُكتب اسمه

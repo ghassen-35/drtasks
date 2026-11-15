@@ -300,7 +300,7 @@ details.log summary { cursor: pointer; color: var(--ink-2); font-weight: 600; pa
 .modal .mh h2 { flex: 1; }
 .modal .mb { padding: 16px 18px; }
 .modal .mf { padding: 12px 18px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-start; flex-wrap: wrap; }
-@media (max-width: 560px) { .modal-bg { padding: 0; align-items: flex-end; } .modal { border-radius: 18px 18px 0 0; max-height: 100vh; overflow-y: auto; } .modal .mf { position: sticky; bottom: 0; background: var(--surface); padding-bottom: calc(12px + env(safe-area-inset-bottom)); } }
+@media (max-width: 560px) { .modal-bg { padding: 0; align-items: flex-end; } .modal { border-radius: 18px 18px 0 0; max-height: 100vh; max-height: 100dvh; overflow-y: auto; } .modal .mf { position: sticky; bottom: 0; background: var(--surface); padding-bottom: calc(12px + env(safe-area-inset-bottom)); } }
 .toasts { position: fixed; bottom: 20px; inset-inline-start: 20px; z-index: 200; display: flex; flex-direction: column; gap: 8px; max-width: min(380px, calc(100vw - 32px)); }
 @media (max-width: 900px) { .toasts { bottom: 76px; inset-inline-start: 16px; } }
 .toast { background: var(--ink); color: #fff; padding: 12px 14px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, .2); cursor: pointer; font-size: .9rem; animation: tin .2s; }
@@ -369,7 +369,7 @@ details.log summary { cursor: pointer; color: var(--ink-2); font-weight: 600; pa
   .tile .st b { font-size: 1.05rem; }
   .tile .st span { font-size: .64rem; }
   .tile .extra, .tile .top { display: none; }
-  .tile-add { width: 34px; height: 34px; top: 10px; inset-inline-end: 10px; border-radius: 10px; }
+  .tile-add { width: 44px; height: 44px; top: 6px; inset-inline-end: 6px; border-radius: 12px; }
   .tile-add svg.i { width: 18px; height: 18px; }
 }
 
@@ -416,3 +416,26 @@ fieldset.grants legend { font-weight: 700; padding: 0 6px; }
 .radios { display: flex; flex-direction: column; gap: 6px; }
 /* شرائح طويلة (ملخص الصلاحيات) تلتف بدل أن تسبب تمريرًا أفقيًا */
 .row .meta .chip { max-width: 100%; white-space: normal; }
+
+/* ===== الجوال: أهداف لمس 44px، وشريط إجراءات المهمة ثابت أسفل الشاشة ===== */
+@media (max-width: 900px) {
+  .btn.sm { min-height: 44px; }
+  .check { min-height: 44px; }
+  .check input[type=checkbox], .check input[type=radio] { width: 22px; height: 22px; flex: none; }
+  .subtask input[type=checkbox] { width: 26px; height: 26px; margin: 9px; }
+  .seg label span { min-height: 44px; display: inline-flex; align-items: center; }
+  .actions-bar { position: sticky; bottom: calc(58px + env(safe-area-inset-bottom)); z-index: 30; background: var(--surface); flex-wrap: nowrap; overflow-x: auto;
+    margin-inline: -16px; padding: 10px 16px; box-shadow: 0 -6px 16px rgba(16, 36, 51, .08); scrollbar-width: none; }
+  .actions-bar .btn { flex: none; }
+}
+/* لوحة المتابعة: مجموعات قابلة للطي */
+details.dgroup > summary { list-style: none; cursor: pointer; }
+details.dgroup > summary::-webkit-details-marker { display: none; }
+details.dgroup > summary .card-h { margin-bottom: 0; }
+details.dgroup[open] > summary .card-h { margin-bottom: 10px; }
+details.dgroup > summary .chev { transition: transform .15s; }
+details.dgroup[open] > summary .chev { transform: rotate(-90deg); }
+details.more-opts { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 6px; }
+details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size: .9rem; min-height: 44px; display: flex; align-items: center; }
+.toast.more { background: var(--brand); }
+@media (max-width: 560px) { .facts { grid-template-columns: 1fr 1fr; gap: 8px 12px; } }
