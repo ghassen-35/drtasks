@@ -137,7 +137,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    owner_title: D.ownerTitle(), approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    owner_title: D.ownerTitle(), channels: D.CHANNELS, importance: D.IMPORTANCE, approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -517,6 +517,39 @@ function createApp(P) {
     run('UPDATE folders SET name=?, description=? WHERE id=?', S.str(req.body.name, 200) || f.name, req.body.description !== undefined ? S.str(req.body.description, 1000) : f.description, f.id);
     S.audit('folder', f.id, req.user.id, 'updated'); events.broadcastChange({ folder: f.id });
     return folderCounts(get('SELECT * FROM folders WHERE id=?', f.id));
+  }));
+
+  // ===== سجل التوجيهات والقرارات =====
+  app.get('/api/directives', wrap(req => {
+    S.require_(req.user, 'directives.view');
+    const w = []; const p = [];
+    if (req.query.status && ['open', 'done', 'cancelled'].includes(req.query.status)) { w.push('status=?'); p.push(req.query.status); }
+    if (req.query.q) { w.push('(instr(lower(title), lower(?))>0 OR instr(lower(COALESCE(details,"")), lower(?))>0 OR instr(ref, ?)>0)'); const q = String(req.query.q).slice(0, 100); p.push(q, q, q); }
+    return all(`SELECT * FROM directives ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, CASE importance WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(due_date,'9999'), id DESC LIMIT 300`, ...p)
+      .map(d => S.directiveRow(d, req.user));
+  }));
+  app.get('/api/directives/:id', wrap(req => {
+    S.require_(req.user, 'directives.view');
+    const d = get('SELECT * FROM directives WHERE id=?', Number(req.params.id)); if (!d) throw S.notFound('التوجيه غير موجود');
+    const sc = S.scopeFor(req.user);
+    const out = S.directiveRow(d, req.user);
+    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.directive_id=?${sc.sql} ORDER BY i.id`, d.id, ...sc.params).map(i => D.decorate(i));
+    out.created_by_name = (get('SELECT name FROM users WHERE id=?', d.created_by) || {}).name;
+    out.log = all("SELECT a.*, u.name AS user_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE entity='directive' AND entity_id=? ORDER BY a.id", d.id);
+    return out;
+  }));
+  app.post('/api/directives', wrap(req => S.createDirective(req.user, req.body)));
+  app.patch('/api/directives/:id', wrap(req => S.updateDirective(req.user, Number(req.params.id), req.body)));
+  // ما لم يتحول بعد إلى نتيجة: التوجيهات المفتوحة وقرارات الاجتماعات غير المنفذة
+  app.get('/api/register', wrap(req => {
+    S.require_(req.user, 'directives.view');
+    const t = D.todayStr();
+    const directives = all("SELECT * FROM directives WHERE status='open' ORDER BY COALESCE(due_date,'9999')").map(d => S.directiveRow(d, req.user));
+    const decisions = D.can(req.user, 'meetings.view') ? all(`SELECT d.*, m.title AS meeting_title, m.starts_at, i.status AS task_status, i.ref AS task_ref, i.due_date AS task_due
+        FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id
+        WHERE COALESCE(i.status, d.status) NOT IN ('done','cancelled') ORDER BY COALESCE(COALESCE(i.due_date, d.due_date),'9999')`)
+      .map(d => ({ ...d, task_ref: d.task_id && S.canSee(req.user, { id: d.task_id }) ? d.task_ref : null, is_overdue: !!(d.task_due || d.due_date) && (d.task_due || d.due_date) < t, unassigned: !d.task_id })) : [];
+    return { directives, decisions };
   }));
 
   // ===== إدارة المستخدمين (حسابات الفريق) =====

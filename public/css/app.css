@@ -448,3 +448,7 @@ details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size:
 .tbl td.late { color: var(--red); font-weight: 700; }
 .today-top { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; margin-top: -4px; }
 .today-top p { margin: 0; }
+
+/* التوجيهات: إدخال المهام التنفيذية دفعة واحدة */
+.dir-task { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 6px; margin-bottom: 6px; }
+@media (max-width: 560px) { .dir-task { grid-template-columns: 1fr 1fr; } .dir-task input[name=t_title] { grid-column: 1 / -1; } }

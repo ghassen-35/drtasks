@@ -293,6 +293,7 @@ function navItems() {
     { h: '#/', i: 'dash', t: 'الرئيسية' },
     { h: '#/my', i: 'list', t: 'طلباتي وتكليفاتي' },
     { h: '#/decisions', i: 'gavel', t: 'بانتظار قراري', n: c.pending_decisions },
+    { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
     ...common,
   ];
   return [
@@ -301,6 +302,7 @@ function navItems() {
     { h: '#/dashboard', i: 'alert', t: 'لوحة المتابعة' },
     { h: '#/tasks', i: 'list', t: 'كل المهام' },
     { h: '#/approvals', i: 'gavel', t: 'طلبات الاعتماد', n: c.pending_decisions, o: true },
+    { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
     ...common,
   ];
 }
@@ -361,6 +363,8 @@ const routes = [
   [/^#\/section\/(\w+)$/, viewSection],
   [/^#\/item\/(\d+)$/, viewItem],
   [/^#\/folder\/(\d+)$/, viewFolder],
+  [/^#\/directives$/, viewDirectives],
+  [/^#\/directive\/(\d+)$/, viewDirective],
   [/^#\/my$/, viewMy],
   [/^#\/decisions$/, viewDecisions],
   [/^#\/approvals$/, viewDecisions],
@@ -881,6 +885,129 @@ async function viewSection(main, key) {
   await load(); return { refresh: load };
 }
 
+// ===== المشاركة مع المدير خارج المنصة (واتساب / بريد) =====
+const shareLinks = (text, subject = '') => `<a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(text)}" title="إرسال عبر واتساب">${I('send')} واتساب</a>
+  <a class="btn sm" href="mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}" title="إرسال بالبريد">${I('note')} بريد</a>`;
+const channelSeg = (sel, name = 'channel', skipPlatform = true) => `<div class="seg">${Object.entries(state.meta.channels).filter(([k]) => !skipPlatform || k !== 'platform').map(([k, v]) => `<label><input type="radio" name="${name}" value="${k}" ${sel === k ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>`;
+
+// تسجيل قرار المدير نيابةً عنه (وصل بالواتس أو البريد أو شفهيًا)
+function modalProxyDecision(ap, after) {
+  const D = { approved: 'اعتماد', changes_requested: 'طلب تعديل', rejected: 'رفض', ...(ap.options.length ? { chosen: 'اختيار بديل' } : {}), ...(ap.kind === 'inquiry' ? { answered: 'رد على الاستفسار' } : {}) };
+  openModal({
+    title: `تسجيل قرار ${OT()}`, submit: 'تسجيل القرار',
+    body: `<p class="small muted">«${esc(ap.title)}» — يُسجَّل القرار باسم ${esc(OT())} مع قناة وروده واسمك كمسجِّل.</p>
+      ${field('القرار *', `<div class="seg">${Object.entries(D).map(([k, v], n) => `<label><input type="radio" name="decision" value="${k}" ${n ? '' : 'checked'}><span>${v}</span></label>`).join('')}</div>`)}
+      ${ap.options.length ? field('البديل المختار', `<select name="option_index">${ap.options.map((o, k) => opt(k, o)).join('')}</select>`) : ''}
+      ${field('كيف وصل القرار؟ *', channelSeg('whatsapp'))}
+      ${field('نص القرار أو الملاحظة (مطلوبة عند الرفض أو طلب التعديل)', '<textarea name="note" style="min-height:70px"></textarea>')}`,
+    onSubmit: async (d) => {
+      await POST(`/api/approvals/${ap.id}/decide`, { decision: d.decision, note: d.note, option_index: d.option_index, channel: d.channel, on_behalf: true });
+      toast('سُجّل القرار', 'ok'); after && after();
+    },
+  });
+}
+
+// ===== التوجيهات والقرارات: توجيه ← مهام ← متابعة ← نتيجة =====
+const dirStateTone = (st) => ({ pending: 'st-new', in_progress: 'st-in_progress', at_risk: 'overdue', ready: 'st-waiting_approval', done: 'st-done', cancelled: 'st-cancelled' })[st] || '';
+const progressBar = (p) => `<div class="progress" role="progressbar" aria-valuenow="${p}" aria-valuemax="100"><span style="width:${p}%"></span></div>`;
+function directiveRowHtml(d) {
+  return `<div class="row p-${d.importance === 'urgent' ? 'urgent' : d.importance === 'important' ? 'important' : 'normal'} ${d.state === 'done' ? 'done' : ''}"><div class="main">
+    <a class="title" href="#/directive/${d.id}">${esc(d.title)}</a>
+    <div class="meta"><span class="chip ${dirStateTone(d.state)}">${esc(d.state_label)}</span>${d.importance !== 'normal' ? `<span class="chip p-${d.importance}">${esc(d.importance_label)}</span>` : ''}
+      ${d.due_date ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.due_date))}${d.is_overdue ? ' — متأخر' : ''}</span>` : ''}
+      ${d.tasks_total ? `<span class="chip">${I('list')}${d.tasks_done}/${d.tasks_total} مهام</span>` : ''}${d.tasks_overdue ? `<span class="chip overdue">${d.tasks_overdue} متأخرة</span>` : ''}
+      ${d.channel_label ? `<span class="txt">${esc(d.channel_label)}</span>` : ''}<span class="txt ltr">${esc(d.ref)}</span>${demoChip(d)}</div>
+    ${d.tasks_total && d.state !== 'done' ? progressBar(d.progress) : ''}</div></div>`;
+}
+async function viewDirectives(main) {
+  let tab = 'open'; let q = '';
+  async function load() {
+    const [list, reg] = await Promise.all([tab === 'register' ? [] : GET('/api/directives?' + qs({ status: tab === 'open' ? 'open' : '', q })), tab === 'register' ? GET('/api/register') : null]);
+    const closed = tab === 'closed' ? list.filter(d => d.status !== 'open') : list;
+    main.innerHTML = `<div class="page-h">${I('flag')}<h1>التوجيهات والقرارات</h1><span class="spacer"></span>${can('directives.manage') ? `<button class="btn primary" id="addDir">${I('plus')} توجيه جديد</button>` : ''}</div>
+      <p class="small muted">كل توجيه من ${esc(OT())} — مهما كانت قناة وروده — يُسجَّل هنا ويتحول إلى مهام تنفيذية، ثم يُغلق بنتيجة موثقة. وقرارات الاجتماعات تظهر في «لم يتحول إلى نتيجة».</p>
+      <div class="tabs"><button data-tab="open" class="${tab === 'open' ? 'active' : ''}">المفتوحة</button><button data-tab="register" class="${tab === 'register' ? 'active' : ''}">لم يتحول إلى نتيجة بعد</button><button data-tab="closed" class="${tab === 'closed' ? 'active' : ''}">المنفّذة والملغاة</button></div>
+      ${tab !== 'register' ? `<div class="filters-top" style="margin-bottom:10px"><input type="search" id="dq" placeholder="بحث في التوجيهات" value="${esc(q)}" aria-label="بحث"></div>` : ''}
+      <div id="dl"></div>`;
+    const el = $('#dl', main);
+    if (tab === 'register') {
+      el.innerHTML = `<div class="card"><div class="card-h"><h2>توجيهات مفتوحة</h2><span class="chip">${reg.directives.length}</span></div>${listOrEmpty(reg.directives, directiveRowHtml, 'لا توجد')}</div>
+        <div class="card"><div class="card-h"><h2>قرارات اجتماعات لم تُنفَّذ</h2><span class="chip">${reg.decisions.length}</span></div>
+        ${listOrEmpty(reg.decisions, d => `<div class="row ${d.is_overdue ? 'p-urgent' : ''}"><div class="main"><span class="title">${esc(d.text)}</span><div class="meta">
+          ${d.unassigned ? '<span class="chip overdue">لم يتحول إلى مهمة</span>' : `<span class="chip st-in_progress">${esc(state.meta.statuses[d.task_status] || 'قيد التنفيذ')}</span>`}
+          ${d.task_ref ? `<a class="chip kind" href="#/item/${d.task_id}">${esc(d.task_ref)}</a>` : ''}${(d.task_due || d.due_date) ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.task_due || d.due_date))}</span>` : ''}
+          ${d.responsible ? `<span class="txt">المسؤول: ${esc(d.responsible)}</span>` : ''}<a class="txt" href="#/meeting/${d.meeting_id}">${esc(d.meeting_title)}</a></div></div></div>`, 'كل قرارات الاجتماعات منفّذة')}</div>`;
+    } else el.innerHTML = listOrEmpty(closed, directiveRowHtml, tab === 'open' ? 'لا توجد توجيهات مفتوحة' : 'لا توجد');
+    $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
+    const dq = $('#dq', main); if (dq) { let t; dq.oninput = () => { clearTimeout(t); t = setTimeout(() => { q = dq.value; load().then(() => { const x = $('#dq', main); x.focus(); x.setSelectionRange(q.length, q.length); }); }, 300); }; }
+    const ad = $('#addDir', main); if (ad) ad.onclick = () => modalDirective();
+  }
+  await load(); return { refresh: load };
+}
+// توجيه جديد: نصه، قناة وروده، أهميته، موعده، ومهامه التنفيذية مباشرة
+function modalDirective(pre = {}) {
+  const people = state.meta.users.filter(u => u.role !== 'owner');
+  const row = () => `<div class="dir-task"><input type="text" name="t_title" placeholder="مهمة تنفيذية…" aria-label="عنوان المهمة">
+    <select name="t_assignee" aria-label="المسؤول">${opt('', '— المسؤول —')}${people.map(u => opt(u.id, u.name)).join('')}</select>
+    <input type="date" name="t_due" aria-label="موعد المهمة"></div>`;
+  openModal({
+    title: 'تسجيل توجيه وتحويله إلى مهام', submit: 'حفظ التوجيه والمهام', wide: true,
+    body: `${field('التوجيه *', '<textarea name="title" required maxlength="300" style="min-height:60px" placeholder="نص التوجيه كما ورد"></textarea>')}
+      ${field('تفاصيل أو سياق (اختياري)', '<textarea name="details" style="min-height:50px"></textarea>')}
+      ${isOwner() ? '' : field('كيف ورد التوجيه؟ *', channelSeg('whatsapp'))}
+      <div class="grid2">${field('القسم', sectionSelect(pre.section, 'section', true))}${field('الموعد المستهدف', '<input type="date" name="due_date">')}</div>
+      ${field('الأهمية', `<div class="seg">${Object.entries(state.meta.importance).map(([k, v]) => `<label><input type="radio" name="importance" value="${k}" ${k === 'normal' ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`)}
+      <h3 class="section-gap">المهام التنفيذية <span class="small muted">(يمكن إضافتها لاحقًا)</span></h3>
+      <div id="dirTasks">${row()}${row()}</div><button type="button" class="btn sm" id="addRow">${I('plus')} مهمة أخرى</button>`,
+    init: (form) => { $('#addRow', form).onclick = () => { $('#dirTasks', form).insertAdjacentHTML('beforeend', row()); }; },
+    onSubmit: async (d, form) => {
+      const tasks = $$('.dir-task', form).map(r => ({ title: $('[name=t_title]', r).value.trim(), assignee_id: $('[name=t_assignee]', r).value || undefined, due_date: $('[name=t_due]', r).value || undefined })).filter(x => x.title);
+      if (tasks.length && !d.section) throw new Error('اختر القسم لإنشاء المهام');
+      const r = await POST('/api/directives', { title: d.title, details: d.details, channel: d.channel, section: d.section, due_date: d.due_date, importance: d.importance, tasks });
+      toast(`سُجّل التوجيه ${r.ref}${tasks.length ? ` و${tasks.length} مهام` : ''}`, 'ok'); location.hash = `#/directive/${r.id}`;
+    },
+  });
+}
+async function viewDirective(main, id) {
+  async function load() {
+    const d = await GET(`/api/directives/${id}`);
+    const manage = can('directives.manage') && d.status === 'open';
+    const summary = `توجيه ${d.ref}: ${d.title}\nالحالة: ${d.state_label} — ${d.tasks_done}/${d.tasks_total} مهام${d.tasks_overdue ? ` (${d.tasks_overdue} متأخرة)` : ''}\n` + d.tasks.map(t => `• ${t.title} — ${state.meta.statuses[t.status]}${t.assignee ? ` (${t.assignee})` : ''}`).join('\n') + (d.outcome ? `\nالنتيجة: ${d.outcome}` : '');
+    main.innerHTML = `<div class="card item-head"><div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="#/directives">${I('back')} التوجيهات</a><span class="ref">${esc(d.ref)}</span>${demoChip(d)}</div>
+      <h1>${esc(d.title)}</h1>
+      <div class="meta btn-row" style="margin-top:8px"><span class="chip ${dirStateTone(d.state)}">${esc(d.state_label)}</span>${d.importance !== 'normal' ? `<span class="chip p-${d.importance}">${esc(d.importance_label)}</span>` : ''}
+        ${d.due_date ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.due_date))}</span>` : ''}</div>
+      <dl class="facts">${[['ورد عبر', d.channel_label], ['تاريخ الورود', d.received_at ? fmtDate(d.received_at) : ''], ['القسم', d.section_name || ''], ['سجّله', d.created_by_name || ''], ['الإغلاق', d.closed_at ? fmtTs(d.closed_at) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+      ${d.details ? `<div class="desc">${esc(d.details)}</div>` : ''}
+      ${d.tasks_total ? `<div class="small muted" style="margin-top:10px">التنفيذ: ${d.progress}%</div>${progressBar(d.progress)}` : ''}
+      ${d.outcome ? `<div class="info-box" style="margin-top:10px"><b>النتيجة المتحققة:</b> ${esc(d.outcome)}</div>` : ''}
+      <div class="actions-bar no-print">${manage ? `<button class="btn ${d.state === 'ready' ? 'green' : ''}" id="closeDir">${I('checkCircle')} تسجيل النتيجة وإغلاق التوجيه</button><button class="btn" id="editDir">${I('edit')} تعديل</button><button class="btn ghost" id="cancelDir">إلغاء التوجيه</button>` : ''}
+        ${shareLinks(summary, `توجيه ${d.ref}`)}</div></div>
+      <div class="card"><div class="card-h">${I('list')}<h2>المهام التنفيذية</h2><span class="chip">${d.tasks_done}/${d.tasks_total}</span><span class="spacer"></span>${manage && can('task.create') ? `<button class="btn sm primary" id="addT">${I('plus')} مهمة</button>` : ''}</div>
+        ${listOrEmpty(d.tasks, i => itemRow(i, { showUpdated: true }), 'لم يتحول التوجيه إلى مهام بعد')}</div>
+      <div class="card"><details class="log"><summary>سجل التوجيه</summary>${d.log.map(l => `<div class="log-row">${fmtTs(l.created_at)} — ${esc(l.user_name || '')}: ${esc({ created: 'سجّل التوجيه', updated: `عدّل ${l.field || ''}` }[l.action] || l.action)}</div>`).join('')}</details></div>`;
+    const at = $('#addT', main); if (at) at.onclick = () => modalTask({ section: d.section, directive_id: d.id, priority: d.importance, due_date: d.due_date, description: `ضمن التوجيه ${d.ref}: ${d.title}` });
+    const cd = $('#closeDir', main); if (cd) cd.onclick = () => openModal({
+      title: 'تسجيل النتيجة وإغلاق التوجيه', submit: 'إغلاق التوجيه', submitClass: 'green',
+      body: `${d.state !== 'ready' && d.tasks_total ? `<div class="warn-box" style="margin-bottom:10px">لم تكتمل كل المهام بعد (${d.tasks_done}/${d.tasks_total}).</div>` : ''}${field('ما النتيجة المتحققة؟ *', `<textarea name="outcome" required style="min-height:80px">${esc(d.outcome || '')}</textarea>`)}`,
+      onSubmit: async (x) => { await api('PATCH', `/api/directives/${d.id}`, { status: 'done', outcome: x.outcome }); toast('أُغلق التوجيه ووُثّقت نتيجته', 'ok'); load(); },
+    });
+    const xd = $('#cancelDir', main); if (xd) xd.onclick = () => openModal({
+      title: 'إلغاء التوجيه', submit: 'إلغاء التوجيه', submitClass: 'red',
+      body: field('سبب الإلغاء *', '<textarea name="reason" required></textarea>') + '<p class="small muted">يبقى التوجيه وسجله محفوظين. المهام المرتبطة لا تُلغى تلقائيًا.</p>',
+      onSubmit: async (x) => { await api('PATCH', `/api/directives/${d.id}`, { status: 'cancelled', reason: x.reason }); toast('أُلغي التوجيه مع الاحتفاظ بسجله', 'ok'); load(); },
+    });
+    const ed = $('#editDir', main); if (ed) ed.onclick = () => openModal({
+      title: 'تعديل التوجيه', wide: true,
+      body: `${field('التوجيه', `<textarea name="title" required>${esc(d.title)}</textarea>`)}${field('التفاصيل', `<textarea name="details">${esc(d.details || '')}</textarea>`)}
+        <div class="grid2">${field('القسم', sectionSelect(d.section, 'section', true))}${field('الموعد المستهدف', `<input type="date" name="due_date" value="${esc(d.due_date || '')}">`)}</div>
+        ${field('الأهمية', `<div class="seg">${Object.entries(state.meta.importance).map(([k, v]) => `<label><input type="radio" name="importance" value="${k}" ${k === d.importance ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`)}`,
+      onSubmit: async (x) => { await api('PATCH', `/api/directives/${d.id}`, x); toast('حُفظت التعديلات', 'ok'); load(); },
+    });
+  }
+  await load(); return { refresh: load };
+}
+
 // ===== المجلدات: القسم ← المجلد ← المشاريع والمهام =====
 const kindChip = (p) => p.kind === 'initiative' ? `<span class="chip kind-i">${I('flag')}مبادرة</span>` : `<span class="chip kind-p">${I('briefcase')}مشروع</span>`;
 const folderCard = (fo) => `<a class="folder-card" href="#/folder/${fo.id}">${I('folder', 'fi')}<span class="fname">${esc(fo.name)}</span>
@@ -975,6 +1102,7 @@ async function viewItem(main, id) {
       <dl class="facts">
         ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
+        ${i.directive_id ? fact('ضمن التوجيه', can('directives.view') ? `<a href="#/directive/${i.directive_id}">${esc(i.directive_ref)}</a>` : esc(i.directive_ref || '')) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
         ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
@@ -1082,7 +1210,10 @@ async function viewItem(main, id) {
           <button class="btn red sm" data-d="rejected">رفض</button>`}
         </div></form>`;
     } else if (!decided && isManager()) {
-      ctl = `<div class="btn-row" style="margin-top:6px"><span class="small muted">بانتظار قرار ${OT()}</span><button class="btn sm ghost" data-withdraw="${ap.id}">سحب الطلب</button></div>`;
+      ctl = `<div class="btn-row" style="margin-top:6px"><span class="small muted">بانتظار قرار ${OT()}</span>
+        ${can('approval.record') ? `<button class="btn sm primary" data-proxy="${ap.id}">${I('gavel')} تسجيل قرار ${OT()}</button>` : ''}
+        ${shareLinks(`طلب قرار: ${ap.title}${ap.body ? '\n' + ap.body : ''}${ap.options.length ? '\nالبدائل: ' + ap.options.join(' | ') : ''}`, `طلب قرار: ${ap.title}`)}
+        <button class="btn sm ghost" data-withdraw="${ap.id}">سحب الطلب</button></div>`;
     }
     return `<div class="approval ${decided ? 'decided-' + ap.status : ''}">
       <div class="who">${I('gavel')}<b>${esc(ap.kind_label)}</b> • ${esc(ap.requested_by_name)} • ${fmtTs(ap.requested_at)} ${ap.blocking && !decided ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}</div>
@@ -1091,7 +1222,7 @@ async function viewItem(main, id) {
       ${filesHtml(ap.files)}
       ${ap.options.length && decided ? `<div class="small muted">البدائل: ${ap.options.map(esc).join(' | ')}</div>` : ''}
       ${decided ? `<div style="margin-top:6px"><span class="chip ${ap.status === 'approved' || ap.status === 'chosen' || ap.status === 'answered' ? 'st-done' : ap.status === 'rejected' ? 'st-stalled' : 'p-important'}">${decLabel}</span>
-        ${ap.decided_by_name ? `<span class="small muted"> — ${esc(ap.decided_by_name)} • ${fmtTs(ap.decided_at)}</span>` : ''}
+        ${ap.decided_by_name ? `<span class="small muted"> — ${esc(ap.decided_by_name)} • ${fmtTs(ap.decided_at)}${ap.decided_channel && ap.decided_channel !== 'platform' ? ` • ورد ${esc(state.meta.channels[ap.decided_channel] || '')}${ap.recorded_by_name ? `، سجّله ${esc(ap.recorded_by_name)}` : ''}` : ''}</span>` : ''}
         ${ap.chosen_option ? `<div><b>البديل المختار:</b> ${esc(ap.chosen_option)}</div>` : ''}${ap.decision_note ? `<div class="desc">${esc(ap.decision_note)}</div>` : ''}</div>` : ''}
       ${ctl}</div>`;
   }
@@ -1135,6 +1266,7 @@ async function viewItem(main, id) {
         } catch (ex) { showErr(ex); }
       };
     });
+    $$('[data-proxy]', main).forEach(b => b.onclick = () => modalProxyDecision(data.approvals.find(x => x.id == b.dataset.proxy), load));
     $$('[data-withdraw]', main).forEach(b => b.onclick = async () => { if (!confirm('سحب طلب الاعتماد؟')) return; try { await POST(`/api/approvals/${b.dataset.withdraw}/withdraw`); await load(); } catch (e) { showErr(e); } });
   }
   function renderLog() {
@@ -1175,11 +1307,13 @@ function modalAdd(pre = {}) {
   const m = openModal({
     title: 'إضافة جديدة',
     body: `<div class="add-choices">
+      ${can('directives.manage') ? choice('directive', 'flag', `توجيه من ${OT()}`, 'يُسجَّل بقناة وروده ويتحول إلى مهام تنفيذية تُتابع حتى النتيجة') : ''}
       ${can('task.create') || can('assignment.create') ? choice('task', 'checkCircle', isOwner() ? 'مهمة / تكليف' : 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة') : ''}
       ${can('projects.manage') ? choice('project', 'briefcase', 'مشروع', 'يجمع مهامًا تحت هدف واحد') + choice('initiative', 'flag', 'مبادرة', 'فكرة أو برنامج تُتابع مهامه') : ''}</div>`,
     init: (form) => $$('[data-k]', form).forEach(b => b.onclick = () => {
       m.close(); const k = b.dataset.k;
       if (k === 'task') isOwner() ? modalAssignment(pre) : modalTask(pre);
+      else if (k === 'directive') modalDirective(pre);
       else modalProject({ section: pre.section, folder_id: pre.folder_id, kind: k });
     }),
   });
@@ -1263,6 +1397,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
     </div>
     ${field('الأولوية', prioSeg(i.priority || 'normal'))}
     ${classifyHtml(i, projects)}
+    ${!i.id && i.directive_id ? `<input type="hidden" name="directive_id" value="${esc(i.directive_id)}">` : ''}
     <details class="more-opts" ${i.id ? 'open' : ''}><summary>خيارات إضافية: الوقت، التصنيف، الخطوة التالية، الإجراء، الجهة${isMember() ? '' : '، اشتراط الاعتماد'}</summary>
     <div class="grid2">
       ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}

@@ -39,6 +39,8 @@ const MSG_TYPES = {
 const CATEGORIES = {
   general: 'مهمة', commitment: 'التزام', opportunity: 'فرصة', appointment: 'موعد', academic: 'مهمة أكاديمية',
 };
+const CHANNELS = { platform: 'عبر المنصة', whatsapp: 'واتساب', email: 'بريد إلكتروني', verbal: 'شفهي', meeting: 'اجتماع', letter: 'خطاب رسمي' };
+const IMPORTANCE = { normal: 'عادي', important: 'مهم', urgent: 'عاجل' };
 const RECURRENCES = { daily: 'يومية', weekly: 'أسبوعية', monthly: 'شهرية', yearly: 'سنوية' };
 const PROJECT_KINDS = { project: 'مشروع', initiative: 'مبادرة' };
 const APPROVAL_KINDS = {
@@ -52,12 +54,13 @@ const PERMS = {
   owner: new Set([
     'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
     'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
-    'folders.view', 'users.manage', 'projects.manage', 'item.edit',
+    'folders.view', 'users.manage', 'projects.manage', 'item.edit', 'directives.view', 'directives.manage',
   ]),
   manager: new Set([
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
     'reports.view', 'meetings.view', 'meetings.manage', 'sops.view', 'sops.manage',
     'partners.view', 'partners.manage', 'contacts.view', 'projects.manage', 'folders.view', 'users.manage',
+    'directives.view', 'directives.manage', 'approval.record',
   ]),
   member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
@@ -144,7 +147,8 @@ const OPEN = "status NOT IN ('done','cancelled')";
 const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
   i.status,i.assignee,i.next_step,i.requires_approval,i.acknowledged_at,i.converted_at,i.created_at,i.updated_at,i.closed_at,i.completed_at,i.is_demo,
   i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name, i.folder_id, i.assignee_id,
-  i.parent_task_id, i.recurrence, i.next_occurrence_id,
+  i.parent_task_id, i.recurrence, i.next_occurrence_id, i.directive_id,
+  (SELECT d.ref FROM directives d WHERE d.id=i.directive_id) AS directive_ref,
   (SELECT pt.title FROM items pt WHERE pt.id=i.parent_task_id) AS parent_task_title,
   (SELECT p.kind FROM projects p WHERE p.id=i.project_id) AS project_kind,
   (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled') AS subtasks_total,
@@ -288,6 +292,6 @@ function report(period = 'week') {
 }
 
 module.exports = {
-  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS,
+  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS, CHANNELS, IMPORTANCE,
   PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

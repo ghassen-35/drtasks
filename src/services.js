@@ -197,6 +197,7 @@ function createTask(user, b, { internal = false } = {}) {
   { const secs = user.role === 'member' && !internal ? allowedSections(user) : null; if (secs && secs.length && !secs.includes(section)) throw forbidden('هذا القسم خارج صلاحياتك'); }
   if (b.category && !D.CATEGORIES[b.category]) throw bad('تصنيف غير صالح');
   validRef('sops', b.sop_id); validRef('partners', b.partner_id);
+  const directiveId = b.directive_id ? validDirective(user, b.directive_id) : null;
   return tx(() => {
     const ref = nextRef('MH');
     const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,category,project_id,priority,due_date,due_time,status,assignee,next_step,requires_approval,sop_id,partner_id,meeting_id,decision_id,created_by,updated_by,is_demo)
@@ -206,7 +207,7 @@ function createTask(user, b, { internal = false } = {}) {
       b.meeting_id || null, b.decision_id || null, user.id, user.id, b.is_demo ? 1 : 0);
     audit('item', id, user.id, 'created', 'kind', null, 'task');
     if (b.project_id) validProject(b.project_id, section);
-    run('UPDATE items SET recurrence=?, parent_task_id=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, id);
+    run('UPDATE items SET recurrence=?, parent_task_id=?, directive_id=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, directiveId, id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
     // الموظف لا ينشئ ما لا يستطيع رؤيته (قسم خارج نطاقه أو مسند لغيره خارج مشاريعه)
     if (user.role === 'member' && !canSee(user, { id })) throw forbidden('لا يمكنك إنشاء مهمة خارج نطاق صلاحياتك (القسم أو المسؤول)');
@@ -373,6 +374,7 @@ function setStatus(user, it, status, note) {
   }
   if (user.role !== 'member') notifyAssignee(it, user, { type: 'status_change', title: `${D.STATUSES[status]}: ${it.title}`, body: it.ref, link: link(it.id), collapse: `item:${it.id}:status` });
   if (status === 'done' && it.recurrence && !it.next_occurrence_id) spawnNextOccurrence(user, it);
+  if (status === 'done' && it.directive_id) checkDirectiveReady(it.directive_id);
 }
 
 // ===== المهام الدورية: إنجاز المهمة ينشئ الموعد التالي تلقائيًا (مرة واحدة فقط لكل موعد) =====
@@ -468,7 +470,7 @@ function thread(id) {
   const msgs = all(`SELECT m.*, u.name AS author_name, ${D.roleSql('u')} AS author_role FROM messages m LEFT JOIN users u ON u.id=m.author_id WHERE m.item_id=? ORDER BY m.id`, id);
   const files = all('SELECT id,message_id,approval_id,original_name,mime,size,is_voice,created_at,uploader_id FROM files WHERE item_id=? ORDER BY id', id);
   for (const m of msgs) { m.files = files.filter(f => f.message_id === m.id); try { m.meta = m.meta ? JSON.parse(m.meta) : null; } catch { m.meta = null; } }
-  const approvals = all(`SELECT a.*, ru.name AS requested_by_name, du.name AS decided_by_name FROM approvals a LEFT JOIN users ru ON ru.id=a.requested_by LEFT JOIN users du ON du.id=a.decided_by WHERE a.item_id=? ORDER BY a.id`, id)
+  const approvals = all(`SELECT a.*, ru.name AS requested_by_name, du.name AS decided_by_name, rb.name AS recorded_by_name FROM approvals a LEFT JOIN users ru ON ru.id=a.requested_by LEFT JOIN users du ON du.id=a.decided_by LEFT JOIN users rb ON rb.id=a.recorded_by WHERE a.item_id=? ORDER BY a.id`, id)
     .map(a => ({ ...a, options: a.options ? JSON.parse(a.options) : [], kind_label: D.APPROVAL_KINDS[a.kind], files: files.filter(f => f.approval_id === a.id) }));
   const notes = all(`SELECT ${D.ITEM_LIST_COLS}, i.description FROM items i WHERE parent_id=? ORDER BY id`, id).map(n => D.decorate(n));
   const auditRows = all(`SELECT a.*, u.name AS user_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE entity='item' AND entity_id=? ORDER BY a.id`, id);
@@ -504,7 +506,10 @@ function requestApproval(user, id, b, fileIds = []) {
 
 const DECISIONS = { approved: 'اعتماد', rejected: 'رفض', changes_requested: 'طلب تعديل', chosen: 'اختيار بديل', answered: 'رد على الاستفسار' };
 function decide(user, aid, b) {
-  require_(user, 'approval.decide');
+  // مدير المكتب يسجّل قرار المدير نيابةً عنه (ورده بالواتس أو البريد أو شفهيًا) مع ذكر القناة
+  const onBehalf = user.role !== 'owner' && b.on_behalf;
+  if (onBehalf) { require_(user, 'approval.record'); if (!D.CHANNELS[b.channel] || b.channel === 'platform') throw bad('اختر قناة ورود قرار المدير'); }
+  else require_(user, 'approval.decide');
   const a = get('SELECT * FROM approvals WHERE id=?', aid); if (!a) throw notFound('الطلب غير موجود');
   if (a.status !== 'pending') throw bad('تم اتخاذ قرار في هذا الطلب مسبقًا');
   const decision = b.decision; if (!DECISIONS[decision]) throw bad('قرار غير صالح');
@@ -519,7 +524,9 @@ function decide(user, aid, b) {
   const it = getItem(a.item_id);
   return tx(() => {
     const at = nowIso();
-    run('UPDATE approvals SET status=?, decision_note=?, chosen_option=?, decided_by=?, decided_at=? WHERE id=?', decision, note, chosen, user.id, at, aid);
+    const owner = onBehalf ? get("SELECT id FROM users WHERE role='owner' AND member=0 ORDER BY id LIMIT 1") : null;
+    run('UPDATE approvals SET status=?, decision_note=?, chosen_option=?, decided_by=?, decided_at=?, decided_channel=?, recorded_by=? WHERE id=?',
+      decision, note, chosen, onBehalf ? (owner ? owner.id : user.id) : user.id, at, onBehalf ? b.channel : 'platform', onBehalf ? user.id : null, aid);
     audit('approval', aid, user.id, 'decided', 'status', 'pending', decision);
     // لا يُنفَّذ أي إجراء مالي أو تعاقدي خارجي تلقائيًا — القرار يُسجَّل فقط ويُبلَّغ به مدير المكتب
     let newStatus = it.status;
@@ -533,7 +540,7 @@ function decide(user, aid, b) {
       audit('item', a.item_id, user.id, 'status', 'status', it.status, newStatus);
       if (newStatus === 'done' && it.recurrence && !it.next_occurrence_id) spawnNextOccurrence(user, it);
     }
-    const txt = `قرار ${D.ownerTitle()} على «${a.title}»: ${DECISIONS[decision]}${chosen ? ` — ${chosen}` : ''}${note ? `\n${note}` : ''}`;
+    const txt = `قرار ${D.ownerTitle()} على «${a.title}»: ${DECISIONS[decision]}${chosen ? ` — ${chosen}` : ''}${onBehalf ? ` (ورد ${D.CHANNELS[b.channel]}، سجّله ${user.name})` : ''}${note ? `\n${note}` : ''}`;
     sysMsg(a.item_id, user.id, txt, { event: 'decision', approval_id: aid, decision }, 'decision');
     touch(a.item_id, user.id);
     notifyRole('manager', { type: 'decision', title: `${DECISIONS[decision]}: ${a.title}`, body: `${it.ref} — ${note || chosen || ''}`.slice(0, 200), link: link(a.item_id) });
@@ -654,7 +661,90 @@ function decisionToTask(user, did, b) {
   });
 }
 
+// ===== سجل التوجيهات: توجيه ← مهام تنفيذية ← متابعة ← نتيجة موثقة =====
+function validDirective(user, id) {
+  const d = get('SELECT id,status FROM directives WHERE id=?', Number(id));
+  if (!d) throw bad('التوجيه غير موجود');
+  if (d.status !== 'open') throw bad('التوجيه مغلق');
+  if (!D.can(user, 'directives.manage')) throw forbidden();
+  return d.id;
+}
+function directiveRow(d, user) {
+  const sc = user ? scopeFor(user) : { sql: '', params: [] };
+  const t = D.todayStr();
+  const c = get(`SELECT COUNT(*) total, SUM(CASE WHEN i.status='done' THEN 1 ELSE 0 END) done, SUM(CASE WHEN i.status='cancelled' THEN 1 ELSE 0 END) cancelled,
+      SUM(CASE WHEN i.${D.OPEN} AND i.due_date<? THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN i.status='stalled' THEN 1 ELSE 0 END) stalled
+    FROM items i WHERE i.directive_id=?${sc.sql}`, t, d.id, ...sc.params);
+  const active = (c.total || 0) - (c.cancelled || 0);
+  const progress = active ? Math.round((c.done || 0) * 100 / active) : 0;
+  const state = d.status === 'cancelled' ? 'cancelled' : d.status === 'done' ? 'done' : !active ? 'pending' : progress === 100 ? 'ready' : (c.overdue || c.stalled) ? 'at_risk' : 'in_progress';
+  return { ...d, tasks_total: active, tasks_done: c.done || 0, tasks_overdue: c.overdue || 0, tasks_stalled: c.stalled || 0, progress, state,
+    state_label: { pending: 'لم يُحوَّل إلى مهام', in_progress: 'قيد التنفيذ', at_risk: 'متأخر أو متعثر', ready: 'المهام منجزة — بانتظار تسجيل النتيجة', done: 'منفَّذ ومغلق', cancelled: 'ملغى' }[state],
+    channel_label: D.CHANNELS[d.channel] || '', importance_label: D.IMPORTANCE[d.importance] || '', section_name: d.section ? D.sectionName(d.section) : null,
+    is_overdue: d.status === 'open' && !!d.due_date && d.due_date < t };
+}
+function createDirective(user, b) {
+  require_(user, 'directives.manage');
+  const title = str(b.title, 300); if (!title) throw bad('نص التوجيه مطلوب');
+  const channel = D.CHANNELS[b.channel] ? b.channel : (user.role === 'owner' ? 'platform' : null);
+  if (!channel) throw bad('اختر قناة ورود التوجيه');
+  const importance = D.IMPORTANCE[b.importance] ? b.importance : 'normal';
+  const section = validSection(b.section);
+  const tasks = (Array.isArray(b.tasks) ? b.tasks : []).filter(x => x && str(x.title, 300)).slice(0, 30);
+  return tx(() => {
+    const ref = nextRef('TW');
+    const { id } = run(`INSERT INTO directives(ref,title,details,source,channel,section,importance,received_at,due_date,created_by,is_demo) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+      ref, title, str(b.details), ['director', 'meeting', 'other'].includes(b.source) ? b.source : 'director', channel, section, importance,
+      validDate(b.received_at) || D.todayStr(), validDate(b.due_date), user.id, b.is_demo ? 1 : 0);
+    audit('directive', id, user.id, 'created', 'channel', null, channel);
+    for (const x of tasks) {
+      if (!section && !x.section) throw bad('اختر قسم التوجيه لإنشاء مهامه');
+      createTask(user, { title: x.title, description: str(x.description) || `ضمن التوجيه ${ref}: ${title}`, section: x.section || section, assignee_id: x.assignee_id || undefined,
+        due_date: x.due_date || b.due_date || undefined, priority: importance, directive_id: id, is_demo: b.is_demo }, { internal: user.role !== 'manager' && !D.can(user, 'task.create') });
+    }
+    if (user.role === 'owner') notifyRole('manager', { type: 'new_assignment', title: `توجيه جديد من ${D.ownerTitle()}: ${title}`, body: ref, link: `#/directive/${id}`, urgent: importance === 'urgent' });
+    events.broadcastChange({ directive: id });
+    return directiveRow(get('SELECT * FROM directives WHERE id=?', id), user);
+  });
+}
+function updateDirective(user, id, b) {
+  require_(user, 'directives.manage');
+  const d = get('SELECT * FROM directives WHERE id=?', Number(id)); if (!d) throw notFound('التوجيه غير موجود');
+  return tx(() => {
+    const sets = []; const vals = []; const changes = [];
+    const setF = (k, v) => { if (String(v ?? '') !== String(d[k] ?? '')) { sets.push(`${k}=?`); vals.push(v); changes.push(k); } };
+    if (b.title !== undefined) { const t = str(b.title, 300); if (!t) throw bad('نص التوجيه مطلوب'); setF('title', t); }
+    if (b.details !== undefined) setF('details', str(b.details));
+    if (b.channel !== undefined) { if (!D.CHANNELS[b.channel]) throw bad('قناة غير صالحة'); setF('channel', b.channel); }
+    if (b.importance !== undefined) { if (!D.IMPORTANCE[b.importance]) throw bad('أهمية غير صالحة'); setF('importance', b.importance); }
+    if (b.section !== undefined) setF('section', validSection(b.section));
+    if (b.due_date !== undefined) setF('due_date', validDate(b.due_date));
+    if (b.outcome !== undefined) setF('outcome', str(b.outcome, 5000));
+    if (b.status !== undefined && b.status !== d.status) {
+      if (!['open', 'done', 'cancelled'].includes(b.status)) throw bad('حالة غير صالحة');
+      const outcome = b.outcome !== undefined ? str(b.outcome, 5000) : d.outcome;
+      if (b.status === 'done' && !outcome) throw bad('سجّل النتيجة المتحققة قبل إغلاق التوجيه');
+      if (b.status === 'cancelled' && !str(b.reason, 500)) throw bad('اذكر سبب إلغاء التوجيه');
+      setF('status', b.status); setF('closed_at', b.status === 'open' ? null : nowIso());
+      if (b.status === 'cancelled') setF('outcome', `أُلغي: ${str(b.reason, 500)}`);
+    }
+    if (!sets.length) return directiveRow(d, user);
+    run(`UPDATE directives SET ${sets.join(',')}, updated_at=? WHERE id=?`, ...vals, nowIso(), d.id);
+    for (const k of changes) audit('directive', d.id, user.id, 'updated', k, d[k], null);
+    events.broadcastChange({ directive: d.id });
+    return directiveRow(get('SELECT * FROM directives WHERE id=?', d.id), user);
+  });
+}
+// اكتملت كل مهام التوجيه: تنبيه لتسجيل النتيجة (مرة واحدة)
+function checkDirectiveReady(directiveId) {
+  if (!directiveId) return;
+  const d = get('SELECT * FROM directives WHERE id=?', directiveId); if (!d || d.status !== 'open') return;
+  const r = directiveRow(d);
+  if (r.state === 'ready') notifyRole('manager', { type: 'status_change', title: `اكتملت مهام التوجيه: ${d.title}`, body: `${d.ref} — سجّل النتيجة المتحققة وأغلق التوجيه`, link: `#/directive/${d.id}`, dedupe: `directive-ready:${d.id}` });
+}
+
 module.exports = {
+  createDirective, updateDirective, directiveRow, checkDirectiveReady,
   AppError, bad, forbidden, notFound, require_, audit, getItem, scopeFor, canSee, assertCanSee, memberProjects, listUsers, createUser, updateUser, createAssignment, createNote, createTask, acknowledge, convertToTask,
   allowedSections, assertSectionAllowed, createSubtask, subtasksOf, spawnNextOccurrence, advanceDate, validProject, validRecurrence,
   updateItem, closeItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,
