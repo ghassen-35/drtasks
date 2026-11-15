@@ -392,6 +392,8 @@ async function route() {
   if (!state.me) return;
   const h = location.hash || '#/';
   const main = $('#main'); if (!main) return;
+  // الانتقال إلى صفحة أخرى (أو زر الرجوع في الجوال) يغلق النوافذ المفتوحة فلا تبقى نافذة مخفية خلف أخرى
+  $$('.modal-bg [data-close]').forEach(x => x.click());
   renderNav();
   for (const [re, fn] of routes) {
     const m = h.match(re);

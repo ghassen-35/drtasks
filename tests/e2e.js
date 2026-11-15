@@ -13,7 +13,9 @@ const { chromium, devices } = require('playwright');
 
 const ROOT = path.join(__dirname, '..');
 const DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'office-e2e-'));
-const PORT = 3200 + Math.floor(Math.random() * 500);
+// منفذ عشوائي، مع تجنب المنافذ التي يحظرها Chrome (ERR_UNSAFE_PORT)
+const UNSAFE = new Set([3659, 4045]);
+let PORT; do { PORT = 3200 + Math.floor(Math.random() * 500); } while (UNSAFE.has(PORT));
 const BASE = `http://localhost:${PORT}`;
 const TARGET = process.env.E2E_TARGET === 'cf' ? 'cloudflare' : 'node';
 const SHOTS = path.join(ROOT, 'tests', 'screenshots', TARGET);
@@ -24,7 +26,14 @@ let step = 0;
 async function check(name, fn) {
   step++;
   try { await fn(); results.push([step, name, 'نجح']); console.log(`✔ ${step}. ${name}`); }
-  catch (e) { results.push([step, name, 'فشل: ' + e.message]); console.log(`✘ ${step}. ${name}\n   ${e.message}`); throw e; }
+  catch (e) {
+    results.push([step, name, 'فشل: ' + e.message]); console.log(`✘ ${step}. ${name}\n   ${e.message}`);
+    // لقطات وتشخيص لكل صفحة مفتوحة عند الفشل (لتحليل الأعطال المتقطعة)
+    for (const [k, pg] of Object.entries(global.pages || {})) {
+      try { await pg.screenshot({ path: path.join(SHOTS, `fail-${step}-${k}.png`), fullPage: true }); console.log(`   [${k}] ${pg.url()} toasts=${JSON.stringify(await pg.$$eval('.toast', t => t.map(x => x.textContent)))} modals=${JSON.stringify(await pg.$$eval('.modal-bg', ms => ms.map(m => [m.querySelector('h2') && m.querySelector('h2').textContent, [...m.querySelectorAll('input,textarea')].map(i => i.name + '=' + (i.type === 'radio' ? i.checked : i.value)).join(';')])))}`); } catch { /* مغلقة */ }
+    }
+    throw e;
+  }
 }
 const assert = (c, m) => { if (!c) throw new Error(m); };
 
@@ -90,6 +99,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   const owner = await ownerCtx.newPage();
   const mgr = await mgrCtx.newPage();
   const consoleErrors = [];
+  global.pages = { owner, mgr };
   for (const p of [owner, mgr]) p.on('pageerror', e => consoleErrors.push(e.message + ' @ ' + String(e.stack || '').split('\n').slice(1, 4).join(' | ')));
   const TITLE = 'إعداد التقرير السنوي لبرامج الجمعية';
   let itemId, ref, tileBefore, folderId, projectId;
@@ -554,9 +564,105 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await ctx.close();
     });
 
+    // فتح صفحة مع ضمان إعادة تحميل بياناتها (الانتقال إلى الرابط نفسه لا يعيد العرض)
+    const openFresh = async (pg, h) => { await pg.goto(BASE + '/#/'); await pg.waitForTimeout(150); await pg.goto(BASE + '/' + h); };
+    await check('سيناريو كامل: توجيه من المدير ← مهام ← تنفيذ المساعد ← مراجعة وإعادة للتعديل ← قرار المدير نيابةً ← إغلاق ← تقرير', async () => {
+      const today = (await apiAs(mgr, 'GET', '/api/meta')).body.today;
+      // 1) المدير يصدر توجيهًا (عبر المنصة) لمدير المكتب
+      const d = (await apiAs(owner, 'POST', '/api/directives', { title: 'إعداد خطة الاختبارات النهائية للمدارس', section: 'personal', importance: 'important', due_date: '2026-12-20' })).body;
+      assert(d.ref && d.channel === 'platform', 'لم يُسجل توجيه المدير: ' + JSON.stringify(d).slice(0, 200));
+      assert((await apiAs(mgr, 'GET', '/api/notifications')).body.some(n => n.title.includes('توجيه جديد') && n.title.includes('خطة الاختبارات')), 'لم يُبلَّغ مدير المكتب بالتوجيه');
+      // 2) مدير المكتب يحوّله إلى مهام من صفحة التوجيه، ويسند إحداها للمساعد بمخرج مطلوب
+      await mgr.goto(`${BASE}/#/directive/${d.id}`); await mgr.waitForSelector('#addT');
+      await mgr.click('#addT'); await mgr.waitForSelector('.modal input[name=title]');
+      await mgr.fill('.modal input[name=title]', 'إعداد جدول الاختبارات');
+      await mgr.fill('.modal input[name=deliverable]', 'جدول اختبارات معتمد بصيغة PDF');
+      await mgr.selectOption('.modal select[name=assignee_pick]', String(staff.asst));
+      await mgr.click('.modal button:has-text("حفظ")'); await mgr.waitForSelector('.item-head h1:has-text("إعداد جدول الاختبارات")');
+      const t1 = (await apiAs(mgr, 'GET', `/api/directives/${d.id}`)).body.tasks.find(x => x.title === 'إعداد جدول الاختبارات');
+      assert(t1 && t1.assignee_id === staff.asst && t1.deliverable && t1.priority === 'important', 'المهمة لم ترث التوجيه أو المسؤول أو المخرج');
+      await apiAs(mgr, 'POST', '/api/tasks', { title: 'حجز قاعات الاختبار', section: 'personal', directive_id: d.id });
+      // 3) المساعد ينفذ ويرفع المخرج
+      const ctx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' }); const as = await ctx.newPage(); as.on('pageerror', e => consoleErrors.push(e.message));
+      await as.goto(BASE); await as.fill('input[name=username]', 'qa.asst'); await as.fill('input[name=password]', 'Staff#2026x'); await as.click('button:has-text("دخول")'); await as.waitForSelector('.bottomnav');
+      await as.goto(`${BASE}/#/item/${t1.id}`); await as.waitForSelector('#acts [data-s=done]');
+      await as.click('#acts [data-s=done]'); await as.waitForSelector('.modal .info-box:has-text("جدول اختبارات معتمد")');
+      await as.fill('.modal textarea[name=body]', 'أُعد الجدول وأرسلته للمدارس للمراجعة.'); await as.click('.modal button:has-text("تم الإنجاز")'); await as.waitForSelector('.item-head .chip.st-done');
+      // 4) مدير المكتب يراجع ويعيده للتعديل بسبب، ثم يُنجز مجددًا
+      await openFresh(mgr, `#/item/${t1.id}`); await mgr.waitForSelector('.item-head .chip.st-done'); await mgr.waitForSelector('#acts [data-s=in_progress]');
+      await mgr.click('#acts [data-s=in_progress]'); await mgr.waitForSelector('.modal textarea[name=note]');
+      await mgr.fill('.modal textarea[name=note]', 'أضف مواعيد اختبارات الإعادة.'); await mgr.click('.modal button:has-text("إعادة فتح")'); await mgr.waitForSelector('.item-head .chip.st-in_progress');
+      assert((await apiAs(as, 'GET', '/api/notifications')).body.some(n => n.title.includes('إعداد جدول الاختبارات')), 'لم يُبلَّغ المساعد بإعادة المهمة');
+      await apiAs(as, 'PATCH', `/api/items/${t1.id}`, { status: 'done' });
+      // 5) رفع الأمر للمدير، والمدير يقرر بالواتس فيسجّله مدير المكتب نيابةً عنه
+      const aid = (await apiAs(mgr, 'POST', `/api/items/${t1.id}/approvals`, { kind: 'report', title: 'اعتماد جدول الاختبارات', blocking: true })).body.id;
+      await openFresh(mgr, `#/item/${t1.id}`); await mgr.waitForSelector(`[data-proxy="${aid}"]`);
+      await mgr.click(`[data-proxy="${aid}"]`); await mgr.waitForSelector('.modal input[name=channel]');
+      await mgr.click('.modal input[name=channel][value=whatsapp] + span'); await mgr.click('.modal button:has-text("تسجيل القرار")');
+      await mgr.waitForSelector('.approval.decided-approved:has-text("ورد واتساب")');
+      // 6) إنجاز المهمة الثانية، فيصبح التوجيه «بانتظار تسجيل النتيجة»، ثم يُغلق بنتيجة
+      const t2 = (await apiAs(mgr, 'GET', `/api/directives/${d.id}`)).body.tasks.find(x => x.title === 'حجز قاعات الاختبار');
+      await apiAs(mgr, 'PATCH', `/api/items/${t2.id}`, { status: 'done' });
+      await apiAs(mgr, 'PATCH', `/api/items/${t1.id}`, { status: 'done' });
+      assert((await apiAs(mgr, 'GET', `/api/directives/${d.id}`)).body.state === 'ready', 'التوجيه لم يصبح جاهزًا لتسجيل النتيجة');
+      await openFresh(mgr, `#/directive/${d.id}`); await mgr.click('#closeDir'); await mgr.fill('.modal textarea[name=outcome]', 'اعتُمد جدول الاختبارات ووُزّع على 12 مدرسة.'); await mgr.click('.modal button:has-text("إغلاق التوجيه")');
+      await mgr.waitForSelector('.info-box:has-text("النتيجة المتحققة")');
+      // 7) يظهر في الإنجاز ولوحة القيادة
+      const done = (await apiAs(mgr, 'GET', `/api/items?kind=tasks&scope=closed&status=done&done_since=${today}`)).body;
+      assert(done.some(x => x.id === t1.id) && done.some(x => x.id === t2.id), 'المهام لا تظهر في المنجزة');
+      const cmd = (await apiAs(owner, 'GET', '/api/command')).body;
+      assert(cmd.kpis.done_week >= 2, 'لوحة القيادة لا تحسب الإنجاز');
+      await ctx.close();
+    });
+
+    await check('حالات واقعية: تأخر، تعثر يحتاج المدير، اجتماع بخمسة قرارات، أعمال متعددة لشخص، تكليف عاجل، تغيير الأولوية والموعد، إلغاء مع حفظ السجل', async () => {
+      const today = (await apiAs(mgr, 'GET', '/api/meta')).body.today;
+      const minus = (n) => new Date(Date.parse(today + 'T12:00:00Z') - n * 864e5).toISOString().slice(0, 10);
+      // تأخر مهمة: تظهر في المتأخرة، والتأجيل يطلب سبب التأخير
+      const late = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'تسليم تقرير الحضور', section: 'personal', due_date: minus(2), assignee_id: staff.asst })).body;
+      await mgr.goto(`${BASE}/#/item/${late.id}`); await mgr.click('#acts [data-a=postpone]'); await mgr.waitForSelector('.modal [data-pp]');
+      assert(await mgr.isVisible('.modal span:has-text("سبب التأخير *")'), 'التأجيل لا يطلب سبب التأخير');
+      await mgr.click('.modal [data-pp]:has-text("غدًا")'); await mgr.waitForSelector('.toast.err:has-text("سبب التأخير")');
+      await mgr.fill('.modal input[name=reason]', 'تأخر وصول البيانات من المدارس');
+      assert(await mgr.$eval('.modal input[name=reason]', i => i.value) === 'تأخر وصول البيانات من المدارس', 'لم يُكتب السبب في النافذة');
+      await mgr.click('.modal [data-pp]:has-text("غدًا")'); await mgr.waitForSelector('.modal-bg', { state: 'detached' });
+      assert((await apiAs(mgr, 'GET', `/api/items/${late.id}`)).body.messages.some(m => m.body.includes('سبب التأخير')), 'سبب التأخير لم يُحفظ');
+      // تعثر مشروع يحتاج تدخل المدير: يظهر في «تحتاج تدخلك»
+      const st = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'توريد أجهزة المختبر', section: 'personal', priority: 'urgent', due_date: minus(5) })).body;
+      await apiAs(mgr, 'PATCH', `/api/items/${st.id}`, { status: 'stalled', status_note: 'المورد لم يلتزم' });
+      await owner.goto(`${BASE}/#/command`); await owner.waitForSelector('.card.attn');
+      assert(await owner.isVisible('.card.attn .row:has-text("توريد أجهزة المختبر")'), 'المهمة المتعثرة لا تظهر في «تحتاج تدخلك»');
+      // اجتماع نتجت عنه خمسة قرارات تتحول إلى مهام دفعة واحدة
+      const m = (await apiAs(mgr, 'POST', '/api/meetings', { title: 'اجتماع لجنة الاختبارات', section: 'personal', starts_at: today + 'T10:00' })).body;
+      await mgr.goto(`${BASE}/#/meeting/${m.id}`); await mgr.click('#addMany'); await mgr.waitForSelector('.modal textarea[name=text]');
+      await mgr.fill('.modal textarea[name=text]', 'اعتماد مواعيد الاختبارات\nتشكيل لجان المراقبة\nطباعة الأسئلة\nتجهيز القاعات\nإبلاغ أولياء الأمور');
+      await mgr.selectOption('.modal select[name=assignee_id]', String(staff.asst)); await mgr.click('.modal button:has-text("حفظ القرارات")');
+      await mgr.waitForSelector('.card-h:has-text("القرارات الصادرة") .chip:has-text("5")');
+      const mt = (await apiAs(mgr, 'GET', `/api/meetings/${m.id}`)).body.decisions;
+      assert(mt.length === 5 && mt.every(x => x.task_id), 'القرارات الخمسة لم تتحول إلى مهام');
+      // أعمال متعددة لشخص واحد: تظهر في توزيع العمل، والرابط يفتح قائمته
+      await openFresh(owner, '#/command'); await owner.waitForSelector('.tbl');
+      const href = await owner.$eval('.tbl a:has-text("مساعد الاختبار")', a => a.getAttribute('href')); // الجدول يتحدث فوريًا فنفتح الرابط مباشرة
+      await owner.goto(BASE + '/' + href); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
+      const mine = (await apiAs(owner, 'GET', `/api/items?kind=tasks&scope=open&assignee_id=${staff.asst}`)).body;
+      assert(mine.length >= 6, 'توزيع العمل لا يعكس المهام المتعددة: ' + mine.length);
+      // تكليف عاجل يحتاج تنفيذًا فوريًا
+      const urg = (await apiAs(owner, 'POST', '/api/assignments', { title: 'الرد على خطاب الوزارة اليوم', section: 'personal', priority: 'urgent', due_date: today })).body;
+      assert((await apiAs(mgr, 'GET', '/api/notifications')).body.some(n => n.urgent && n.title.includes('الرد على خطاب الوزارة')), 'التكليف العاجل لم يصل عاجلًا');
+      assert((await apiAs(mgr, 'GET', '/api/home')).body.urgent_ribbon.some(i => i.id === urg.id), 'التكليف العاجل خارج شريط العاجل');
+      // تغيير الأولوية والموعد يُسجَّل
+      await apiAs(owner, 'PATCH', `/api/items/${late.id}`, { priority: 'urgent', due_date: today });
+      const log = (await apiAs(mgr, 'GET', `/api/items/${late.id}`)).body.audit.map(a => a.field);
+      assert(log.includes('priority') && log.includes('due_date'), 'تغيير الأولوية/الموعد غير مسجل');
+      // إلغاء تكليف مع الاحتفاظ بسجله
+      await apiAs(owner, 'PATCH', `/api/items/${urg.id}`, { status: 'cancelled' });
+      const c = (await apiAs(owner, 'GET', `/api/items/${urg.id}`)).body;
+      assert(c.item.status === 'cancelled' && c.audit.some(a => a.new_value === 'cancelled') && c.messages.length > 0, 'الإلغاء لم يحفظ السجل');
+    });
+
     await check('الواجهة على الجوال والكمبيوتر: لا تمرير أفقي، والصفحات الأساسية تعمل', async () => {
       for (const [p, pages] of [[owner, ['#/', '#/my', '#/decisions', '#/notifications', '#/reports', '#/section/association', '#/meetings', '#/settings', '#/more']],
-        [mgr, ['#/', '#/inbox', '#/dashboard', '#/tasks', '#/meetings', '#/sops', '#/partners', '#/reports', '#/settings', '#/section/partnerships']]]) {
+        [mgr, ['#/', '#/command', '#/directives', '#/files', '#/inbox', '#/dashboard', '#/tasks', '#/meetings', '#/sops', '#/partners', '#/reports', '#/settings', '#/section/partnerships']]]) {
         for (const h of pages) {
           await p.goto(BASE + '/' + h); await p.waitForSelector('main h1', { timeout: 8000 });
           assert(await noHScroll(p), `تمرير أفقي في ${h}`);
@@ -564,7 +670,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       }
       // مقاس جوال لمدير المكتب أيضًا
       await mgr.setViewportSize({ width: 390, height: 844 });
-      for (const h of ['#/', '#/inbox', '#/dashboard', `#/item/${itemId}`]) { await mgr.goto(BASE + '/' + h); await mgr.waitForSelector('main h1'); assert(await noHScroll(mgr), `تمرير أفقي (جوال/مدير) في ${h}`); }
+      for (const h of ['#/', '#/command', '#/directives', '#/inbox', '#/dashboard', `#/item/${itemId}`]) { await mgr.goto(BASE + '/' + h); await mgr.waitForSelector('main h1'); assert(await noHScroll(mgr), `تمرير أفقي (جوال/مدير) في ${h}`); }
       await mgr.goto(BASE + '/#/'); await mgr.waitForSelector('.tiles');
       await mgr.screenshot({ path: path.join(SHOTS, '06-manager-home-mobile.png'), fullPage: true });
       await mgr.setViewportSize({ width: 1366, height: 900 });
@@ -591,7 +697,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 30 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 32 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);
