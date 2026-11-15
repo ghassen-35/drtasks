@@ -83,9 +83,26 @@ const GRANT_PRESETS = {
   assistant: { label: 'مساعد إداري', scope: 'all', perms: ['task.create', 'subtask.create', 'item.edit', 'meetings.view', 'partners.view'] },
 };
 function parseGrants(raw) {
-  let g = {}; try { g = typeof raw === 'string' ? JSON.parse(raw) : (raw || {}); } catch { }
+  let g = {}; try { g = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { }
+  if (!g || typeof g !== 'object' || Array.isArray(g)) g = {};
   const scope = SCOPES[g.scope] ? g.scope : 'own';
-  return { scope, sections: scope === 'sections' ? (g.sections || []).filter(s => SECTION_KEYS.includes(s)) : [], perms: (g.perms || []).filter(p => GRANTABLE[p]) };
+  const arr = (x) => (Array.isArray(x) ? [...new Set(x.slice(0, 50).map(String))] : []);
+  return { scope, sections: scope === 'sections' ? arr(g.sections).filter(s => SECTION_KEYS.includes(s)) : [], perms: arr(g.perms).filter(p => GRANTABLE[p]) };
+}
+// تحقق صارم عند الحفظ: رسالة واضحة بدل التجاهل الصامت
+function validateGrants(raw) {
+  const errs = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) errs.push('صيغة الصلاحيات غير صالحة');
+  else {
+    if (raw.scope !== undefined && !SCOPES[raw.scope]) errs.push('نطاق رؤية غير معروف');
+    for (const k of ['sections', 'perms']) if (raw[k] !== undefined && !Array.isArray(raw[k])) errs.push(`الحقل ${k} يجب أن يكون قائمة`);
+    if (Array.isArray(raw.perms) && raw.perms.some(p => !GRANTABLE[p])) errs.push('صلاحية غير معروفة');
+    if (Array.isArray(raw.sections) && raw.sections.some(s => !SECTION_KEYS.includes(s))) errs.push('قسم غير معروف');
+  }
+  const g = parseGrants(raw);
+  if (g.scope === 'sections' && !g.sections.length) errs.push('اختر قسمًا واحدًا على الأقل لنطاق «أقسام محددة»');
+  if (g.scope === 'own' && g.perms.includes('projects.manage')) errs.push('إدارة المشاريع والمجلدات تتطلب نطاق «أقسام محددة» أو «كل المكتب»');
+  return { g, errs };
 }
 const permCache = new WeakMap();
 // الصلاحيات الفعلية: أساس الدور + ما مُنح للموظف (الرؤية الكاملة تمنح item.view، ورؤية الأقسام تمنح تصفح الأقسام والمجلدات)
@@ -95,7 +112,7 @@ function effectivePerms(user) {
   if (permCache.has(user)) return permCache.get(user);
   const g = parseGrants(user.grants);
   const set = new Set([...PERMS.member, ...g.perms]);
-  if (g.scope === 'all') set.add('item.view');
+  // ملاحظة: «كل المكتب» لا يمنح item.view — رؤية الموظف تمر دائمًا عبر النطاق (لا ملاحظات رجل الأعمال الخاصة)
   if (g.scope !== 'own') set.add('folders.view');
   if (set.has('partners.view')) set.add('contacts.view');
   permCache.set(user, set);
@@ -255,5 +272,5 @@ function report(period = 'week') {
 
 module.exports = {
   get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS,
-  PERMS, ROLE_LABELS, roleSql, can, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  PERMS, ROLE_LABELS, roleSql, can, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

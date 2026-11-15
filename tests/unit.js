@@ -93,7 +93,7 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   await S.updateUser(mgr, memId, { active: false });
   t('إيقاف الحساب يحذف جلساته ويمنع ظهوره', !get('SELECT active FROM users WHERE id=?', memId).active);
   let e3 = null; try { await S.updateUser(mgr, owner.id, { active: false }); } catch (e) { e3 = e.status; }
-  t('لا يمكن إيقاف حساب رجل الأعمال', e3 === 400);
+  t('لا يمكن إيقاف حساب رجل الأعمال', [400, 403].includes(e3));
 }
 // ---- المجلدات
 {
@@ -145,10 +145,15 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
 {
   const err = (fn) => { try { fn(); return null; } catch (e) { return e.status || e.message; } };
   const load = (id) => get(`SELECT id,name,${D.roleSql()} AS role,grants FROM users WHERE id=?`, id);
+  const bogus = await S.createUser(mgr, { name: 'خطأ', username: 'bogus', password: 'Bogus#2026x', grants: { scope: 'sections', sections: ['dawah'], perms: ['bogus.perm'] } }).then(() => null, e => e.status);
+  t('صلاحية غير معروفة تُرفض برسالة ولا يُنشأ الحساب', bogus === 400 && !get("SELECT id FROM users WHERE username='bogus'"));
+  t('صيغ صلاحيات خاطئة تُرفض (400 لا 500)', [5, null, [], { sections: 'dawah' }, { scope: 'god' }, { perms: 'task.create' }].every(g => D.validateGrants(g).errs.length > 0));
+  t('إدارة المشاريع مع نطاق «مهامه فقط» تُرفض', D.validateGrants({ scope: 'own', perms: ['projects.manage'] }).errs.length > 0);
+  t('تكرار الصلاحيات يُزال', D.parseGrants({ scope: 'all', perms: Array(500).fill('task.create') }).perms.length === 1);
   const { id: cId } = await S.createUser(mgr, { name: 'نورة', username: 'noura', password: 'Noura#2026x',
-    grants: { scope: 'sections', sections: ['dawah'], perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage', 'bogus.perm'] } });
+    grants: { scope: 'sections', sections: ['dawah'], perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage'] } });
   const co = load(cId);
-  t('الصلاحيات تُنقّى من القائمة البيضاء', !D.can(co, 'bogus.perm') && D.can(co, 'task.create') && !D.can(co, 'item.manage') && !D.can(co, 'approval.decide') && !D.can(co, 'users.manage'));
+  t('الموظف لا يملك صلاحيات المدير أو المالك', D.can(co, 'task.create') && !D.can(co, 'item.manage') && !D.can(co, 'approval.decide') && !D.can(co, 'users.manage'));
   const inSec = S.createTask(mgr, { title: 'مهمة في قسم الدعوة', section: 'dawah' });
   const outSec = S.createTask(mgr, { title: 'مهمة في الأسري', section: 'family' });
   t('منسّق القسم يرى كل مهام قسمه فقط', S.canSee(co, inSec) && !S.canSee(co, outSec));
@@ -160,6 +165,18 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('مهمة ينشئها الموظف بلا مسؤول تُسند إليه فيراها', mine.assignee_id === cId && S.canSee(co, S.getItem(mine.id)));
   t('المنسّق يضيف مهام فرعية في قسمه فقط', !!S.createSubtask(co, inSec.id, { title: 'فرعية' }).id && err(() => S.createSubtask(co, outSec.id, { title: 'x' })) === 404);
   t('المنسّق لا ينشئ مجلدًا أو مشروعًا خارج قسمه', err(() => S.assertSectionAllowed(co, 'family')) === 403 && err(() => S.assertSectionAllowed(co, 'dawah')) === null);
+  // ثغرات وجدها اختبار الصلاحيات
+  t('لا ينشئ الموظف مهمة لغيره في قسم خارج نطاقه', err(() => S.createTask(co, { title: 'x', section: 'family', assignee_id: mgr.id })) === 403);
+  t('لا يربط مهمة بمهمة أصل لا يراها', S.createTask(co, { title: 'y', section: 'dawah', parent_task_id: outSec.id }).parent_task_id === null);
+  t('لا ينقل مهمة إلى قسم خارج نطاقه', err(() => S.updateItem(co, inSec.id, { section: 'family' })) === 403 && S.getItem(inSec.id).section === 'dawah');
+  const appr = S.createTask(mgr, { title: 'تتطلب اعتمادًا', section: 'dawah', requires_approval: 1 });
+  t('لا يُلغي الموظف شرط اعتماد النتيجة', err(() => S.updateItem(co, appr.id, { requires_approval: false })) === 403 && err(() => S.updateItem(co, appr.id, { status: 'done' })) === 400);
+  const canc = S.createTask(mgr, { title: 'ستُلغى', section: 'dawah' }); S.updateItem(mgr, canc.id, { status: 'cancelled' });
+  t('لا يعيد الموظف فتح مهمة ملغاة', err(() => S.updateItem(co, canc.id, { status: 'in_progress' })) === 403);
+  const asgD = S.createAssignment(owner, { title: 'تكليف للدعوة', section: 'dawah' });
+  t('الموظف لا يغيّر حالة تكليف رجل الأعمال', S.canSee(co, asgD) && err(() => S.updateItem(co, asgD.id, { status: 'done' })) === 403);
+  t('حسابا المالك والمدير لا يعدّلهما غير صاحبيهما', (await S.updateUser(mgr, owner.id, { password: 'NewOwner#2026' }).then(() => null, e => e.status)) === 403
+    && (await S.updateUser(owner, mgr.id, { email: 'x@y.z' }).then(() => null, e => e.status)) === 403);
 
   const { id: eId } = await S.createUser(mgr, { name: 'سالم', username: 'salem', password: 'Salem#2026x' });
   const ex = load(eId);
@@ -168,7 +185,9 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
 
   await S.updateUser(mgr, eId, { grants: { scope: 'all', perms: ['meetings.view'] } });
   const ex2 = load(eId);
-  t('تغيير الصلاحيات يسري فورًا ويُشعَر الموظف', D.can(ex2, 'item.view') && D.can(ex2, 'meetings.view') && S.canSee(ex2, outSec)
+  const note = S.createNote(owner, { msg_type: 'info', description: 'ملاحظة خاصة للمدير', section: 'family' });
+  t('«كل المكتب» لا يكشف ملاحظات رجل الأعمال الخاصة', !D.can(ex2, 'item.view') && !S.canSee(ex2, note) && S.canSee(ex2, outSec));
+  t('تغيير الصلاحيات يسري فورًا ويُشعَر الموظف', D.can(ex2, 'meetings.view') && S.canSee(ex2, outSec)
     && all('SELECT title FROM notifications WHERE user_id=?', eId).some(n => n.title.includes('صلاحياتك')));
   t('نطاق «أقسام محددة» بلا أقسام يُرفض', (await S.updateUser(mgr, eId, { grants: { scope: 'sections', sections: [] } }).then(() => null, e => e.status)) === 400);
   t('لا تُخصص صلاحيات لحساب المدير', (await S.updateUser(mgr, mgr.id, { grants: { scope: 'all' } }).then(() => null, e => e.status)) === 400);

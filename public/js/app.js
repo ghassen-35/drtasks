@@ -103,10 +103,12 @@ function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', on
   </form>`;
   document.body.appendChild(bg); document.body.style.overflow = 'hidden';
   const form = $('form', bg);
-  const close = () => { bg.remove(); document.body.style.overflow = ''; if (state.stale) refreshView(); };
+  // Escape يغلق النافذة العليا أينما كان التركيز
+  const onKey = (e) => { if (e.key === 'Escape' && bg === $$('.modal-bg').pop()) close(); };
+  const close = () => { document.removeEventListener('keydown', onKey); bg.remove(); document.body.style.overflow = ''; if (state.stale) refreshView(); };
   $$('[data-close]', bg).forEach(b => b.onclick = close);
   bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
-  bg.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  document.addEventListener('keydown', onKey);
   form.onsubmit = async (e) => {
     e.preventDefault();
     const btn = $('button[type=submit]', form); btn.disabled = true;
@@ -132,8 +134,10 @@ function formData(form) {
   return o;
 }
 const opt = (v, label, sel) => `<option value="${esc(v)}" ${String(sel ?? '') === String(v) ? 'selected' : ''}>${esc(label)}</option>`;
-const sectionSelect = (sel, name = 'section', blank = false) => `<select name="${name}">${blank ? opt('', '— اختر —', sel) : ''}${state.meta.sections.map(s => opt(s.key, s.name, sel)).join('')}</select>`;
-const sectionSeg = (sel, name = 'section') => `<div class="seg">${state.meta.sections.map(s => `<label><input type="radio" name="${name}" value="${s.key}" ${sel === s.key ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div>`;
+// الأقسام التي يعمل فيها المستخدم (الموظف بنطاق «أقسام محددة» يرى أقسامه فقط)
+const mySections = () => { const g = state.me.grants; return g && g.scope === 'sections' ? state.meta.sections.filter(s => g.sections.includes(s.key)) : state.meta.sections; };
+const sectionSelect = (sel, name = 'section', blank = false) => `<select name="${name}">${blank ? opt('', '— اختر —', sel) : ''}${mySections().map(s => opt(s.key, s.name, sel)).join('')}</select>`;
+const sectionSeg = (sel, name = 'section') => `<div class="seg">${mySections().map(s => `<label><input type="radio" name="${name}" value="${s.key}" ${sel === s.key ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div>`;
 const prioSeg = (sel = 'normal') => `<div class="seg">${Object.entries(state.meta.priorities).map(([k, v]) => `<label><input type="radio" name="priority" value="${k}" ${sel === k ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`;
 const field = (label, html) => `<label class="f"><span>${label}</span>${html}</label>`;
 
@@ -267,7 +271,7 @@ function navItems() {
   ];
   if (isMember()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/tasks', i: 'list', t: can('item.view') ? 'كل المهام' : 'مهامي' },
+    { h: '#/tasks', i: 'list', t: state.me.grants && state.me.grants.scope !== 'own' ? 'المهام' : 'مهامي' },
     ...common.filter(n => n.h === '#/sops' || can({ '#/meetings': 'meetings.view', '#/partners': 'partners.view', '#/reports': 'reports.view' }[n.h])),
   ];
   if (isOwner()) return [
@@ -323,7 +327,7 @@ function renderNav() {
   const sn = $('#sidenav'); if (!sn) return;
   sn.innerHTML = navItems().map(n => `<a href="${n.h}" class="${active(n.h) ? 'active' : ''}">${I(n.i)}<span>${n.t}</span>${n.n ? `<span class="count ${n.o ? 'o' : ''}">${n.n}</span>` : ''}</a>`).join('')
     + (can('folders.view') ? `<div class="sep"></div><div class="lbl">الأقسام</div>`
-    + state.meta.sections.map(s => `<a href="#/section/${s.key}" class="${route === '#/section/' + s.key ? 'active' : ''}">${I(s.icon)}<span>${s.name}</span></a>`).join('') : '')
+    + mySections().map(s => `<a href="#/section/${s.key}" class="${route === '#/section/' + s.key ? 'active' : ''}">${I(s.icon)}<span>${s.name}</span></a>`).join('') : '')
     + `<div class="sep"></div><a href="#/notifications" class="${active('#/notifications') ? 'active' : ''}">${I('bell')}<span>الإشعارات</span>${state.counts.unread ? `<span class="count">${state.counts.unread}</span>` : ''}</a>
        <a href="#/settings" class="${active('#/settings') ? 'active' : ''}">${I('settings')}<span>الإعدادات</span></a>
        <a href="#" id="logoutLink">${I('logout')}<span>تسجيل الخروج</span></a>`;
@@ -707,7 +711,8 @@ async function viewSection(main, key) {
   let tab = 'folders';
   async function load() {
     const [home, projects, folders] = await Promise.all([GET('/api/home'), GET('/api/projects?section=' + key), GET('/api/folders?section=' + key)]);
-    const s = home.tiles.find(t => t.key === key);
+    const s = (home.tiles || []).find(t => t.key === key);
+    if (!s) throw new Error('هذا القسم خارج صلاحياتك');
     main.innerHTML = `<div class="page-h"><div class="tile" style="min-height:0;padding:0;border:0;box-shadow:none;background:none;cursor:default"><div class="th"><div class="ic">${I(sec.icon)}</div><h1>${esc(sec.name)}</h1></div></div><span class="spacer"></span>
         ${canAddAny() ? `<button class="btn primary" id="add">${I('plus')} إضافة في هذا القسم</button>` : ''}</div>
       <div class="kpis">
@@ -1007,7 +1012,7 @@ async function viewItem(main, id) {
   }
   function renderLog() {
     const L = { created: 'إنشاء', acknowledged: 'تأكيد الاستلام', converted: 'تحويل إلى مهمة', status: 'تغيير الحالة', updated: 'تعديل', message: 'رسالة', update_posted: 'تحديث تنفيذ', closed: 'إغلاق نهائي' };
-    const F = { kind: 'النوع', status: 'الحالة', title: 'العنوان', description: 'الوصف', section: 'القسم', assignee: 'المسؤول', due_date: 'الموعد', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', category: 'التصنيف', project_id: 'المشروع', due_time: 'الوقت', sop_id: 'الإجراء', partner_id: 'الجهة' };
+    const F = { kind: 'النوع', status: 'الحالة', title: 'العنوان', description: 'الوصف', section: 'القسم', assignee: 'المسؤول', due_date: 'الموعد', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', category: 'التصنيف', project_id: 'المشروع', due_time: 'الوقت', sop_id: 'الإجراء', partner_id: 'الجهة', folder_id: 'المجلد', assignee_id: 'المسؤول (حساب)', recurrence: 'التكرار', parent_task_id: 'المهمة الأصل' };
     const val = (f, v) => v == null ? '—' : f === 'status' ? (state.meta.statuses[v] || v) : f === 'priority' ? (state.meta.priorities[v] || v) : f === 'section' ? sectionName(v) : f === 'kind' ? ({ assignment: 'تكليف', note: 'ملاحظة', task: 'مهمة' }[v] || v) : v;
     $('#logc', main).innerHTML = data.audit.map(a => `<div class="log-row">${fmtTs(a.created_at)} — <b>${esc(a.user_name || '')}</b>: ${esc(L[a.action] || a.action)}${a.field && a.action !== 'created' ? ` (${esc(F[a.field] || a.field)}: ${esc(String(val(a.field, a.old_value)).slice(0, 60))} ← ${esc(String(val(a.field, a.new_value)).slice(0, 60))})` : ''}</div>`).join('') || '<div class="muted">لا يوجد</div>';
   }
@@ -1139,7 +1144,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
       ${field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`)}
       ${field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`)}
     </div>
-    <label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`;
+    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}`;
 }
 // في نموذج المهمة: المجلدات والمشاريع تتبع القسم المختار، واختيار مشروع يضبط مجلده
 // المجلدات والمشاريع تتبع القسم المختار، والمشاريع تتبع النوع (مشروع/مبادرة)، واختيار مشروع يضبط مجلده
@@ -1165,6 +1170,7 @@ async function modalTask(i, after) {
     onSubmit: async (d) => {
       if (!d.section) throw new Error('اختر القسم');
       applyTaskType(d);
+      if (!can('partners.view')) delete d.partner_id; // لا يمسح ربطًا لا يراه
       if (editing) { delete d.file_ids; await api('PATCH', `/api/items/${i.id}`, d); toast('حُفظت التعديلات', 'ok'); after && after(); }
       else { const it = await POST('/api/tasks', d); toast(`أُنشئت المهمة ${it.ref}`, 'ok'); location.hash = `#/item/${it.id}`; }
       refreshView();
@@ -1198,7 +1204,7 @@ function modalResult(i, after) {
       ${field('ملخص النتيجة *', '<textarea name="body" required></textarea>')}${field('المرفقات', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
       if (!d.body.trim()) throw new Error('اكتب ملخص النتيجة');
-      if (i.requires_approval) await POST(`/api/items/${i.id}/approvals`, { kind: 'final', title: `اعتماد النتيجة النهائية: ${i.title}`, body: d.body, file_ids: d.file_ids, blocking: true });
+      if (i.requires_approval) await POST(`/api/items/${i.id}/approvals`, { kind: 'final', title: i.title, body: d.body, file_ids: d.file_ids, blocking: true });
       else { await POST(`/api/items/${i.id}/messages`, { body: d.body, kind: 'result', file_ids: d.file_ids }); await api('PATCH', `/api/items/${i.id}`, { status: 'done' }); }
       toast(i.requires_approval ? 'أُرسلت النتيجة لاعتماد رجل الأعمال' : 'اكتملت المهمة', 'ok'); after && after();
     },
@@ -1217,7 +1223,7 @@ async function modalProject(p = {}) {
     init: (form) => { if (!p.id) { const sec = form.elements.section, fol = form.elements.folder_id; const f = () => { for (const o of fol.options) if (o.value) { const fo = folders.find(x => x.id == o.value); o.hidden = o.disabled = fo.section !== sec.value; if (o.hidden && o.selected) fol.value = ''; } }; sec.addEventListener('change', f); f(); } },
     onSubmit: async (d) => {
       p.id ? await api('PATCH', `/api/projects/${p.id}`, d) : await POST('/api/projects', d);
-      toast(p.id ? 'حُفظت التعديلات' : `أُنشئ ${d.kind === 'initiative' ? 'المبادرة' : 'المشروع'} «${d.name}»`, 'ok'); refreshView();
+      toast(p.id ? 'حُفظت التعديلات' : (d.kind === 'initiative' ? `أُنشئت المبادرة «${d.name}»` : `أُنشئ المشروع «${d.name}»`), 'ok'); refreshView();
     },
   });
 }

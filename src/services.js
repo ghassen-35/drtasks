@@ -23,7 +23,7 @@ const link = (id) => `#/item/${id}`;
 const otherRole = (user) => (user.role === 'owner' ? 'manager' : 'owner');
 
 function getItem(id) {
-  const it = get(`SELECT ${D.ITEM_LIST_COLS}, i.description, i.original_text, i.meeting_id, i.decision_id, i.sop_id, i.partner_id, i.acknowledged_by, i.started_at, i.updated_by
+  const it = get(`SELECT ${D.ITEM_LIST_COLS}, (SELECT p.section FROM projects p WHERE p.id=i.project_id) AS project_section, i.description, i.original_text, i.meeting_id, i.decision_id, i.sop_id, i.partner_id, i.acknowledged_by, i.started_at, i.updated_by
     FROM items i WHERE i.id=?`, id);
   if (!it) throw notFound();
   return D.decorate(it);
@@ -50,10 +50,12 @@ function advanceDate(d, r) {
 
 // ===== رؤية المهام: المالك والمدير يريان الكل؛ عضو الفريق يرى المهام المسندة إليه أو في مشاريعه فقط =====
 function scopeFor(user) {
-  if (D.can(user, 'item.view')) return { sql: '', params: [] };
+  if (user.role !== 'member' && D.can(user, 'item.view')) return { sql: '', params: [] };
   if (D.can(user, 'item.view_scoped')) {
     const g = D.parseGrants(user.grants);
     const own = "(i.kind='task' AND (i.assignee_id=? OR i.project_id IN (SELECT project_id FROM project_members WHERE user_id=?)))";
+    // كل المكتب: المهام والتكليفات كلها، دون ملاحظات رجل الأعمال الخاصة
+    if (g.scope === 'all') return { sql: ` AND i.kind IN ${D.TASK_KINDS}`, params: [] };
     if (!g.sections.length) return { sql: ` AND ${own}`, params: [user.id, user.id] };
     // رؤية الأقسام: كل المهام والتكليفات في الأقسام الممنوحة (لا الملاحظات)
     return { sql: ` AND (${own} OR (i.kind IN ${D.TASK_KINDS} AND i.section IN (${g.sections.map(() => '?').join(',')})))`, params: [user.id, user.id, ...g.sections] };
@@ -61,15 +63,16 @@ function scopeFor(user) {
   throw forbidden();
 }
 function canSee(user, it) {
-  if (D.can(user, 'item.view')) return true;
+  if (user.role !== 'member' && D.can(user, 'item.view')) return true;
   if (!D.can(user, 'item.view_scoped')) return false;
   const sc = scopeFor(user);
   return !!get(`SELECT 1 AS x FROM items i WHERE i.id=?${sc.sql}`, it.id, ...sc.params);
 }
 // الأقسام المسموحة للموظف (null = كل الأقسام)
 function allowedSections(user) {
-  if (user.role !== 'member' || D.can(user, 'item.view')) return null;
-  return D.parseGrants(user.grants).sections;
+  if (user.role !== 'member') return null;
+  const g = D.parseGrants(user.grants);
+  return g.scope === 'all' ? null : g.sections;
 }
 function assertSectionAllowed(user, section) {
   const secs = allowedSections(user);
@@ -169,6 +172,12 @@ function createNote(user, b) {
 // ===== 3) مدير المكتب ينشئ مهمة مباشرة =====
 function createTask(user, b, { internal = false } = {}) {
   if (!internal) require_(user, 'task.create');
+  if (user.role === 'member' && !internal) {
+    // حقول داخلية لا يرسلها الموظف (اجتماع، قرار، مهمة أصل، بيانات تجريبية)، والجهة لمن يطّلع على الشراكات فقط
+    b = { ...b }; for (const k of ['source', 'meeting_id', 'decision_id', 'parent_task_id', 'is_demo']) delete b[k];
+    if (!D.can(user, 'partners.view')) delete b.partner_id;
+    delete b.requires_approval;
+  }
   // الموظف: المهمة بلا مسؤول تُسند إليه حتى تبقى ضمن ما يراه
   if (user.role === 'member' && !b.assignee_id) b = { ...b, assignee_id: user.id };
   const title = str(b.title, 300); if (!title) throw bad('عنوان المهمة مطلوب');
@@ -185,6 +194,8 @@ function createTask(user, b, { internal = false } = {}) {
     if (b.project_id) validProject(b.project_id, section);
     run('UPDATE items SET recurrence=?, parent_task_id=? WHERE id=?', validRecurrence(b.recurrence), b.parent_task_id || null, id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
+    // الموظف لا ينشئ ما لا يستطيع رؤيته (قسم خارج نطاقه أو مسند لغيره خارج مشاريعه)
+    if (user.role === 'member' && !canSee(user, { id })) throw forbidden('لا يمكنك إنشاء مهمة خارج نطاق صلاحياتك (القسم أو المسؤول)');
     sysMsg(id, user.id, `أنشأ ${user.name} ${b.parent_task_id ? 'المهمة الفرعية' : 'المهمة'} ${ref}`);
     if (user.role === 'member') notifyRole('manager', { type: 'new_assignment', title: `أنشأ ${user.name} ${b.parent_task_id ? 'مهمة فرعية' : 'مهمة'}: ${title}`, body: `${D.sectionName(section)} — ${ref}`, link: link(b.parent_task_id || id) });
     events.broadcastChange({ item: id });
@@ -227,7 +238,7 @@ function convertToTask(user, id, b) {
     audit('item', id, user.id, 'converted', 'kind', it.kind, 'task');
     if (b.recurrence !== undefined) run('UPDATE items SET recurrence=? WHERE id=?', validRecurrence(b.recurrence), id);
     applyOrg(user, id, { folder_id: b.folder_id, assignee_id: b.assignee_id, project_id: b.project_id });
-    sysMsg(id, user.id, `حوّل ${user.name} ${it.kind === 'note' ? 'الملاحظة' : 'التكليف'} إلى مهمة منظمة في قسم ${D.sectionName(section)} — المسؤول: ${str(b.assignee, 200) || user.name}`, { event: 'converted' });
+    sysMsg(id, user.id, `حوّل ${user.name} ${it.kind === 'note' ? 'الملاحظة' : 'التكليف'} إلى مهمة منظمة في قسم ${D.sectionName(section)} — المسؤول: ${get('SELECT assignee FROM items WHERE id=?', id).assignee || user.name}`, { event: 'converted' });
     if (it.source === 'owner') notify(it.created_by, { type: 'status_change', title: `بدأ تنظيم: ${it.title}`, body: `حُوّل إلى مهمة في ${D.sectionName(section)}`, link: link(id), collapse: `item:${id}:status` });
     events.broadcastChange({ item: id });
     return getItem(id);
@@ -250,11 +261,19 @@ function updateItem(user, id, b) {
   } else if (user.role === 'member') {
     // عضو الفريق: يحدّث حالة المهام التي يراها، وضمن حالات العمل؛ وتعديل التفاصيل لمن مُنح item.edit
     require_(user, 'item.work'); assertCanSee(user, it);
-    const allowed = ['status', 'status_note', ...(D.can(user, 'item.edit') ? [...EDITABLE, 'folder_id', 'assignee_id'] : [])];
-    if (Object.keys(b).some(k => !allowed.includes(k))) throw forbidden('ليست لديك صلاحية تعديل تفاصيل المهمة');
-    if (b.status !== undefined && b.status !== it.status && !['in_progress', 'waiting_reply', 'stalled', 'done'].includes(b.status)) throw forbidden('لا يمكنك تعيين هذه الحالة');
+    if (it.kind !== 'task') throw forbidden('التكليفات والملاحظات يعالجها مدير المكتب');
+    const allowed = ['status', 'status_note', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
+    if (Object.keys(b).some(k => !allowed.includes(k))) throw forbidden('ليست لديك صلاحية تعديل هذا الحقل');
+    if (b.status !== undefined && b.status !== it.status) {
+      if (it.status === 'cancelled') throw forbidden('المهمة ملغاة؛ إعادة فتحها لمدير المكتب');
+      if (!['in_progress', 'waiting_reply', 'stalled', 'done'].includes(b.status)) throw forbidden('لا يمكنك تعيين هذه الحالة');
+    }
+    if (b.section !== undefined && b.section !== it.section) assertSectionAllowed(user, b.section);
   } else require_(user, 'item.manage');
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا');
+  // نقل المهمة إلى قسم آخر يفك ربطها بمشروع من القسم القديم
+  const newSection = b.section !== undefined ? validSection(b.section) : it.section;
+  if (b.project_id === undefined && it.project_id && newSection !== it.section && it.project_section !== newSection) b = { ...b, project_id: null };
   return tx(() => {
     const changes = [];
     for (const k of EDITABLE) {
@@ -282,6 +301,7 @@ function updateItem(user, id, b) {
     }
     if (b.status !== undefined && b.status !== it.status) setStatus(user, it, b.status, b.status_note);
     if (changes.length || b.status !== undefined) touch(id, user.id);
+    if (user.role === 'member' && !canSee(user, it)) throw forbidden('هذا التعديل يُخرج المهمة من نطاق صلاحياتك');
     events.broadcastChange({ item: id });
     return getItem(id);
   });
@@ -390,6 +410,7 @@ function addMessage(user, id, b, fileIds = []) {
   require_(user, 'item.message');
   const it = getItem(id);
   assertCanSee(user, it);
+  if (it.closed_at) throw bad('المهمة مغلقة نهائيًا؛ لا يمكن إضافة رسائل');
   const body = str(b.body, 8000);
   const kind = b.kind === 'update' && ['manager', 'member'].includes(user.role) ? 'update' : b.kind === 'result' && user.role === 'manager' ? 'result' : 'message';
   if (!body && !fileIds.length) throw bad('اكتب رسالة أو أرفق ملفًا');
@@ -481,6 +502,7 @@ function decide(user, aid, b) {
     sysMsg(a.item_id, user.id, txt, { event: 'decision', approval_id: aid, decision }, 'decision');
     touch(a.item_id, user.id);
     notifyRole('manager', { type: 'decision', title: `${DECISIONS[decision]}: ${a.title}`, body: `${it.ref} — ${note || chosen || ''}`.slice(0, 200), link: link(a.item_id) });
+    notifyAssignee(it, user, { type: 'decision', title: `${DECISIONS[decision]}: ${a.title}`, body: it.ref, link: link(a.item_id) });
     events.broadcastChange({ item: a.item_id });
     return get('SELECT * FROM approvals WHERE id=?', aid);
   });
@@ -510,8 +532,8 @@ function listUsers(actor) {
 }
 // حفظ صلاحيات الموظف بعد تنقيتها (قائمة بيضاء)، مع سجل التغيير وإشعار الموظف
 function setUserGrants(actor, userId, raw) {
-  const g = D.parseGrants(raw);
-  if (g.scope === 'sections' && !g.sections.length) throw bad('اختر قسمًا واحدًا على الأقل لنطاق «أقسام محددة»');
+  const { g, errs } = D.validateGrants(raw);
+  if (errs.length) throw bad(errs.join('، '));
   const before = (get('SELECT grants FROM users WHERE id=?', userId) || {}).grants;
   const json = JSON.stringify(g);
   if (json === JSON.stringify(D.parseGrants(before))) return;
@@ -552,6 +574,8 @@ async function createUser(actor, b) {
 async function updateUser(actor, id, b) {
   require_(actor, 'users.manage');
   const u = get(`SELECT *, ${D.roleSql()} AS eff_role FROM users WHERE id=?`, id); if (!u) throw notFound('المستخدم غير موجود');
+  if (u.eff_role !== 'member' && u.id !== actor.id && ['name', 'email', 'password', 'active', 'grants'].some(k => b[k] !== undefined))
+    throw forbidden('حسابا رجل الأعمال ومدير المكتب يعدّلهما صاحباهما فقط');
   const hash = b.password ? (String(b.password).length < 8 ? (() => { throw bad('كلمة المرور يجب ألا تقل عن 8 أحرف'); })() : await require('./auth').hashPassword(String(b.password))) : null;
   return tx(() => {
     if (b.name !== undefined) { const n = str(b.name, 100); if (!n) throw bad('الاسم مطلوب'); run('UPDATE users SET name=? WHERE id=?', n, id); }

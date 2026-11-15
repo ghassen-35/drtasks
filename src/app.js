@@ -138,11 +138,12 @@ function createApp(P) {
   // ===== الصفحة الرئيسية: الأشرطة والمربعات والملخصات =====
   app.get('/api/home', wrap(req => {
     const t = D.todayStr();
-    if (!D.can(req.user, 'item.view')) { // عضو فريق: ما يخصه فقط (لا مربعات أقسام ولا أرقام عامة)
+    if (!D.can(req.user, 'item.view') || req.user.role === 'member') { // موظف: ما يخصه فقط، ومربعات الأقسام الممنوحة له
       const sc = S.scopeFor(req.user);
       const pids = S.memberProjects(req.user.id);
+      const secs = D.can(req.user, 'folders.view') ? (S.allowedSections(req.user) || D.SECTION_KEYS) : [];
       return {
-        member: true, today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
+        member: true, tiles: secs.map(D.sectionStats), today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
         my_items: listItems({ kind: 'tasks', scope: 'open' }, req.user),
         projects: pids.length ? all(`SELECT p.*, (SELECT name FROM folders f WHERE f.id=p.folder_id) AS folder_name FROM projects p WHERE p.id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name`, ...pids).map(p => ({ ...p, section_name: D.sectionName(p.section) })) : [],
       };
@@ -210,6 +211,7 @@ function createApp(P) {
     if (it.sop_id) extra.sop = get('SELECT id,name FROM sops WHERE id=?', it.sop_id);
     if (it.partner_id && D.can(req.user, 'partners.view')) extra.partner = get('SELECT id,name FROM partners WHERE id=?', it.partner_id);
     if (it.meeting_id && !D.can(req.user, 'meetings.view')) delete extra.meeting;
+    if (req.user.role === 'member') { th.notes = []; delete extra.parent; } // ملاحظات رجل الأعمال لمدير المكتب فقط
     extra.subtasks = S.subtasksOf(it.id).filter(x => S.canSee(req.user, x));
     if (it.parent_task_id) { const pt = get('SELECT id,ref,title FROM items WHERE id=?', it.parent_task_id); if (pt && S.canSee(req.user, pt)) extra.parent_task = pt; }
     return { item: it, ...th, ...extra };
@@ -224,7 +226,7 @@ function createApp(P) {
   app.post('/api/approvals/:id/decide', wrap(req => S.decide(req.user, Number(req.params.id), req.body)));
   app.post('/api/approvals/:id/withdraw', wrap(req => S.withdrawApproval(req.user, Number(req.params.id))));
   app.get('/api/approvals', wrap(req => {
-    S.require_(req.user, 'item.view');
+    if (!D.can(req.user, 'approval.decide') && !D.can(req.user, 'approval.request')) throw S.forbidden();
     const status = req.query.status || 'pending';
     return all(`SELECT a.*, i.ref, i.title AS item_title, i.section, i.priority, i.due_date, ru.name AS requested_by_name, du.name AS decided_by_name
       FROM approvals a JOIN items i ON i.id=a.item_id LEFT JOIN users ru ON ru.id=a.requested_by LEFT JOIN users du ON du.id=a.decided_by
@@ -290,7 +292,7 @@ function createApp(P) {
   // ===== المشاريع =====
   app.get('/api/projects', wrap(req => {
     let rows;
-    if (D.can(req.user, 'item.view')) {
+    if (D.can(req.user, 'item.view') || (req.user.role === 'member' && S.allowedSections(req.user) === null)) {
       const w = []; const p = [];
       if (req.query.section) { w.push('section=?'); p.push(req.query.section); }
       if (req.query.folder_id) { w.push('folder_id=?'); p.push(Number(req.query.folder_id)); }
@@ -433,7 +435,8 @@ function createApp(P) {
     S.require_(req.user, 'partners.view');
     const p = get('SELECT * FROM partners WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound();
     const out = partnerOut(p, req.user);
-    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE partner_id=? ORDER BY id DESC`, p.id).map(i => D.decorate(i));
+    const sc = S.scopeFor(req.user);
+    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE partner_id=?${sc.sql} ORDER BY id DESC`, p.id, ...sc.params).map(i => D.decorate(i));
     return out;
   }));
   function partnerSave(req, ex) {
@@ -495,6 +498,7 @@ function createApp(P) {
   app.patch('/api/folders/:id', wrap(req => {
     S.require_(req.user, 'projects.manage');
     const f = get('SELECT * FROM folders WHERE id=?', Number(req.params.id)); if (!f) throw S.notFound('المجلد غير موجود');
+    S.assertSectionAllowed(req.user, f.section);
     run('UPDATE folders SET name=?, description=? WHERE id=?', S.str(req.body.name, 200) || f.name, req.body.description !== undefined ? S.str(req.body.description, 1000) : f.description, f.id);
     S.audit('folder', f.id, req.user.id, 'updated'); events.broadcastChange({ folder: f.id });
     return folderCounts(get('SELECT * FROM folders WHERE id=?', f.id));

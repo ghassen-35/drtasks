@@ -409,3 +409,5 @@ details.log summary { cursor: pointer; color: var(--ink-2); font-weight: 600; pa
 fieldset.grants { border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; margin: 6px 0 12px; min-width: 0; }
 fieldset.grants legend { font-weight: 700; padding: 0 6px; }
 .radios { display: flex; flex-direction: column; gap: 6px; }
+/* شرائح طويلة (ملخص الصلاحيات) تلتف بدل أن تسبب تمريرًا أفقيًا */
+.row .meta .chip { max-width: 100%; white-space: normal; }
