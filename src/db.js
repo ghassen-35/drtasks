@@ -24,7 +24,15 @@ function nextRef(prefix) {
   return `${prefix}-${year}-${String(v).padStart(4, '0')}`;
 }
 
-function applySchema() { for (const s of require('./schema')) B.run(s, []); }
+// أعمدة أُضيفت بعد الإصدار الأول: تُضاف لقواعد البيانات القائمة إن لم تكن موجودة
+const COLUMNS = [['items', 'folder_id', 'INTEGER REFERENCES folders(id)']];
+function applySchema() {
+  for (const s of require('./schema')) B.run(s, []);
+  for (const [t, c, def] of COLUMNS) {
+    if (!B.all(`SELECT COUNT(*) c FROM pragma_table_info('${t}') WHERE name=?`, [c])[0].c) B.run(`ALTER TABLE ${t} ADD COLUMN ${c} ${def}`, []);
+  }
+  B.run('CREATE INDEX IF NOT EXISTS idx_items_folder ON items(folder_id)', []);
+}
 
 const kvGet = (k) => (get('SELECT value FROM kv WHERE key=?', k) || {}).value;
 const kvSet = (k, v) => run('INSERT INTO kv(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', k, v);

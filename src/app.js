@@ -163,6 +163,8 @@ function createApp(P) {
     if (q.status) { where.push('i.status=?'); p.push(q.status); }
     if (q.priority) { where.push('i.priority=?'); p.push(q.priority); }
     if (q.project_id) { where.push('i.project_id=?'); p.push(Number(q.project_id)); }
+    if (q.folder_id === 'none') where.push('i.folder_id IS NULL');
+    else if (q.folder_id) { where.push('i.folder_id=?'); p.push(Number(q.folder_id)); }
     if (q.category) { where.push('i.category=?'); p.push(q.category); }
     if (q.scope === 'open') where.push(`i.${D.OPEN}`);
     if (q.scope === 'overdue') { where.push(`i.${D.OPEN} AND i.due_date<?`); p.push(t); }
@@ -289,6 +291,27 @@ function createApp(P) {
     S.audit('project', p.id, req.user.id, 'updated'); events.broadcastChange({ project: p.id });
     return get('SELECT * FROM projects WHERE id=?', p.id);
   }));
+
+  // ===== المجلدات =====
+  // قائمة مسطحة مع عدد المهام المفتوحة والمجلدات الفرعية؛ الواجهة تبني الشجرة والمسار
+  app.get('/api/folders', wrap(req => {
+    S.require_(req.user, 'item.view');
+    const rows = req.query.section ? all('SELECT * FROM folders WHERE section=? ORDER BY name', req.query.section) : all('SELECT * FROM folders ORDER BY section, name');
+    return rows.map(f => ({ ...f,
+      open_tasks: get(`SELECT COUNT(*) c FROM items WHERE folder_id=? AND kind IN ${D.TASK_KINDS} AND ${D.OPEN}`, f.id).c,
+      subfolders: get('SELECT COUNT(*) c FROM folders WHERE parent_id=?', f.id).c }));
+  }));
+  app.get('/api/folders/:id', wrap(req => {
+    S.require_(req.user, 'item.view');
+    const f = S.getFolder(req.params.id);
+    f.children = all('SELECT * FROM folders WHERE parent_id=? ORDER BY name', f.id).map(c => ({ ...c,
+      open_tasks: get(`SELECT COUNT(*) c FROM items WHERE folder_id=? AND kind IN ${D.TASK_KINDS} AND ${D.OPEN}`, c.id).c,
+      subfolders: get('SELECT COUNT(*) c FROM folders WHERE parent_id=?', c.id).c }));
+    return f;
+  }));
+  app.post('/api/folders', wrap(req => S.createFolder(req.user, req.body)));
+  app.patch('/api/folders/:id', wrap(req => S.renameFolder(req.user, Number(req.params.id), req.body)));
+  app.delete('/api/folders/:id', wrap(req => S.deleteFolder(req.user, Number(req.params.id))));
 
   // ===== الاجتماعات والقرارات =====
   function decisionRow(d, t = D.todayStr()) {
@@ -484,7 +507,7 @@ function createApp(P) {
   // تصدير كل البيانات (بدون كلمات المرور والجلسات ومفاتيح الإشعارات ومحتوى الملفات) للحفظ والاطلاع
   app.get('/api/export.json', (c) => {
     S.require_(c.get('user'), 'item.manage');
-    const tables = ['items', 'messages', 'approvals', 'files', 'audit_log', 'projects', 'meetings', 'decisions', 'sops', 'partners', 'notifications'];
+    const tables = ['items', 'messages', 'approvals', 'files', 'audit_log', 'projects', 'folders', 'meetings', 'decisions', 'sops', 'partners', 'notifications'];
     const data = { exported_at: new Date().toISOString(), note: 'نسخة للأرشفة: لا تتضمن كلمات المرور ولا محتوى الملفات المرفوعة (أسماؤها فقط)' };
     data.users = all('SELECT id,username,name,role,email,created_at FROM users');
     for (const t of tables) data[t] = all(`SELECT * FROM ${t}`).map(r => { if (t === 'files') delete r.stored_name; return r; });

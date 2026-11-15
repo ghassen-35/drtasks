@@ -61,6 +61,25 @@ t('القرار بلا قسم يطلب تحديد القسم بدل إنشاء �
 S.decisionToTask(mgr, dec, { section: 'association' }); threw = false; try { S.decisionToTask(mgr, dec, { section: 'association' }); } catch { threw = true; }
 t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get('SELECT COUNT(*) c FROM items WHERE decision_id=?', dec).c === 1);
 
+// ---- المجلدات والمجلدات الفرعية
+{
+  const fa = S.createFolder(owner, { section: 'association', name: 'البرامج' });
+  const fb = S.createFolder(mgr, { parent_id: fa.id, name: 'الصيفية' });
+  t('المجلد الفرعي يرث قسم المجلد الأب ومساره كامل', fb.section === 'association' && fb.path.map(p => p.name).join('/') === 'البرامج/الصيفية');
+  let threw = false; try { S.createFolder(mgr, { parent_id: fa.id, name: 'الصيفية' }); } catch { threw = true; }
+  t('لا يتكرر اسم المجلد في المكان نفسه', threw);
+  const task = S.createTask(mgr, { title: 'مهمة في مجلد', section: 'association', folder_id: fb.id });
+  const asg = S.createAssignment(owner, { title: 'تكليف في مجلد', section: 'association', folder_id: fa.id });
+  t('المهمة والتكليف يُحفظان داخل المجلد', task.folder_id === fb.id && task.folder_name === 'الصيفية' && asg.folder_id === fa.id);
+  threw = false; try { S.createTask(mgr, { title: 'قسم مخالف', section: 'family', folder_id: fb.id }); } catch { threw = true; }
+  t('لا تُوضع مهمة في مجلد من قسم آخر', threw);
+  S.updateItem(mgr, task.id, { section: 'family' });
+  t('نقل المهمة إلى قسم آخر يخرجها من مجلدها', S.getItem(task.id).folder_id === null);
+  S.updateItem(mgr, task.id, { section: 'association', folder_id: fb.id });
+  S.deleteFolder(mgr, fa.id);
+  t('حذف المجلد ينقل مجلداته الفرعية ومهامه إلى المستوى الأعلى',
+    get('SELECT parent_id FROM folders WHERE id=?', fb.id).parent_id === null && S.getItem(asg.id).folder_id === null && S.getItem(task.id).folder_id === fb.id);
+}
 
 // ---- التشفير: Web Push وكلمات المرور
 {

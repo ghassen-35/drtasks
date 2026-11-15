@@ -313,3 +313,20 @@ details.log summary { cursor: pointer; color: var(--ink-2); font-weight: 600; pa
   body { background: #fff; }
   .card { box-shadow: none; break-inside: avoid; }
 }
+
+/* ===== المجلدات ===== */
+.folders-h { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.folders-h h2 { display: flex; align-items: center; gap: 8px; }
+.folders-h .spacer { flex: 1; }
+.folders { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 6px; }
+.folder-card { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; column-gap: 10px; row-gap: 2px; align-items: center; padding: 12px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; color: var(--ink); box-shadow: var(--shadow); min-width: 0; transition: border-color .12s, transform .12s; }
+.folder-card:hover, .folder-card:focus-visible { border-color: var(--brand-2); transform: translateY(-1px); outline: none; }
+.folder-card > svg.i { grid-row: 1 / span 2; width: 30px; height: 30px; color: #c98a12; fill: #fbe7b4; }
+.folder-card .fn { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.folder-card .fc { font-size: .8rem; color: var(--ink-3); }
+.folder-card .chip.demo { grid-column: 2; justify-self: start; }
+.ic-folder svg.i { width: 30px; height: 30px; color: #c98a12; fill: #fbe7b4; }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: .88rem; color: var(--ink-3); margin-bottom: 4px; }
+.crumbs .sep svg.i { width: 14px; height: 14px; transform: scaleX(-1); vertical-align: middle; }
+.chip.folder-chip { color: #8a5d07; }
+.chip.folder-chip svg.i { color: #c98a12; }

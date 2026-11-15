@@ -48,12 +48,12 @@ const APPROVAL_KINDS = {
 const PERMS = {
   owner: new Set([
     'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
-    'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
+    'approval.decide', 'reports.view', 'folders.manage', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
   ]),
   manager: new Set([
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
     'reports.view', 'meetings.view', 'meetings.manage', 'sops.view', 'sops.manage',
-    'partners.view', 'partners.manage', 'contacts.view', 'projects.manage',
+    'partners.view', 'partners.manage', 'contacts.view', 'projects.manage', 'folders.manage',
   ]),
 };
 const can = (user, perm) => !!(user && PERMS[user.role] && PERMS[user.role].has(perm));
@@ -68,11 +68,12 @@ function addDays(dateStr, n) {
 const TASK_KINDS = "('assignment','task')";
 const OPEN = "status NOT IN ('done','cancelled')";
 
-const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
+const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.folder_id,i.parent_id,i.priority,i.due_date,i.due_time,
   i.status,i.assignee,i.next_step,i.requires_approval,i.acknowledged_at,i.converted_at,i.created_at,i.updated_at,i.closed_at,i.completed_at,i.is_demo,
   i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name,
   (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending') AS pending_approvals,
   (SELECT p.name FROM projects p WHERE p.id=i.project_id) AS project_name,
+  (SELECT fo.name FROM folders fo WHERE fo.id=i.folder_id) AS folder_name,
   (SELECT COUNT(*) FROM files f WHERE f.item_id=i.id) AS files_count`;
 
 function decorate(item, today = todayStr()) {

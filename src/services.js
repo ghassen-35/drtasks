@@ -34,6 +34,14 @@ function validPriority(p) { if (p && !D.PRIORITIES[p]) throw bad('أولوية �
 function validDate(d) { if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw bad('تاريخ غير صالح'); return d || null; }
 function validTime(t) { if (t && !/^\d{2}:\d{2}$/.test(t)) throw bad('وقت غير صالح'); return t || null; }
 function str(v, max = 5000) { return v == null ? null : String(v).trim().slice(0, max) || null; }
+// المجلد يجب أن يتبع قسم العنصر نفسه
+function validFolder(folderId, section) {
+  if (!folderId) return null;
+  const f = get('SELECT id,section FROM folders WHERE id=?', Number(folderId));
+  if (!f) throw bad('المجلد غير موجود');
+  if (section && f.section !== section) throw bad('المجلد المختار لا يتبع القسم المختار');
+  return f.id;
+}
 
 // ===== 1) رجل الأعمال يرسل تكليفًا =====
 function createAssignment(user, b) {
@@ -43,9 +51,9 @@ function createAssignment(user, b) {
   return tx(() => {
     const ref = nextRef('TK');
     const description = str(b.description);
-    const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,priority,due_date,due_time,status,created_by,updated_by,is_demo)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'assignment', 'owner', title, description,
-      `${title}${description ? '\n\n' + description : ''}`, section, validPriority(b.priority), validDate(b.due_date), validTime(b.due_time), 'new', user.id, user.id, b.is_demo ? 1 : 0);
+    const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,folder_id,priority,due_date,due_time,status,created_by,updated_by,is_demo)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'assignment', 'owner', title, description,
+      `${title}${description ? '\n\n' + description : ''}`, section, validFolder(b.folder_id, section), validPriority(b.priority), validDate(b.due_date), validTime(b.due_time), 'new', user.id, user.id, b.is_demo ? 1 : 0);
     audit('item', id, user.id, 'created', 'kind', null, 'assignment');
     sysMsg(id, user.id, `أُرسل التكليف ${ref} إلى مدير المكتب`);
     const urgent = b.priority === 'urgent';
@@ -87,9 +95,9 @@ function createTask(user, b) {
   if (b.category && !D.CATEGORIES[b.category]) throw bad('تصنيف غير صالح');
   return tx(() => {
     const ref = nextRef('MH');
-    const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,category,project_id,priority,due_date,due_time,status,assignee,next_step,requires_approval,sop_id,partner_id,meeting_id,decision_id,created_by,updated_by,is_demo)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'task', b.source === 'meeting' ? 'meeting' : 'manager', title, str(b.description), str(b.description),
-      section, b.category || 'general', b.project_id || null, validPriority(b.priority), validDate(b.due_date), validTime(b.due_time), 'new',
+    const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,folder_id,category,project_id,priority,due_date,due_time,status,assignee,next_step,requires_approval,sop_id,partner_id,meeting_id,decision_id,created_by,updated_by,is_demo)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'task', b.source === 'meeting' ? 'meeting' : 'manager', title, str(b.description), str(b.description),
+      section, validFolder(b.folder_id, section), b.category || 'general', b.project_id || null, validPriority(b.priority), validDate(b.due_date), validTime(b.due_time), 'new',
       str(b.assignee, 200) || user.name, str(b.next_step, 500), b.requires_approval ? 1 : 0, b.sop_id || null, b.partner_id || null,
       b.meeting_id || null, b.decision_id || null, user.id, user.id, b.is_demo ? 1 : 0);
     audit('item', id, user.id, 'created', 'kind', null, 'task');
@@ -122,12 +130,13 @@ function convertToTask(user, id, b) {
   if (it.kind === 'task') throw bad('العنصر مهمة بالفعل');
   if (it.status === 'cancelled') throw bad('لا يمكن تحويل عنصر ملغى');
   const section = validSection(b.section || it.section); if (!section) throw bad('اختر القسم');
+  const folderId = validFolder(b.folder_id !== undefined ? b.folder_id : (section === it.section ? it.folder_id : null), section);
   return tx(() => {
     const at = nowIso();
-    run(`UPDATE items SET kind='task', converted_at=?, section=?, category=?, project_id=?, assignee=?, due_date=?, due_time=?, priority=?, next_step=?, requires_approval=?, sop_id=?, partner_id=?,
+    run(`UPDATE items SET kind='task', converted_at=?, section=?, folder_id=?, category=?, project_id=?, assignee=?, due_date=?, due_time=?, priority=?, next_step=?, requires_approval=?, sop_id=?, partner_id=?,
       title=?, description=?, acknowledged_at=COALESCE(acknowledged_at,?), acknowledged_by=COALESCE(acknowledged_by,?),
       status=CASE WHEN status IN ('new') THEN 'acknowledged' ELSE status END, updated_at=?, updated_by=? WHERE id=?`,
-      at, section, D.CATEGORIES[b.category] ? b.category : it.category, b.project_id || it.project_id || null, str(b.assignee, 200) || user.name,
+      at, section, folderId, D.CATEGORIES[b.category] ? b.category : it.category, b.project_id || it.project_id || null, str(b.assignee, 200) || user.name,
       validDate(b.due_date !== undefined ? b.due_date : it.due_date), validTime(b.due_time !== undefined ? b.due_time : it.due_time),
       validPriority(b.priority || it.priority), str(b.next_step, 500), b.requires_approval ? 1 : 0, b.sop_id || null, b.partner_id || null,
       str(b.title, 300) || it.title, str(b.description) || it.description, at, user.id, at, user.id, id);
@@ -140,7 +149,7 @@ function convertToTask(user, id, b) {
 }
 
 // ===== 6) تعديل بيانات المهمة وحالتها =====
-const EDITABLE = ['title', 'description', 'section', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id'];
+const EDITABLE = ['title', 'description', 'section', 'folder_id', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id'];
 function updateItem(user, id, b) {
   const it = getItem(id);
   // رجل الأعمال يستطيع إلغاء تكليفه فقط؛ بقية التعديلات لمدير المكتب
@@ -150,6 +159,9 @@ function updateItem(user, id, b) {
     require_(user, 'item.cancel_own');
   } else require_(user, 'item.manage');
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا');
+  // نقل المهمة إلى قسم آخر يخرجها من مجلدها القديم ما لم يُحدَّد مجلد في القسم الجديد
+  const newSection = b.section !== undefined ? validSection(b.section) : it.section;
+  if (b.folder_id === undefined && it.folder_id && newSection !== it.section) b = { ...b, folder_id: null };
   return tx(() => {
     const changes = [];
     for (const k of EDITABLE) {
@@ -160,6 +172,7 @@ function updateItem(user, id, b) {
       else if (k === 'due_date') v = validDate(v);
       else if (k === 'due_time') v = validTime(v);
       else if (k === 'requires_approval') v = v ? 1 : 0;
+      else if (k === 'folder_id') v = validFolder(v, newSection);
       else if (k === 'category') { if (!D.CATEGORIES[v]) throw bad('تصنيف غير صالح'); }
       else if (['project_id', 'sop_id', 'partner_id'].includes(k)) v = v ? Number(v) : null;
       else v = str(v, k === 'description' ? 5000 : 500);
@@ -174,7 +187,7 @@ function updateItem(user, id, b) {
     return getItem(id);
   });
 }
-const FIELD_LABELS = { title: 'العنوان', description: 'الوصف', section: 'القسم', category: 'التصنيف', project_id: 'المشروع', assignee: 'المسؤول', due_date: 'الموعد', due_time: 'الوقت', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', sop_id: 'الإجراء المرتبط', partner_id: 'الجهة المرتبطة' };
+const FIELD_LABELS = { title: 'العنوان', description: 'الوصف', section: 'القسم', folder_id: 'المجلد', category: 'التصنيف', project_id: 'المشروع', assignee: 'المسؤول', due_date: 'الموعد', due_time: 'الوقت', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', sop_id: 'الإجراء المرتبط', partner_id: 'الجهة المرتبطة' };
 
 function hasApprovedFinal(itemId) {
   return !!get("SELECT id FROM approvals WHERE item_id=? AND kind='final' AND status='approved'", itemId);
@@ -349,7 +362,59 @@ function decisionToTask(user, did, b) {
   });
 }
 
+// ===== المجلدات (تنظيم المهام داخل القسم، مع مجلدات فرعية) =====
+function folderPath(id) {
+  const path = [];
+  for (let f = id && get('SELECT id,name,parent_id,section FROM folders WHERE id=?', id), n = 0; f && n < 50; f = f.parent_id && get('SELECT id,name,parent_id,section FROM folders WHERE id=?', f.parent_id), n++) path.unshift({ id: f.id, name: f.name });
+  return path;
+}
+function getFolder(id) {
+  const f = get('SELECT * FROM folders WHERE id=?', Number(id)); if (!f) throw notFound('المجلد غير موجود');
+  return { ...f, path: folderPath(f.id) };
+}
+function createFolder(user, b) {
+  require_(user, 'folders.manage');
+  const name = str(b.name, 120); if (!name) throw bad('اسم المجلد مطلوب');
+  let section = validSection(b.section); let parentId = null;
+  if (b.parent_id) {
+    const parent = getFolder(b.parent_id);
+    if (section && section !== parent.section) throw bad('المجلد الأب في قسم آخر');
+    section = parent.section; parentId = parent.id;
+    if (parent.path.length >= 10) throw bad('لا يمكن إنشاء أكثر من 10 مستويات من المجلدات');
+  }
+  if (!section) throw bad('اختر القسم');
+  if (get('SELECT id FROM folders WHERE section=? AND parent_id IS ? AND name=?', section, parentId, name)) throw bad('يوجد مجلد بالاسم نفسه في هذا المكان');
+  const { id } = run('INSERT INTO folders(section,parent_id,name,created_by,is_demo) VALUES(?,?,?,?,?)', section, parentId, name, user.id, b.is_demo ? 1 : 0);
+  audit('folder', id, user.id, 'created', 'name', null, name);
+  events.broadcastChange({ folder: id });
+  return getFolder(id);
+}
+function renameFolder(user, id, b) {
+  require_(user, 'folders.manage');
+  const f = getFolder(id);
+  const name = str(b.name, 120); if (!name) throw bad('اسم المجلد مطلوب');
+  if (get('SELECT id FROM folders WHERE section=? AND parent_id IS ? AND name=? AND id!=?', f.section, f.parent_id, name, f.id)) throw bad('يوجد مجلد بالاسم نفسه في هذا المكان');
+  run('UPDATE folders SET name=? WHERE id=?', name, f.id);
+  audit('folder', f.id, user.id, 'updated', 'name', f.name, name);
+  events.broadcastChange({ folder: f.id });
+  return getFolder(f.id);
+}
+// حذف المجلد لا يحذف محتواه: تنتقل مهامه ومجلداته الفرعية إلى المجلد الأعلى (أو إلى القسم مباشرة)
+function deleteFolder(user, id) {
+  require_(user, 'folders.manage');
+  const f = getFolder(id);
+  return tx(() => {
+    run('UPDATE items SET folder_id=? WHERE folder_id=?', f.parent_id, f.id);
+    run('UPDATE folders SET parent_id=? WHERE parent_id=?', f.parent_id, f.id);
+    run('DELETE FROM folders WHERE id=?', f.id);
+    audit('folder', f.id, user.id, 'deleted', 'name', f.name, null);
+    events.broadcastChange({ folder: f.id });
+    return { ok: true, parent_id: f.parent_id, section: f.section };
+  });
+}
+
 module.exports = {
+  folderPath, getFolder, createFolder, renameFolder, deleteFolder, validFolder,
   AppError, bad, forbidden, notFound, require_, audit, getItem, createAssignment, createNote, createTask, acknowledge, convertToTask,
   updateItem, closeItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,
 };

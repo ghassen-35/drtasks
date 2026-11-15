@@ -29,6 +29,10 @@ function clear() {
     for (const t of ['meetings', 'sops', 'partners']) run(`DELETE FROM ${t} WHERE is_demo=1`);
     run('UPDATE items SET project_id=NULL WHERE project_id IN (SELECT id FROM projects WHERE is_demo=1)');
     run('DELETE FROM projects WHERE is_demo=1');
+    // المجلدات التجريبية: تخرج منها المهام الحقيقية أولًا، ثم تُحذف من الأعمق إلى الأعلى
+    run('UPDATE items SET folder_id=NULL WHERE folder_id IN (SELECT id FROM folders WHERE is_demo=1)');
+    run('UPDATE folders SET parent_id=NULL WHERE parent_id IN (SELECT id FROM folders WHERE is_demo=1) AND is_demo=0');
+    run('DELETE FROM folders WHERE is_demo=1');
     run("DELETE FROM notifications WHERE link LIKE '#/item/%' AND CAST(substr(link,9) AS INTEGER) NOT IN (SELECT id FROM items)");
     console.log(`حُذفت البيانات التجريبية (${ids.length} عنصر)`);
   });
@@ -51,11 +55,15 @@ function seed() {
       'مؤسسة الخير المانحة (تجريبي)', 'org', 'جهة مانحة', '+966500000000', 'demo@example.invalid', d(-10), 'وعد بدعم برنامج الحفاظ الصيفي', d(2), 'منحة تشغيلية للعام القادم', 1).id;
 
     const mk = (fn, user, b) => fn(user, { ...b, is_demo: 1 });
-    const a1 = mk(S.createAssignment, owner, { title: 'إعداد خطة برنامج الحفاظ الصيفي', description: 'خطة تفصيلية بالميزانية والجدول', section: 'association', priority: 'important', due_date: t });
+    const fPrograms = mk(S.createFolder, manager, { section: 'association', name: 'البرامج' });
+    const fSummer = mk(S.createFolder, manager, { parent_id: fPrograms.id, name: 'البرامج الصيفية' });
+    mk(S.createFolder, manager, { section: 'association', name: 'التقارير والحوكمة' });
+    const fLicenses = mk(S.createFolder, manager, { section: 'commercial', name: 'التراخيص والسجلات' });
+    const a1 = mk(S.createAssignment, owner, { title: 'إعداد خطة برنامج الحفاظ الصيفي', description: 'خطة تفصيلية بالميزانية والجدول', section: 'association', folder_id: fSummer.id, priority: 'important', due_date: t });
     S.acknowledge(manager, a1.id);
     S.convertToTask(manager, a1.id, { assignee: 'مدير المكتب', next_step: 'جمع عروض المشرفين', project_id: p1, requires_approval: 1, sop_id: sop });
     S.updateItem(manager, a1.id, { status: 'in_progress' });
-    const a2 = mk(S.createAssignment, owner, { title: 'متابعة تجديد السجل التجاري', section: 'commercial', priority: 'urgent', due_date: d(1) });
+    const a2 = mk(S.createAssignment, owner, { title: 'متابعة تجديد السجل التجاري', section: 'commercial', folder_id: fLicenses.id, priority: 'urgent', due_date: d(1) });
     mk(S.createAssignment, owner, { title: 'ترتيب موعد الكشف الطبي السنوي', section: 'family', priority: 'normal', due_date: d(3) });
     const t1 = mk(S.createTask, manager, { title: 'تجهيز محاضرة الدورة العلمية', section: 'dawah', project_id: p2, due_date: d(-2), priority: 'important' });
     S.updateItem(manager, t1.id, { status: 'in_progress' });

@@ -55,7 +55,7 @@ const isOwner = () => state.me.role === 'owner';
 const isManager = () => state.me.role === 'manager';
 const can = (p) => state.me.perms.includes(p);
 
-function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
+function itemRow(i, { actions = '', showSection = true, showUpdated = false, showFolder = true } = {}) {
   return `<div class="row p-${i.priority} ${i.status === 'done' ? 'done' : ''}">
     <div class="main">
       <a class="title" href="#/item/${i.id}">${esc(i.title)}</a>
@@ -63,6 +63,7 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
         <span class="chip kind">${esc(kindLabel(i))}</span>
         ${statusChip(i.status)} ${prioChip(i.priority)} ${dueChip(i)}
         ${showSection && i.section ? `<span class="chip">${esc(sectionName(i.section))}</span>` : ''}
+        ${i.folder_name && showFolder ? `<a class="chip folder-chip" href="#/folder/${i.folder_id}">${I('folder')}${esc(i.folder_name)}</a>` : ''}
         ${i.pending_approvals ? `<span class="chip st-waiting_approval">${I('gavel')}بانتظار قرار</span>` : ''}
         ${i.files_count ? `<span class="chip">${I('clip')}${i.files_count}</span>` : ''}
         ${demoChip(i)}
@@ -127,6 +128,46 @@ const sectionSelect = (sel, name = 'section', blank = false) => `<select name="$
 const sectionSeg = (sel, name = 'section') => `<div class="seg">${state.meta.sections.map(s => `<label><input type="radio" name="${name}" value="${s.key}" ${sel === s.key ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div>`;
 const prioSeg = (sel = 'normal') => `<div class="seg">${Object.entries(state.meta.priorities).map(([k, v]) => `<label><input type="radio" name="priority" value="${k}" ${sel === k ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`;
 const field = (label, html) => `<label class="f"><span>${label}</span>${html}</label>`;
+
+// ===== المجلدات: اختيار المجلد في النماذج (مرتبط بالقسم المختار) =====
+function folderPaths(folders) {
+  const by = Object.fromEntries(folders.map(f => [f.id, f]));
+  const pathOf = (f) => { const p = []; for (let x = f, n = 0; x && n < 50; x = by[x.parent_id], n++) p.unshift(x.name); return p.join(' / '); };
+  return folders.map(f => ({ ...f, path: pathOf(f) })).sort((a, b) => a.path.localeCompare(b.path, 'ar'));
+}
+const folderSelectHtml = (sel) => `<select name="folder_id" data-folder-select data-sel="${esc(sel || '')}"><option value="">— بدون مجلد —</option></select>`;
+// يملأ قائمة المجلدات حسب القسم المختار في النموذج ويعيد ملأها عند تغيير القسم
+async function bindFolderSelect(form) {
+  const sel = $('[data-folder-select]', form); if (!sel) return;
+  const folders = folderPaths(await GET('/api/folders'));
+  const fill = () => {
+    const secEl = $('select[name=section]', form) || $('input[name=section]:checked', form);
+    const section = secEl ? secEl.value : '';
+    const cur = sel.value || sel.dataset.sel;
+    const list = folders.filter(f => f.section === section);
+    sel.innerHTML = opt('', list.length ? '— بدون مجلد —' : (section ? '— لا توجد مجلدات في هذا القسم —' : '— اختر القسم أولًا —'), cur) + list.map(f => opt(f.id, f.path, cur)).join('');
+    sel.dataset.sel = '';
+  };
+  fill();
+  $$('[name=section]', form).forEach(el => el.addEventListener('change', () => { sel.value = ''; fill(); }));
+}
+function folderCardsHtml(folders) {
+  return `<div class="folders">${folders.map(f => `<a class="folder-card" href="#/folder/${f.id}">${I('folder')}<span class="fn">${esc(f.name)}</span>
+    <span class="fc">${f.open_tasks} مفتوحة${f.subfolders ? ` · ${f.subfolders} مجلد` : ''}</span>${demoChip(f)}</a>`).join('')}</div>`;
+}
+function modalFolder({ section, parent, folder } = {}) {
+  openModal({
+    title: folder ? 'إعادة تسمية المجلد' : parent ? `مجلد فرعي داخل «${parent.name}»` : `مجلد جديد في ${sectionName(section)}`,
+    submit: folder ? 'حفظ' : 'إنشاء المجلد',
+    body: field('اسم المجلد *', `<input type="text" name="name" required maxlength="120" value="${esc(folder ? folder.name : '')}">`),
+    onSubmit: async (d) => {
+      if (!d.name.trim()) throw new Error('اكتب اسم المجلد');
+      if (folder) { await api('PATCH', `/api/folders/${folder.id}`, d); toast('حُفظ الاسم', 'ok'); }
+      else { const f = await POST('/api/folders', parent ? { ...d, parent_id: parent.id } : { ...d, section }); toast(`أُنشئ المجلد «${f.name}»`, 'ok'); }
+      refreshView();
+    },
+  });
+}
 
 // ===== المرفقات والملاحظات الصوتية =====
 function fileFieldHtml(name = 'file_ids', voice = true) {
@@ -282,6 +323,7 @@ const routes = [
   [/^#?\/?$/, viewHome],
   [/^#\/section\/(\w+)$/, viewSection],
   [/^#\/item\/(\d+)$/, viewItem],
+  [/^#\/folder\/(\d+)$/, viewFolder],
   [/^#\/my$/, viewMy],
   [/^#\/decisions$/, viewDecisions],
   [/^#\/approvals$/, viewDecisions],
@@ -576,7 +618,8 @@ async function viewSection(main, key) {
   const f = { scope: 'open', section: key };
   let tab = 'tasks';
   async function load() {
-    const [home, projects] = await Promise.all([GET('/api/home'), GET('/api/projects?section=' + key)]);
+    const [home, projects, folders] = await Promise.all([GET('/api/home'), GET('/api/projects?section=' + key), GET('/api/folders?section=' + key)]);
+    const rootFolders = folders.filter(x => !x.parent_id);
     const s = home.tiles.find(t => t.key === key);
     main.innerHTML = `<div class="page-h"><div class="tile" style="min-height:0;padding:0;border:0;box-shadow:none;background:none;cursor:default"><div class="th"><div class="ic">${I(sec.icon)}</div><h1>${esc(sec.name)}</h1></div></div><span class="spacer"></span>
         ${isOwner() ? `<button class="btn primary" id="add">${I('plus')} تكليف في هذا القسم</button>` : `<button class="btn primary" id="add">${I('plus')} مهمة في هذا القسم</button>`}</div>
@@ -585,10 +628,14 @@ async function viewSection(main, key) {
         <div class="kpi red"><b>${s.overdue}</b><span>متأخرة</span></div><div class="kpi orange"><b>${s.awaiting_decision}</b><span>بانتظار قرار أو اعتماد</span></div>
         ${(s.extra || []).map(e => `<div class="kpi"><b>${e.value}</b><span>${esc(e.label)}</span></div>`).join('')}
       </div>
+      <div class="folders-h section-gap"><h2>${I('folder')} المجلدات</h2><span class="spacer"></span>
+        ${can('folders.manage') ? `<button class="btn sm" id="addF" title="مجلد جديد" aria-label="مجلد جديد في ${esc(sec.name)}">${I('folderPlus')} مجلد جديد</button>` : ''}</div>
+      ${rootFolders.length ? folderCardsHtml(rootFolders) : `<p class="small muted">لا توجد مجلدات بعد${can('folders.manage') ? ' — استخدم «مجلد جديد» لتنظيم مهام القسم' : ''}</p>`}
       <div class="tabs section-gap"><button data-tab="tasks" class="${tab === 'tasks' ? 'active' : ''}">المهام</button><button data-tab="projects" class="${tab === 'projects' ? 'active' : ''}">المشاريع والمبادرات (${projects.length})</button>
         ${key === 'partnerships' ? `<button data-tab="partners" class="${tab === 'partners' ? 'active' : ''}">سجل الجهات والشخصيات</button>` : ''}</div>
       <div id="tabc"></div>`;
     $('#add', main).onclick = () => isOwner() ? modalAssignment({ section: key }) : modalTask({ section: key });
+    const addF = $('#addF', main); if (addF) addF.onclick = () => modalFolder({ section: key });
     $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
     const tc = $('#tabc', main);
     if (tab === 'tasks') {
@@ -606,6 +653,42 @@ async function viewSection(main, key) {
     } else if (tab === 'partners') {
       await renderPartnersInto(tc);
     }
+  }
+  await load(); return { refresh: load };
+}
+
+// ===== صفحة المجلد: المجلدات الفرعية ومهام المجلد =====
+async function viewFolder(main, id) {
+  const f = { scope: 'open', folder_id: id };
+  async function load() {
+    const folder = await GET('/api/folders/' + id);
+    const sec = state.meta.sections.find(s => s.key === folder.section);
+    const crumbs = [`<a href="#/section/${sec.key}">${esc(sec.name)}</a>`, ...folder.path.map((p, n) => n === folder.path.length - 1 ? `<b>${esc(p.name)}</b>` : `<a href="#/folder/${p.id}">${esc(p.name)}</a>`)];
+    const parentHref = folder.parent_id ? `#/folder/${folder.parent_id}` : `#/section/${sec.key}`;
+    const manage = can('folders.manage');
+    main.innerHTML = `<nav class="crumbs" aria-label="المسار">${crumbs.join(`<span class="sep">${I('back')}</span>`)}</nav>
+      <div class="page-h"><a class="iconbtn" href="${parentHref}" aria-label="رجوع" title="رجوع">${I('back')}</a><div class="ic-folder">${I('folder')}</div><h1>${esc(folder.name)}</h1>${demoChip(folder)}<span class="spacer"></span>
+        ${manage ? `<button class="btn" id="addSub">${I('folderPlus')} مجلد فرعي</button>` : ''}
+        <button class="btn primary" id="add">${I('plus')} ${isOwner() ? 'تكليف' : 'مهمة'} في هذا المجلد</button>
+        ${manage ? `<button class="iconbtn" id="ren" title="إعادة تسمية" aria-label="إعادة تسمية">${I('edit')}</button><button class="iconbtn" id="del" title="حذف المجلد" aria-label="حذف المجلد">${I('trash')}</button>` : ''}</div>
+      ${folder.children.length ? `<h2 class="section-gap">المجلدات الفرعية</h2>${folderCardsHtml(folder.children)}` : ''}
+      <h2 class="section-gap">المهام في هذا المجلد</h2>
+      ${filtersHtml(f, { section: false })}<div id="res"></div>`;
+    $('#add', main).onclick = () => isOwner() ? modalAssignment({ section: folder.section, folder_id: folder.id }) : modalTask({ section: folder.section, folder_id: folder.id });
+    if (manage) {
+      $('#addSub', main).onclick = () => modalFolder({ parent: folder });
+      $('#ren', main).onclick = () => modalFolder({ folder });
+      $('#del', main).onclick = async () => {
+        if (!confirm(`حذف المجلد «${folder.name}»؟\nلن تُحذف المهام ولا المجلدات الفرعية، بل تنتقل إلى ${folder.parent_id ? 'المجلد الأعلى' : 'القسم مباشرة'}.`)) return;
+        try { await api('DELETE', `/api/folders/${folder.id}`); toast('حُذف المجلد', 'ok'); location.hash = parentHref; } catch (e) { toast(e.message, 'err'); }
+      };
+    }
+    const loadTasks = async () => {
+      const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f }));
+      $('#res', main).innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, showFolder: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة في هذا المجلد');
+      bindQuickStatus(main);
+    };
+    bindFilters(main, f, loadTasks); await loadTasks();
   }
   await load(); return { refresh: load };
 }
@@ -651,7 +734,7 @@ async function viewItem(main, id) {
         ${i.requires_approval ? '<span class="chip st-waiting_approval">يتطلب اعتماد النتيجة</span>' : ''}${i.closed_at ? '<span class="chip st-done">مغلقة نهائيًا</span>' : ''}
         ${pendingCount ? `<span class="chip overdue">${I('gavel')}${pendingCount} طلب ينتظر القرار</span>` : ''}</div>
       <dl class="facts">
-        ${fact('القسم', esc(i.section_name))}${fact('المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
+        ${fact('القسم', esc(i.section_name))}${fact('المجلد', i.folder_id ? `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>` : '')}${fact('المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : 'مدير المكتب')}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
@@ -819,11 +902,14 @@ function modalAssignment(pre = {}) {
     body: `${field('عنوان التكليف *', '<input type="text" name="title" required maxlength="300">')}
       ${field('وصف المطلوب', '<textarea name="description" placeholder="ما المطلوب تحديدًا؟ أي تفاصيل أو سياق مهم"></textarea>')}
       ${field('القسم المعني *', sectionSeg(pre.section))}
+      ${field('المجلد (اختياري)', folderSelectHtml(pre.folder_id))}
       ${field('درجة الأهمية', prioSeg('normal'))}
       <div class="grid2">${field('الموعد المطلوب (اختياري)', '<input type="date" name="due_date">')}${field('الوقت (اختياري)', '<input type="time" name="due_time">')}</div>
       ${field('المرفقات والملاحظة الصوتية', fileFieldHtml())}`,
+    init: bindFolderSelect,
     onSubmit: async (d) => {
       if (!d.section) throw new Error('اختر القسم المعني');
+      if (!d.folder_id) delete d.folder_id;
       const it = await POST('/api/assignments', d);
       toast(`أُرسل التكليف ${it.ref} إلى مدير المكتب`, 'ok'); location.hash = `#/item/${it.id}`; refreshView();
     },
@@ -854,6 +940,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
     ${withDesc ? field('الوصف', `<textarea name="description">${esc(i.description || '')}</textarea>`) : ''}
     <div class="grid2">
       ${field('القسم *', sectionSelect(i.section, 'section', true))}
+      ${field('المجلد', folderSelectHtml(i.folder_id))}
       ${field('التصنيف', `<select name="category">${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, i.category || 'general')).join('')}</select>`)}
       ${field('المشروع', `<select name="project_id">${opt('', '— بدون —', i.project_id)}${projects.map(p => opt(p.id, `${sectionName(p.section)}: ${p.name}`, i.project_id)).join('')}</select>`)}
       ${field('المسؤول عن التنفيذ', `<input type="text" name="assignee" value="${esc(i.assignee || state.me.name)}">`)}
@@ -873,6 +960,7 @@ async function modalTask(i, after) {
   openModal({
     title: editing ? `تعديل ${i.ref}` : 'مهمة جديدة', wide: true,
     body: await taskFormBody(i || {}) + (editing ? '' : field('المرفقات', fileFieldHtml())),
+    init: bindFolderSelect,
     onSubmit: async (d) => {
       if (!d.section) throw new Error('اختر القسم');
       if (editing) { delete d.file_ids; await api('PATCH', `/api/items/${i.id}`, d); toast('حُفظت التعديلات', 'ok'); after && after(); }
@@ -885,6 +973,7 @@ async function modalConvert(i, after) {
   openModal({
     title: `تحويل ${i.ref} إلى مهمة منظمة`, wide: true, submit: 'تحويل إلى مهمة',
     body: `<div class="info-box" style="margin-bottom:12px">يتم التحويل في السجل نفسه — يبقى الرقم المرجعي والنص الأصلي والمحادثة كما هي دون إنشاء نسخة مكررة.</div>` + await taskFormBody(i),
+    init: bindFolderSelect,
     onSubmit: async (d) => { await POST(`/api/items/${i.id}/convert`, d); toast('حُوّل إلى مهمة', 'ok'); after ? after() : (location.hash = `#/item/${i.id}`); refreshView(); },
   });
 }
