@@ -127,6 +127,11 @@ const can = (user, perm) => effectivePerms(user).has(perm);
 function todayStr(d = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
+// تاريخ عربي قصير للنصوص (الإشعارات): «الأحد 15 نوفمبر»
+function fmtDateAr(d) {
+  if (!d) return '';
+  try { return new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(d.slice(0, 10) + 'T12:00:00Z')); } catch { return d; }
+}
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
 }
@@ -268,13 +273,13 @@ function report(period = 'week') {
     : null; // بيانات غير كافية
   // عبء العمل حسب المسؤول: المفتوحة، المتأخرة، المستحقة خلال أسبوع، والمنجزة في الفترة
   const week = addDays(t, 7);
-  r.by_person = all(`SELECT COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد') AS name, i.assignee_id AS user_id,
+  r.by_person = all(`SELECT COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد') AS name, MAX(i.assignee_id) AS user_id,
       SUM(CASE WHEN i.${OPEN} THEN 1 ELSE 0 END) AS open,
       SUM(CASE WHEN i.${OPEN} AND i.due_date<? THEN 1 ELSE 0 END) AS overdue,
       SUM(CASE WHEN i.${OPEN} AND i.due_date BETWEEN ? AND ? THEN 1 ELSE 0 END) AS due_week,
       SUM(CASE WHEN i.status='done' AND i.completed_at>=? THEN 1 ELSE 0 END) AS completed
     FROM items i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.kind IN ${TASK_KINDS}
-    GROUP BY COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد'), i.assignee_id
+    GROUP BY COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد')
     HAVING open > 0 OR completed > 0 ORDER BY overdue DESC, open DESC LIMIT 50`, t, t, week, fromIso);
   r.completed_items = all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND status='done' AND completed_at>=? ORDER BY completed_at DESC LIMIT 50`, fromIso).map(i => decorate(i, t));
   return r;
@@ -282,5 +287,5 @@ function report(period = 'week') {
 
 module.exports = {
   get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS,
-  PERMS, ROLE_LABELS, roleSql, can, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

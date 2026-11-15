@@ -446,3 +446,5 @@ details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size:
 .tbl th, .tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: start; white-space: nowrap; }
 .tbl th { color: var(--ink-3); font-weight: 500; font-size: .8rem; }
 .tbl td.late { color: var(--red); font-weight: 700; }
+.today-top { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; margin-top: -4px; }
+.today-top p { margin: 0; }

@@ -38,8 +38,8 @@ function fmtTs(iso) {
   if (!iso) return '—';
   const d = new Date(iso); const s = (Date.now() - d) / 1000;
   if (s < 60) return 'الآن';
-  if (s < 3600) return `منذ ${Math.floor(s / 60)} د`;
-  if (s < 86400) return `منذ ${Math.floor(s / 3600)} س`;
+  if (s < 3600) { const m = Math.floor(s / 60); return m === 1 ? 'منذ دقيقة' : m === 2 ? 'منذ دقيقتين' : `منذ ${m} دقيقة`; }
+  if (s < 86400) { const h = Math.floor(s / 3600); return h === 1 ? 'منذ ساعة' : h === 2 ? 'منذ ساعتين' : `منذ ${h} ساعات`; }
   return `${dfmtY.format(d)} ${tfmt.format(d)}`;
 }
 const fmtDue = (i) => i.due_date ? `${fmtDate(i.due_date)}${i.due_time ? ' ' + i.due_time : ''}` : 'بدون موعد';
@@ -84,6 +84,7 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
     ${actions ? `<div class="side">${actions}</div>` : ''}
   </div>`;
 }
+const countTxt = (n, one, two, many) => n === 0 ? 'لا نتائج' : n === 1 ? `${one} واحدة` : n === 2 ? two : `${n} ${n <= 10 ? many : one}`;
 const listOrEmpty = (items, fn, empty = 'لا توجد عناصر') => items.length ? `<div class="list">${items.map(fn).join('')}</div>` : `<div class="empty">${empty}</div>`;
 
 function toast(msg, kind = '', onClick) {
@@ -109,7 +110,7 @@ function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', on
   bg.innerHTML = `<form class="modal" ${wide ? 'style="max-width:820px"' : ''} novalidate>
     <div class="mh"><h2>${esc(title)}</h2><button type="button" class="iconbtn" data-close aria-label="إغلاق">${I('x')}</button></div>
     <div class="mb"><div class="err-box hidden"></div>${body}</div>
-    <div class="mf">${onSubmit ? `<button class="btn ${submitClass}" type="submit">${esc(submit)}</button>` : ''}<button type="button" class="btn ghost" data-close>إلغاء</button></div>
+    <div class="mf">${onSubmit ? `<button class="btn ${submitClass}" type="submit">${esc(submit)}</button>` : ''}<button type="button" class="btn ghost" data-close>${onSubmit ? 'إلغاء' : 'إغلاق'}</button></div>
   </form>`;
   document.body.appendChild(bg); document.body.style.overflow = 'hidden';
   const form = $('form', bg);
@@ -117,7 +118,9 @@ function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', on
   const onKey = (e) => { if (e.key === 'Escape' && bg === $$('.modal-bg').pop()) close(); };
   const close = () => { document.removeEventListener('keydown', onKey); bg.remove(); document.body.style.overflow = ''; if (state.stale) refreshView(); };
   $$('[data-close]', bg).forEach(b => b.onclick = close);
-  bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
+  // الضغط خارج النافذة لا يضيّع ما كُتب دون تأكيد
+  let dirty = false; form.addEventListener('input', () => { dirty = true; });
+  bg.addEventListener('mousedown', e => { if (e.target === bg && (!dirty || confirm('إغلاق النافذة وتجاهل ما كتبته؟'))) close(); });
   document.addEventListener('keydown', onKey);
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -522,7 +525,7 @@ function followRibbonHtml(urgent, today) {
       : '<div class="r-empty">لا توجد مهام عاجلة ولا مستحقة اليوم</div>'}</div>
     ${items.length >= 2 ? `<button type="button" class="r-ctl" data-toggle aria-label="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}" title="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}">${I(paused ? 'play' : 'pause')}</button>` : ''}
   </section>
-  <div class="r-legend small"><span><i class="lg red"></i>عاجلة (${urgent.length})</span><span><i class="lg orange"></i>مهمة ومستحقة اليوم</span><span><i class="lg slate"></i>مستحقة اليوم (${today.length})</span></div>`;
+  <div class="r-legend small"><span><i class="lg red"></i>عاجلة (${urgent.length})</span><span><i class="lg orange"></i>أولوية «مهم» ومستحقة اليوم</span><span><i class="lg slate"></i>مستحقة اليوم (${today.length})</span></div>`;
 }
 function bindRibbons(root) {
   $$('.ribbon .r-item', root).forEach(b => b.onclick = () => location.hash = `#/item/${b.dataset.id}`);
@@ -704,7 +707,7 @@ function modalPostpone(i, after) {
   const m = openModal({
     title: 'تأجيل الموعد', submit: 'تأجيل إلى التاريخ المختار',
     body: `<p class="small muted">الموعد الحالي: ${esc(fmtDue(i))}</p>
-      <div class="btn-row" style="margin:8px 0 12px">${opts.map(([l, d]) => `<button type="button" class="btn" data-pp="${d}">${l} <span class="small muted">(${esc(fmtDate(d))})</span></button>`).join('')}</div>
+      <div class="btn-row" style="margin:8px 0 12px">${opts.map(([l, d]) => `<button type="button" class="btn" data-pp="${d}">${l}${fmtDate(d) !== l ? ` <span class="small muted">(${esc(fmtDate(d))})</span>` : ''}</button>`).join('')}</div>
       ${field('أو اختر تاريخًا', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
       ${field('سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
     init: (form) => $$('[data-pp]', form).forEach(b => b.onclick = async () => { try { await save(b.dataset.pp, form.elements.reason.value); m.close(); } catch (e) { showErr(e); } }),
@@ -811,7 +814,7 @@ async function viewTasks(main) {
   const f = { scope: 'open' };
   main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
-  async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${items.length} نتيجة</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
+  async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${countTxt(items.length, 'نتيجة', 'نتيجتان', 'نتائج')}</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
 }
 
@@ -1007,10 +1010,11 @@ async function viewItem(main, id) {
       catch (e) { cb.checked = !cb.checked; cb.disabled = false; showErr(e); }
     });
     const f = $('#subAdd', el);
+    if (f && state.subFocusUntil > Date.now()) setTimeout(() => { const t = $('input[name=title]', f); if (t && document.activeElement !== t) t.focus(); }, 0);
     if (f) f.onsubmit = async (e) => {
       e.preventDefault(); const d = formData(f); if (!d.title.trim()) return;
       const b = $('button', f); b.disabled = true;
-      try { await POST(`/api/items/${id}/subtasks`, d); toast('أُضيفت المهمة الفرعية', 'ok'); await load(); setTimeout(() => { const t = $('#subAdd input[name=title]', main); t && t.focus(); }, 50); }
+      try { await POST(`/api/items/${id}/subtasks`, d); toast('أُضيفت المهمة الفرعية', 'ok'); state.subFocusUntil = Date.now() + 4000; await load(); }
       catch (ex) { showErr(ex); b.disabled = false; }
     };
   }
@@ -1183,20 +1187,20 @@ async function modalToday() {
   const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
   const row = (i) => `<a class="today-row" href="#/item/${i.id}"><span class="pdot p-${i.priority}" aria-hidden="true"></span>
     <span class="tt">${i.section ? `<b>${esc(i.section_name)}:</b> ` : ''}${esc(i.title)}</span>
-    <span class="small muted">${esc(i.is_overdue ? fmtDate(i.due_date) : (i.due_time || i.assignee || ''))}</span></a>`;
+    <span class="small muted">${esc(i.is_overdue ? fmtDate(i.due_date) : (i.due_time || (i.assignee !== state.me.name ? i.assignee : '') || ''))}</span></a>`;
   const mark = (i) => i.priority === 'urgent' ? '🔴 ' : i.priority === 'important' ? '🟠 ' : '';
-  const line = (i, n, late) => `${n + 1}. ${mark(i)}${i.section ? `[${i.section_name}] ` : ''}${i.title}${late ? ` — منذ ${fmtDate(i.due_date)}` : i.due_time ? ` — ${i.due_time}` : ''}${i.assignee ? ` (${i.assignee})` : ''}`;
+  const who = (i) => i.assignee && i.assignee !== state.me.name ? ` (${i.assignee})` : '';
+  const line = (i, n, late) => `${n + 1}. ${mark(i)}${i.section ? `[${i.section_name}] ` : ''}${i.title}${late ? ` — منذ ${fmtDate(i.due_date)}` : i.due_time ? ` — ${i.due_time}` : ''}${who(i)}`;
   const text = [`📋 مهام اليوم — ${dateTxt}`, '',
     `مستحقة اليوم (${today.length}):`, ...(today.length ? today.map((i, n) => line(i, n)) : ['لا توجد']),
     ...(overdue.length ? ['', `متأخرة لم تُنجز (${overdue.length}):`, ...overdue.map((i, n) => line(i, n, true))] : [])].join('\n');
   const m = openModal({
     title: 'مهام اليوم',
-    body: `<p class="small muted" style="margin-top:-4px">${esc(dateTxt)} • ${esc(hijri)}</p>
+    body: `<div class="today-top"><p class="small muted">${esc(dateTxt)} • ${esc(hijri)}</p><button type="button" class="btn primary sm" id="copyToday">${I('copy')} نسخ كرسالة</button></div>
       <h3 class="today-h">${I('calendarCheck')} مستحقة اليوم (${today.length})</h3>
       ${today.length ? `<div class="today-list">${today.map(row).join('')}</div>` : '<div class="small muted">لا توجد مهام مستحقة اليوم</div>'}
       ${overdue.length ? `<h3 class="today-h red">${I('alert')} متأخرة لم تُنجز (${overdue.length})</h3><div class="today-list">${overdue.map(row).join('')}</div>` : ''}
-      <div class="r-legend small" style="margin-top:12px"><span><i class="lg red"></i>عاجل</span><span><i class="lg orange"></i>مهم</span><span><i class="lg slate"></i>عادي</span></div>
-      <button type="button" class="btn primary block" id="copyToday" style="margin-top:12px">${I('copy')} نسخ كرسالة</button>`,
+      <div class="r-legend small" style="margin-top:12px"><span><i class="lg red"></i>عاجل</span><span><i class="lg orange"></i>مهم</span><span><i class="lg slate"></i>عادي</span></div>`,
     init: (form) => {
       $('#copyToday', form).onclick = async () => { await copyText(text); toast('نُسخت القائمة — الصقها في واتساب أو أي رسالة', 'ok'); };
       $$('.today-row', form).forEach(a => a.addEventListener('click', () => m.close()));
@@ -1294,10 +1298,15 @@ function bindTaskForm(form) {
   const sync = (ev) => {
     const sec = val('section'), type = val('task_type');
     $$('[data-show]', form).forEach(el => el.classList.toggle('hidden', !el.dataset.show.split(' ').includes(type)));
-    const pl = $('[data-plabel]', form); if (pl) pl.textContent = type === 'initiative' ? 'المبادرة' : 'المشروع';
+    const pl = $('[data-plabel]', form);
     const filter = (sel, ok) => { for (const o of sel.options) if (o.value) { const y = ok(o); o.hidden = !y; o.disabled = !y; if (!y && o.selected) sel.value = ''; } };
     if (fol) filter(fol, o => !sec || o.dataset.section === sec);
     if (prj) filter(prj, o => (!sec || o.dataset.section === sec) && (!['project', 'initiative'].includes(type) || o.dataset.kind === type));
+    if (pl && prj) {
+      const word = type === 'initiative' ? 'المبادرة' : 'المشروع';
+      const none = ['project', 'initiative'].includes(type) && ![...prj.options].some(o => o.value && !o.hidden);
+      pl.textContent = none ? `${word} — ${type === 'initiative' ? 'لا توجد مبادرات' : 'لا توجد مشاريع'} في ${sec ? 'هذا القسم' : 'المنصة'} بعد` : word;
+    }
     if (ev && ev.target === prj && fol) { const o = prj.selectedOptions[0]; if (o && o.dataset.folder) fol.value = o.dataset.folder; }
     const ap = E.assignee_pick, other = $('[data-assignee-other]', form);
     if (ap && other) other.classList.toggle('hidden', ap.value !== '__other');
@@ -1601,17 +1610,19 @@ async function viewSettings(main) {
     <label class="check"><input type="checkbox" name="push_urgent_only" ${p.push.urgent_only ? 'checked' : ''}> العاجلة فقط</label>
     <label class="check"><input type="checkbox" name="private_lock_screen" ${p.private_lock_screen ? 'checked' : ''}> إخفاء التفاصيل في إشعارات شاشة القفل (يظهر «لديك إشعار جديد» فقط)</label>
     <details><summary class="small" style="cursor:pointer">أنواع إشعارات Push</summary><div class="grid2">${Object.entries(T).map(([k, v]) => `<label class="check"><input type="checkbox" data-group="push" value="${k}" ${p.push.types.includes(k) ? 'checked' : ''}> ${v}</label>`).join('')}</div></details>
-    <h3 class="section-gap">3) البريد الإلكتروني</h3>
+    ${isMember() && !em.configured ? '' : `<h3 class="section-gap">3) البريد الإلكتروني</h3>
     ${em.configured ? `<div class="info-box">مزود البريد مُعد (${esc(em.mode)}).</div>` : '<div class="warn-box">لم يُعد مزود البريد بعد على الخادم — لن تُرسل رسائل فعلية حتى يُضبط SMTP (انظر دليل التشغيل). يمكنك حفظ تفضيلاتك الآن.</div>'}
     ${field('بريدك الإلكتروني', `<input type="email" name="email_address" dir="ltr" value="${esc(p.email_address || '')}">`)}
     <label class="check"><input type="checkbox" name="email_enabled" ${p.email.enabled ? 'checked' : ''}> أوافق على استلام إشعارات بالبريد الإلكتروني</label>
     <div class="grid2">${['new_assignment', 'approval_request', 'new_message', 'overdue', 'digest', 'decision'].map(k => `<label class="check"><input type="checkbox" data-group="email" value="${k}" ${p.email.types.includes(k) ? 'checked' : ''}> ${T[k]}</label>`).join('')}</div>
-    <h3 class="section-gap">واتساب (مستقبلًا)</h3>
+`}
+    ${!isManager() && !state.meta.whatsapp.configured ? '' : `    <h3 class="section-gap">واتساب (مستقبلًا)</h3>
     <div class="warn-box">${state.meta.whatsapp.configured ? 'تكامل واتساب الرسمي مُعد على الخادم.' : 'غير مفعّل. يتطلب ربطًا رسميًا عبر WhatsApp Business Platform (حساب أعمال موثّق وقوالب معتمدة وتكلفة لكل محادثة). المنصة تعمل بالكامل دونه.'}</div>
     <div class="grid2">${field('رقم واتساب (بالصيغة الدولية)', `<input type="tel" name="whatsapp_phone" dir="ltr" value="${esc(p.whatsapp_phone)}" placeholder="9665xxxxxxxx">`)}<label class="check" style="margin-top:24px"><input type="checkbox" name="whatsapp_enabled" ${p.whatsapp_enabled ? 'checked' : ''}> استلام التنبيهات عبر واتساب عند تفعيله</label></div>
+`}
     <div class="btn-row section-gap"><button class="btn primary">حفظ التفضيلات</button><button type="button" class="btn" id="test">إرسال إشعار تجريبي</button></div>
   </form>
-  <div class="card"><div class="card-h"><h2>سجل الإرسال خارج المنصة</h2></div>
+  <div class="card ${isMember() ? 'hidden' : ''}"><div class="card-h"><h2>سجل الإرسال خارج المنصة</h2></div>
     ${deliveries.length ? deliveries.map(d => `<div class="log-row">${fmtTs(d.created_at)} — ${esc({ push: 'Push', email: 'بريد', whatsapp: 'واتساب' }[d.channel] || d.channel)}: ${esc({ sent: 'أُرسل', failed: 'فشل', skipped: 'تُخطي', not_configured: 'غير مُعد' }[d.status] || d.status)} ${d.detail ? `<span class="muted ltr">${esc(d.detail)}</span>` : ''}</div>`).join('') : '<div class="muted small">لا يوجد</div>'}</div>
   ${can('users.manage') ? '<div class="card" id="usersAdmin"></div>' : ''}
   <form class="card" id="pw"><div class="card-h"><h2>تغيير كلمة المرور</h2></div>

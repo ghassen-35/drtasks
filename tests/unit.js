@@ -213,7 +213,7 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   S.createSubtask(mgr, p.id, { title: 'فرعية 1' }); S.createSubtask(mgr, p.id, { title: 'فرعية 2' });
   const ns = all('SELECT title, body FROM notifications WHERE user_id=? ORDER BY id', wId).slice(n0);
   t('إسناد مهمة بفرعيات يولّد إشعارًا واحدًا', ns.filter(n => n.title.includes('أُسندت إليك')).length === 1);
-  t('إشعار الإسناد يذكر من أسند والموعد والأولوية', ns[0] && ns[0].body.includes('من ') && ns[0].body.includes(today) && ns[0].body.includes('مهم'));
+  t('إشعار الإسناد يذكر من أسند والموعد والأولوية', ns[0] && ns[0].body.includes('من ') && ns[0].body.includes(D.fmtDateAr(today)) && ns[0].body.includes('مهم'));
 }
 
 // ---- تحويل قرار اجتماع إلى مهمة بحساب المسؤول والموعد

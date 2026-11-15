@@ -19,7 +19,7 @@ function runScheduler({ dailyBackup } = {}) {
     }
     const overdue = all(`SELECT * FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN} AND due_date<?`, t);
     for (const i of overdue) {
-      const p = { type: 'overdue', title: `مهمة متأخرة: ${i.title}`, body: `${i.ref} — كان موعدها ${i.due_date}`, link: `#/item/${i.id}`, urgent: i.priority !== 'normal', dedupe: `overdue:${i.id}:${i.due_date}` };
+      const p = { type: 'overdue', title: `مهمة متأخرة: ${i.title}`, body: `${i.ref} — كان موعدها ${D.fmtDateAr(i.due_date)}`, link: `#/item/${i.id}`, urgent: i.priority !== 'normal', dedupe: `overdue:${i.id}:${i.due_date}` };
       N.notifyRole('manager', p);
       if (i.source === 'owner' && i.priority !== 'normal') N.notify(i.created_by, p);
     }

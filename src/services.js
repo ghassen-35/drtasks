@@ -123,7 +123,7 @@ function applyOrg(user, id, b) {
     // مهمة فرعية لنفس مسؤول الأم: إشعار الأم يكفي (لا سيل إشعارات)
     const parent = it.parent_task_id ? get('SELECT id,assignee_id FROM items WHERE id=?', it.parent_task_id) : null;
     if (!(parent && parent.assignee_id === assigneeId)) {
-      const bits = [`من ${user.name}`, it.due_date ? `الموعد ${it.due_date}` : null, it.priority !== 'normal' ? D.PRIORITIES[it.priority] : null].filter(Boolean);
+      const bits = [`من ${user.name}`, it.due_date ? `الموعد ${D.fmtDateAr(it.due_date)}` : null, it.priority !== 'normal' ? D.PRIORITIES[it.priority] : null].filter(Boolean);
       notifyAssignee({ ...it, assignee_id: assigneeId }, user, { type: 'status_change', title: `أُسندت إليك ${it.parent_task_id ? 'مهمة فرعية' : 'مهمة'}: ${it.title}`, body: `${bits.join(' • ')} — ${it.ref}`, link: link(parent ? parent.id : id), urgent: it.priority === 'urgent' });
     }
   }
@@ -380,7 +380,7 @@ function spawnNextOccurrence(user, it) {
   run('UPDATE items SET next_occurrence_id=? WHERE id=?', id, full.id);
   audit('item', id, user.id, 'created', 'recurrence_of', null, full.id);
   sysMsg(id, user.id, `أُنشئت تلقائيًا (مهمة ${D.RECURRENCES[full.recurrence]}) بعد إنجاز ${full.ref}`, { event: 'recurring', from: full.id });
-  sysMsg(full.id, user.id, `الموعد التالي لهذه المهمة الدورية: ${ref} بتاريخ ${next}`, { event: 'recurring', next: id });
+  sysMsg(full.id, user.id, `الموعد التالي لهذه المهمة الدورية: ${ref} بتاريخ ${D.fmtDateAr(next)}`, { event: 'recurring', next: id });
   return id;
 }
 
