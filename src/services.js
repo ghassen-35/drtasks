@@ -98,7 +98,7 @@ function validProject(projectId, section) {
 
 // المجلد والمسؤول (مستخدم في المنصة): يُتحقق منهما ثم يُحدَّثان مع سجل التغييرات
 function applyOrg(user, id, b) {
-  const it = get('SELECT id,ref,title,section,project_id,folder_id,assignee_id,assignee FROM items WHERE id=?', id);
+  const it = get('SELECT id,ref,title,section,project_id,folder_id,assignee_id,assignee,parent_task_id,due_date,priority FROM items WHERE id=?', id);
   let folder = b.folder_id !== undefined ? (b.folder_id ? Number(b.folder_id) : null) : it.folder_id;
   if (b.folder_id === undefined && b.project_id && it.project_id) { const p = get('SELECT folder_id FROM projects WHERE id=?', it.project_id); if (p && p.folder_id) folder = p.folder_id; }
   if (folder) {
@@ -119,7 +119,14 @@ function applyOrg(user, id, b) {
   if (!changes.length) return;
   run('UPDATE items SET folder_id=?, assignee_id=?, assignee=? WHERE id=?', folder, assigneeId, assignee, id);
   for (const [k, o, n] of changes) audit('item', id, user.id, 'updated', k, o, n);
-  if (assigneeId && assigneeId !== it.assignee_id) notifyAssignee({ ...it, assignee_id: assigneeId }, user, { type: 'status_change', title: `أُسندت إليك مهمة: ${it.title}`, body: it.ref, link: link(id) });
+  if (assigneeId && assigneeId !== it.assignee_id) {
+    // مهمة فرعية لنفس مسؤول الأم: إشعار الأم يكفي (لا سيل إشعارات)
+    const parent = it.parent_task_id ? get('SELECT id,assignee_id FROM items WHERE id=?', it.parent_task_id) : null;
+    if (!(parent && parent.assignee_id === assigneeId)) {
+      const bits = [`من ${user.name}`, it.due_date ? `الموعد ${it.due_date}` : null, it.priority !== 'normal' ? D.PRIORITIES[it.priority] : null].filter(Boolean);
+      notifyAssignee({ ...it, assignee_id: assigneeId }, user, { type: 'status_change', title: `أُسندت إليك ${it.parent_task_id ? 'مهمة فرعية' : 'مهمة'}: ${it.title}`, body: `${bits.join(' • ')} — ${it.ref}`, link: link(parent ? parent.id : id), urgent: it.priority === 'urgent' });
+    }
+  }
 }
 
 // ===== 1) رجل الأعمال يرسل تكليفًا =====

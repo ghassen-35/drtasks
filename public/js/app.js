@@ -1169,8 +1169,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
       ${field('القسم *', sectionSelect(i.section, 'section', true))}
       ${field('التصنيف', `<select name="category">${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, i.category || 'general')).join('')}</select>`)}
       ${field('المجلد', folderSelect(folders, i.folder_id, '— بدون —'))}
-      ${field('المسؤول (حساب في المنصة)', `<select name="assignee_id">${opt('', '— لا أحد / شخص خارج المنصة —', i.assignee_id)}${people.map(u => opt(u.id, `${u.name}${u.role === 'member' ? ' (عضو فريق)' : ''}`, i.assignee_id)).join('')}</select>`)}
-      ${field('أو اسم المسؤول (إن كان خارج المنصة)', `<input type="text" name="assignee" value="${esc(i.assignee || (i.assignee_id ? '' : state.me.name))}">`)}
+      ${assigneeFieldHtml(i, people)}
       ${field('الموعد النهائي', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
       ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}
     </div>
@@ -1184,6 +1183,24 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
     ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}`;
 }
 // في نموذج المهمة: المجلدات والمشاريع تتبع القسم المختار، واختيار مشروع يضبط مجلده
+// حقل مسؤول واحد: حسابات المنصة، أو «شخص خارج المنصة» يُكتب اسمه
+function assigneeFieldHtml(i, people) {
+  const isNew = !i.id;
+  const sel = i.assignee_id ? String(i.assignee_id) : (i.assignee ? '__other' : (isNew && !isOwner() ? String(state.me.id) : ''));
+  return `<label class="f"><span>المسؤول عن التنفيذ</span><select name="assignee_pick">${opt('', '— غير محدد —', sel)}
+      ${people.map(u => opt(u.id, `${u.name}${u.id === state.me.id ? ' (أنا)' : u.role === 'member' ? ` — ${u.title || 'موظف'}` : ''}`, sel)).join('')}
+      ${opt('__other', 'شخص خارج المنصة…', sel)}</select></label>
+    <label class="f ${sel === '__other' ? '' : 'hidden'}" data-assignee-other><span>اسم المسؤول (خارج المنصة)</span><input type="text" name="assignee" maxlength="200" value="${esc(i.assignee_id ? '' : (i.assignee || ''))}"></label>`;
+}
+// تحويل اختيار المسؤول إلى حقول الخادم
+function applyAssignee(d) {
+  if (d.assignee_pick === undefined) return d;
+  const p = d.assignee_pick; delete d.assignee_pick;
+  if (p === '__other') { d.assignee_id = ''; d.assignee = (d.assignee || '').trim(); if (!d.assignee) throw new Error('اكتب اسم المسؤول'); }
+  else { d.assignee_id = p; d.assignee = ''; }
+  return d;
+}
+
 // المجلدات والمشاريع تتبع القسم المختار، والمشاريع تتبع النوع (مشروع/مبادرة)، واختيار مشروع يضبط مجلده
 function bindTaskForm(form) {
   const E = form.elements; const fol = E.folder_id, prj = E.project_id;
@@ -1196,6 +1213,8 @@ function bindTaskForm(form) {
     if (fol) filter(fol, o => !sec || o.dataset.section === sec);
     if (prj) filter(prj, o => (!sec || o.dataset.section === sec) && (!['project', 'initiative'].includes(type) || o.dataset.kind === type));
     if (ev && ev.target === prj && fol) { const o = prj.selectedOptions[0]; if (o && o.dataset.folder) fol.value = o.dataset.folder; }
+    const ap = E.assignee_pick, other = $('[data-assignee-other]', form);
+    if (ap && other) other.classList.toggle('hidden', ap.value !== '__other');
   };
   form.addEventListener('change', sync); sync();
 }
@@ -1206,7 +1225,7 @@ async function modalTask(i, after) {
     body: await taskFormBody(i || {}) + (editing ? '' : field('المرفقات', fileFieldHtml())),
     onSubmit: async (d) => {
       if (!d.section) throw new Error('اختر القسم');
-      applyTaskType(d);
+      applyTaskType(d); applyAssignee(d);
       if (!can('partners.view')) delete d.partner_id; // لا يمسح ربطًا لا يراه
       if (editing) { delete d.file_ids; await api('PATCH', `/api/items/${i.id}`, d); toast('حُفظت التعديلات', 'ok'); after && after(); }
       else { const it = await POST('/api/tasks', d); toast(`أُنشئت المهمة ${it.ref}`, 'ok'); location.hash = `#/item/${it.id}`; }
@@ -1218,7 +1237,7 @@ async function modalConvert(i, after) {
   openModal({
     title: `تحويل ${i.ref} إلى مهمة منظمة`, wide: true, submit: 'تحويل إلى مهمة', init: bindTaskForm,
     body: `<div class="info-box" style="margin-bottom:12px">يتم التحويل في السجل نفسه — يبقى الرقم المرجعي والنص الأصلي والمحادثة كما هي دون إنشاء نسخة مكررة.</div>` + await taskFormBody(i),
-    onSubmit: async (d) => { applyTaskType(d); await POST(`/api/items/${i.id}/convert`, d); toast('حُوّل إلى مهمة', 'ok'); after ? after() : (location.hash = `#/item/${i.id}`); refreshView(); },
+    onSubmit: async (d) => { applyTaskType(d); applyAssignee(d); await POST(`/api/items/${i.id}/convert`, d); toast('حُوّل إلى مهمة', 'ok'); after ? after() : (location.hash = `#/item/${i.id}`); refreshView(); },
   });
 }
 function modalApproval(i, after, preset = {}) {
