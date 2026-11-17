@@ -391,17 +391,22 @@ const routes = [
 async function route() {
   if (!state.me) return;
   const h = location.hash || '#/';
-  const main = $('#main'); if (!main) return;
+  const host = $('#main'); if (!host) return;
   // الانتقال إلى صفحة أخرى (أو زر الرجوع في الجوال) يغلق النوافذ المفتوحة فلا تبقى نافذة مخفية خلف أخرى
   $$('.modal-bg [data-close]').forEach(x => x.click());
   renderNav();
+  // لكل انتقال حاوية خاصة: صفحة سابقة تأخر تحميلها تكتب في حاويتها القديمة غير المعروضة، فلا تطمس الصفحة الحالية
+  const main = document.createElement('div'); main.className = 'view';
+  host.replaceChildren(main);
+  const current = () => main.isConnected;
   for (const [re, fn] of routes) {
     const m = h.match(re);
     if (m) {
       state.view = null; state.stale = false;
       main.innerHTML = '<div class="empty">جارٍ التحميل…</div>';
-      try { state.view = (await fn(main, ...m.slice(1))) || null; } catch (e) { main.innerHTML = `<div class="card"><div class="err-box">${esc(e.message)}</div><a class="btn" href="#/">العودة للرئيسية</a></div>`; }
-      window.scrollTo(0, 0);
+      try { const v = (await fn(main, ...m.slice(1))) || null; if (current()) state.view = v; }
+      catch (e) { if (current()) main.innerHTML = `<div class="card"><div class="err-box">${esc(e.message)}</div><a class="btn" href="#/">العودة للرئيسية</a></div>`; }
+      if (current()) window.scrollTo(0, 0);
       return;
     }
   }

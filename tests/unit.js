@@ -356,6 +356,23 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('الحساب والاسم المكتوب لنفس الشخص يظهران صفًا واحدًا', rows.length === 1);
 }
 
+// ---- بيانات المكتب الأولية: مرة واحدة ودون تكرار
+{
+  const seeds = require('../src/seeds'); const cfg = require('../src/config');
+  const before = get("SELECT COUNT(*) c FROM folders WHERE section='association'").c;
+  const r = seeds.applySeeds(cfg);
+  const f = all("SELECT id,name FROM folders WHERE section='association' AND parent_id IS NULL");
+  const inFolder = (name) => all('SELECT title FROM items WHERE folder_id=(SELECT id FROM folders WHERE section=? AND name=?)', 'association', name).map(x => x.title);
+  t('الجمعية: 15 مجلدًا و24 مهمة', r.length === 1 && r[0].folders === 15 && r[0].tasks === 24 && f.length === before + 15);
+  t('مهام المجلدات كما طُلبت', inFolder('التمثل القرآني').length === 3 && inFolder('الموهوبون').includes('اكتشاف الموهوبين من المشرفين') && inFolder('الموارد البشرية').includes('تسكين الموظفين الجدد'));
+  t('المجلد بلا مهام تُنشأ له «متابعة <اسمه>»', inFolder('وحدة التدريب')[0] === 'متابعة وحدة التدريب' && inFolder('الشخصيات والجهات')[0] === 'متابعة الشخصيات والجهات');
+  t('مهام تحت الجمعية مباشرة', ['تفعيل مجلس الشؤون التعليمية بالمنطقة', 'آلية الرد على الإيميلات'].every(x => get("SELECT id FROM items WHERE title=? AND section='association' AND folder_id IS NULL", x)));
+  t('لا تُطبَّق مرتين', seeds.applySeeds(cfg).length === 0);
+  run("DELETE FROM kv WHERE key='seed:association-2026-11'");
+  const again = seeds.applySeeds(cfg)[0];
+  t('إعادة التطبيق لا تكرر شيئًا', again.folders === 0 && again.tasks === 0 && again.skipped === 39);
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

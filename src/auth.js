@@ -44,7 +44,7 @@ async function ensureUsers({ requirePasswords = false } = {}) {
   const ownerPw = cfg.get('OWNER_PASSWORD') || randomToken(6);
   const managerPw = cfg.get('MANAGER_PASSWORD') || randomToken(6);
   const ou = cfg.get('OWNER_USERNAME', 'owner'); const mu = cfg.get('MANAGER_USERNAME', 'manager');
-  db.run('INSERT INTO users(username,name,role,email,password_hash) VALUES(?,?,?,?,?)', ou, cfg.get('OWNER_NAME', 'رجل الأعمال'), 'owner', cfg.get('OWNER_EMAIL') || null, await hashPassword(ownerPw));
+  db.run('INSERT INTO users(username,name,role,email,password_hash) VALUES(?,?,?,?,?)', ou, cfg.get('OWNER_NAME', require('./domain').ownerTitle()), 'owner', cfg.get('OWNER_EMAIL') || null, await hashPassword(ownerPw));
   db.run('INSERT INTO users(username,name,role,email,password_hash) VALUES(?,?,?,?,?)', mu, cfg.get('MANAGER_NAME', 'مدير المكتب'), 'manager', cfg.get('MANAGER_EMAIL') || null, await hashPassword(managerPw));
   const show = (k, pw) => (cfg.get(k) ? '(كلمة المرور المحددة في الإعدادات)' : pw);
   return {
