@@ -39,6 +39,8 @@ const MSG_TYPES = {
 const CATEGORIES = {
   general: 'مهمة', commitment: 'التزام', opportunity: 'فرصة', appointment: 'موعد', academic: 'مهمة أكاديمية',
 };
+const CHANNELS = { platform: 'عبر المنصة', whatsapp: 'واتساب', email: 'بريد إلكتروني', verbal: 'شفهي', meeting: 'اجتماع', letter: 'خطاب رسمي' };
+const IMPORTANCE = { normal: 'عادي', important: 'مهم', urgent: 'عاجل' };
 const RECURRENCES = { daily: 'يومية', weekly: 'أسبوعية', monthly: 'شهرية', yearly: 'سنوية' };
 const PROJECT_KINDS = { project: 'مشروع', initiative: 'مبادرة' };
 const APPROVAL_KINDS = {
@@ -52,12 +54,13 @@ const PERMS = {
   owner: new Set([
     'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
     'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
-    'folders.view', 'users.manage', 'projects.manage', 'item.edit',
+    'folders.view', 'users.manage', 'projects.manage', 'item.edit', 'directives.view', 'directives.manage',
   ]),
   manager: new Set([
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
     'reports.view', 'meetings.view', 'meetings.manage', 'sops.view', 'sops.manage',
     'partners.view', 'partners.manage', 'contacts.view', 'projects.manage', 'folders.view', 'users.manage',
+    'directives.view', 'directives.manage', 'approval.record',
   ]),
   member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
@@ -119,7 +122,9 @@ function effectivePerms(user) {
   return set;
 }
 
-const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'موظف' };
+// مسمى الحساب الأعلى قابل للضبط (OWNER_TITLE) دون تغيير البيانات
+const ownerTitle = () => cfg.get('OWNER_TITLE', 'مدير الشؤون التعليمية');
+const ROLE_LABELS = { get owner() { return ownerTitle(); }, manager: 'مدير المكتب', member: 'موظف' };
 // الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
 const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
 const can = (user, perm) => effectivePerms(user).has(perm);
@@ -132,6 +137,25 @@ function fmtDateAr(d) {
   if (!d) return '';
   try { return new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(d.slice(0, 10) + 'T12:00:00Z')); } catch { return d; }
 }
+// التاريخ المحلي (بتوقيت المنصة) لطابع زمني ISO
+function localDate(iso) { return iso ? todayStr(new Date(iso)) : null; }
+// الالتزام بالمواعيد: من المهام المنجزة ذات الموعد، كم أُنجز في موعده أو قبله
+function onTimeStats(fromDate, toDate, extraSql = '', params = []) {
+  const rows = all(`SELECT i.due_date, i.completed_at, i.assignee_id, i.assignee FROM items i WHERE i.kind IN ${TASK_KINDS} AND i.status='done' AND i.due_date IS NOT NULL AND i.completed_at IS NOT NULL ${extraSql}`, ...params)
+    .filter(r => { const d = localDate(r.completed_at); return d >= fromDate && d <= toDate; });
+  const onTime = rows.filter(r => localDate(r.completed_at) <= r.due_date).length;
+  return { total: rows.length, on_time: onTime, rate: rows.length ? Math.round(onTime * 100 / rows.length) : null, rows };
+}
+// ما يحتاج تدخل المدير: مهمة متعثرة، أو مهمة «مهم/عاجل» متأخرة 3 أيام فأكثر
+function needsAttention() {
+  const t = todayStr(); const limit = addDays(t, -3);
+  return all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE i.kind IN ${TASK_KINDS} AND i.${OPEN} AND (i.status='stalled' OR (i.priority IN ('important','urgent') AND i.due_date<=?))
+    ORDER BY CASE i.status WHEN 'stalled' THEN 0 ELSE 1 END, i.due_date LIMIT 100`, limit).map(i => {
+    const x = decorate(i, t);
+    x.attention_reason = i.status === 'stalled' ? 'متعثرة' : `متأخرة ${Math.round((new Date(t) - new Date(i.due_date)) / 864e5)} أيام`;
+    return x;
+  });
+}
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
 }
@@ -142,7 +166,8 @@ const OPEN = "status NOT IN ('done','cancelled')";
 const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
   i.status,i.assignee,i.next_step,i.requires_approval,i.acknowledged_at,i.converted_at,i.created_at,i.updated_at,i.closed_at,i.completed_at,i.is_demo,
   i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name, i.folder_id, i.assignee_id,
-  i.parent_task_id, i.recurrence, i.next_occurrence_id,
+  i.parent_task_id, i.recurrence, i.next_occurrence_id, i.directive_id, i.deliverable,
+  (SELECT d.ref FROM directives d WHERE d.id=i.directive_id) AS directive_ref,
   (SELECT pt.title FROM items pt WHERE pt.id=i.parent_task_id) AS parent_task_title,
   (SELECT p.kind FROM projects p WHERE p.id=i.project_id) AS project_kind,
   (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled') AS subtasks_total,
@@ -273,19 +298,23 @@ function report(period = 'week') {
     : null; // بيانات غير كافية
   // عبء العمل حسب المسؤول: المفتوحة، المتأخرة، المستحقة خلال أسبوع، والمنجزة في الفترة
   const week = addDays(t, 7);
-  r.by_person = all(`SELECT COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد') AS name, COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS user_id,
+  r.by_person = all(`SELECT COALESCE(u.name, (SELECT x.name FROM users x WHERE x.name=i.assignee LIMIT 1), NULLIF(i.assignee,''), 'غير محدد') AS name, COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS user_id,
       SUM(CASE WHEN i.${OPEN} THEN 1 ELSE 0 END) AS open,
       SUM(CASE WHEN i.${OPEN} AND i.due_date<? THEN 1 ELSE 0 END) AS overdue,
       SUM(CASE WHEN i.${OPEN} AND i.due_date BETWEEN ? AND ? THEN 1 ELSE 0 END) AS due_week,
       SUM(CASE WHEN i.status='done' AND i.completed_at>=? THEN 1 ELSE 0 END) AS completed
     FROM items i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.kind IN ${TASK_KINDS}
-    GROUP BY COALESCE(CAST(i.assignee_id AS TEXT), (SELECT 'u' || x.id FROM users x WHERE x.name=i.assignee LIMIT 1), 'n:' || COALESCE(NULLIF(i.assignee,''), 'غير محدد'))
+    GROUP BY COALESCE(CAST(COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS TEXT), 'n:' || COALESCE(NULLIF(i.assignee,''), 'غير محدد'))
     HAVING open > 0 OR completed > 0 ORDER BY overdue DESC, open DESC LIMIT 50`, t, t, week, fromIso);
+  const ot = onTimeStats(from, t);
+  r.on_time = { total: ot.total, on_time: ot.on_time, rate: ot.rate };
+  const otBy = {}; for (const x of ot.rows) { const k = x.assignee_id || `n:${x.assignee || ''}`; (otBy[k] = otBy[k] || { t: 0, o: 0 }); otBy[k].t++; if (localDate(x.completed_at) <= x.due_date) otBy[k].o++; }
+  for (const p of r.by_person) { const k = p.user_id || `n:${p.name}`; const v = otBy[k]; p.on_time_rate = v ? Math.round(v.o * 100 / v.t) : null; }
   r.completed_items = all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND status='done' AND completed_at>=? ORDER BY completed_at DESC LIMIT 50`, fromIso).map(i => decorate(i, t));
   return r;
 }
 
 module.exports = {
-  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS,
-  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS, CHANNELS, IMPORTANCE,
+  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, localDate, onTimeStats, needsAttention, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };

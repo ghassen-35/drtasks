@@ -23,6 +23,18 @@ function runScheduler({ dailyBackup } = {}) {
       N.notifyRole('manager', p);
       if (i.source === 'owner' && i.priority !== 'normal') N.notify(i.created_by, p);
     }
+    // تصعيد: ما يحتاج تدخل المدير (متعثرة، أو مهم/عاجل متأخر 3 أيام فأكثر) — تنبيه واحد لكل حالة
+    for (const i of D.needsAttention()) {
+      const p = { type: 'overdue', title: `تحتاج تدخلك: ${i.title}`, body: `${i.attention_reason} — ${i.ref}${i.assignee ? ` — ${i.assignee}` : ''}`, link: `#/item/${i.id}`, urgent: true,
+        dedupe: `attention:${i.id}:${i.status === 'stalled' ? 'stalled' : 'late'}` };
+      N.notifyRole('owner', p); N.notifyRole('manager', p);
+    }
+    // تذكير بالاجتماعات: قبلها بيوم وفي يومها
+    for (const m of all("SELECT * FROM meetings WHERE status='scheduled' AND substr(starts_at,1,10) IN (?,?)", t, tomorrow)) {
+      const when = m.starts_at.slice(0, 10) === t ? 'اليوم' : 'غدًا';
+      const p = { type: 'deadline_soon', title: `اجتماع ${when}: ${m.title}`, body: `${m.starts_at.slice(11, 16)}${m.location ? ` — ${m.location}` : ''}`, link: `#/meeting/${m.id}`, dedupe: `meeting:${m.id}:${when}` };
+      N.notifyRole('owner', p); N.notifyRole('manager', p);
+    }
     // ملخص يومي بعد السابعة صباحًا بتوقيت المنصة
     const hour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: D.TZ, hour: '2-digit', hour12: false }).format(new Date()));
     if (hour >= 7) {

@@ -284,6 +284,78 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('تكليف رجل الأعمال لا يظهر للموظفين قبل تحويله إلى مهمة', !S.canSee(load(allId), asg));
 }
 
+// ---- سجل التوجيهات: توجيه ← مهام ← نتيجة، وتسجيل قرار المدير نيابةً عنه
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status || e.message; } };
+  const { id: asId } = await S.createUser(mgr, { name: 'مساعد التوجيهات', username: 'dir.as', password: 'DirAs#2026x', must_change_password: false });
+  t('التوجيه يتطلب قناة الورود عند تسجيله من مدير المكتب', err(() => S.createDirective(mgr, { title: 'توجيه بلا قناة' })) === 400);
+  const d = S.createDirective(mgr, { title: 'إعداد خطة الاختبارات النهائية', channel: 'whatsapp', importance: 'important', section: 'personal', due_date: D.addDays(today, 10),
+    tasks: [{ title: 'جمع جداول المعلمين', assignee_id: asId }, { title: 'حجز القاعات' }] });
+  t('التوجيه يُنشأ برقم مرجعي ومهامه التنفيذية مرتبطة به', /^TW-/.test(d.ref) && d.tasks_total === 2 && d.state === 'in_progress' && d.channel_label === 'واتساب');
+  const tasks = all('SELECT id FROM items WHERE directive_id=?', d.id);
+  t('مهام التوجيه ترث أهميته وموعده', tasks.every(x => { const i = S.getItem(x.id); return i.priority === 'important' && i.due_date === D.addDays(today, 10); }));
+  t('لا يُغلق التوجيه دون تسجيل النتيجة', err(() => S.updateDirective(mgr, d.id, { status: 'done' })) === 400);
+  const n0 = get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title LIKE 'اكتملت مهام التوجيه%'", mgr.id).c;
+  for (const x of tasks) S.updateItem(mgr, x.id, { status: 'done' });
+  const r = S.directiveRow(get('SELECT * FROM directives WHERE id=?', d.id));
+  t('اكتمال مهام التوجيه يجعله «بانتظار تسجيل النتيجة» وينبّه مرة واحدة', r.state === 'ready' && r.progress === 100
+    && get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title LIKE 'اكتملت مهام التوجيه%'", mgr.id).c === n0 + 1);
+  const closed = S.updateDirective(mgr, d.id, { status: 'done', outcome: 'اعتُمدت الخطة ووُزعت على المدارس' });
+  t('إغلاق التوجيه بنتيجة موثقة', closed.state === 'done' && closed.outcome.includes('اعتُمدت'));
+  t('الموظف لا يدير التوجيهات', err(() => S.createDirective(get(`SELECT id,name,${D.roleSql()} AS role,grants FROM users WHERE id=?`, asId), { title: 'x', channel: 'verbal' })) === 403);
+  // قرار المدير يسجله مدير المكتب نيابةً عنه
+  const tk = S.createTask(mgr, { title: 'مهمة تتطلب قرار المدير', section: 'personal' });
+  const aid = S.requestApproval(mgr, tk.id, { kind: 'approval', title: 'اعتماد الخطة', blocking: true });
+  t('تسجيل القرار نيابةً يتطلب ذكر القناة', err(() => S.decide(mgr, aid, { decision: 'approved', on_behalf: true })) === 400);
+  S.decide(mgr, aid, { decision: 'approved', on_behalf: true, channel: 'verbal' });
+  const ap = get('SELECT * FROM approvals WHERE id=?', aid);
+  t('القرار يُسجَّل باسم المدير مع القناة ومن سجّله', ap.status === 'approved' && ap.decided_by === owner.id && ap.decided_channel === 'verbal' && ap.recorded_by === mgr.id
+    && all('SELECT body FROM messages WHERE item_id=?', tk.id).some(m => m.body.includes('ورد شفهي')));
+  t('مدير المكتب لا يقرر بنفسه دون «نيابةً»', err(() => S.decide(mgr, S.requestApproval(mgr, tk.id, { kind: 'approval', title: 'آخر' }), { decision: 'approved' })) === 403);
+}
+
+// ---- لوحة القيادة: الالتزام بالمواعيد، ما يحتاج تدخل المدير، التصعيد وتذكير الاجتماعات
+{
+  const a = S.createTask(mgr, { title: 'أُنجزت في موعدها', section: 'personal', due_date: today });
+  S.updateItem(mgr, a.id, { status: 'done' });
+  const b = S.createTask(mgr, { title: 'أُنجزت بعد موعدها', section: 'personal', due_date: D.addDays(today, -2) });
+  S.updateItem(mgr, b.id, { status: 'done' });
+  const ot = D.onTimeStats(D.addDays(today, -1), today, 'AND i.id IN (?,?)', [a.id, b.id]);
+  t('نسبة الالتزام بالمواعيد تحسب المنجز في موعده', ot.total === 2 && ot.on_time === 1 && ot.rate === 50);
+  const late = S.createTask(mgr, { title: 'مهمة مهمة متأخرة 4 أيام', section: 'personal', priority: 'important', due_date: D.addDays(today, -4) });
+  const late1 = S.createTask(mgr, { title: 'مهمة مهمة متأخرة يومًا', section: 'personal', priority: 'important', due_date: D.addDays(today, -1) });
+  const normalLate = S.createTask(mgr, { title: 'عادية متأخرة كثيرًا', section: 'personal', due_date: D.addDays(today, -9) });
+  const att = D.needsAttention().map(i => i.id);
+  t('«تحتاج تدخل المدير»: المهم المتأخر 3 أيام فأكثر فقط', att.includes(late.id) && !att.includes(late1.id) && !att.includes(normalLate.id));
+  const n0 = get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title LIKE 'تحتاج تدخلك:%'", owner.id).c;
+  scheduler(); scheduler();
+  const n1 = get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title=?", owner.id, 'تحتاج تدخلك: مهمة مهمة متأخرة 4 أيام').c;
+  t('التصعيد يصل المدير مرة واحدة لكل حالة', n1 === 1 && get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND title LIKE 'تحتاج تدخلك:%'", owner.id).c > n0);
+  const m = run("INSERT INTO meetings(title,starts_at,status) VALUES('اجتماع مجلس المدارس',?, 'scheduled')", D.addDays(today, 1) + 'T09:00').id;
+  scheduler(); scheduler();
+  t('تذكير الاجتماع قبله بيوم مرة واحدة', get("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND link=?", mgr.id, `#/meeting/${m}`).c === 1);
+  const r = D.report('week');
+  t('التقرير يتضمن الالتزام بالمواعيد للمكتب ولكل مسؤول', r.on_time && r.on_time.total >= 2 && r.by_person.some(p => p.on_time_rate !== undefined));
+}
+
+// ---- الإجراء التشغيلي كقائمة تحقق، والمخرج المطلوب
+{
+  const sop = run("INSERT INTO sops(name,steps) VALUES('إجراء إعداد الاختبار', ?)", '1. تجهيز الأسئلة\n2. مراجعة الأسئلة\n3. طباعة النماذج').id;
+  const tk = S.createTask(mgr, { title: 'إعداد اختبار الفصل', section: 'personal', sop_id: sop, deliverable: 'نموذج اختبار معتمد' });
+  t('المخرج المطلوب يُحفظ مع المهمة', S.getItem(tk.id).deliverable === 'نموذج اختبار معتمد');
+  const r1 = S.applySop(mgr, tk.id), r2 = S.applySop(mgr, tk.id);
+  t('خطوات الإجراء تصبح مهامًا فرعية مرة واحدة', r1.added === 3 && r2.added === 0 && S.subtasksOf(tk.id).map(x => x.title).join('|') === 'تجهيز الأسئلة|مراجعة الأسئلة|طباعة النماذج');
+}
+
+// ---- عبء العمل: الحساب والاسم المكتوب للشخص نفسه صف واحد
+{
+  S.createTask(mgr, { title: 'باسم مكتوب', section: 'family', assignee: mgr.name });
+  run('UPDATE items SET assignee_id=NULL, assignee=? WHERE title=?', mgr.name, 'باسم مكتوب');
+  S.createTask(mgr, { title: 'بالحساب', section: 'family', assignee_id: mgr.id });
+  const rows = D.report('week').by_person.filter(p => p.name === mgr.name);
+  t('الحساب والاسم المكتوب لنفس الشخص يظهران صفًا واحدًا', rows.length === 1);
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

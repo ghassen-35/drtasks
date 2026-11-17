@@ -52,6 +52,7 @@ const dueChip = (i) => !i.due_date ? '' : `<span class="chip ${i.is_overdue ? 'o
 const kindLabel = (i) => i.kind === 'assignment' ? 'تكليف' : i.kind === 'note' ? (i.msg_type_label || 'ملاحظة') : 'مهمة';
 const sectionName = (k) => (state.meta.sections.find(s => s.key === k) || {}).name || '—';
 const demoChip = (x) => x.is_demo ? '<span class="chip demo">بيانات تجريبية</span>' : '';
+const OT = () => (state.meta && state.meta.owner_title) || 'مدير الشؤون التعليمية'; // مسمى الحساب الأعلى
 const isOwner = () => state.me.role === 'owner';
 const isManager = () => state.me.role === 'manager';
 const isMember = () => state.me.role === 'member';
@@ -88,10 +89,10 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
 const countTxt = (n, one, two, many) => n === 0 ? 'لا نتائج' : n === 1 ? `${one} واحدة` : n === 2 ? two : `${n} ${n <= 10 ? many : one}`;
 const listOrEmpty = (items, fn, empty = 'لا توجد عناصر') => items.length ? `<div class="list">${items.map(fn).join('')}</div>` : `<div class="empty">${empty}</div>`;
 
-function toast(msg, kind = '', onClick) {
-  if (kind !== 'urgent') $$('#toasts .toast:not(.urgent):not(.more)').forEach(t => t.remove()); // تنبيه واحد في كل مرة
-  // التنبيهات العاجلة: اثنان على الأكثر، والباقي يُجمع في تنبيه واحد يفتح الإشعارات
-  if (kind === 'urgent' && $$('#toasts .toast.urgent').length >= 2) {
+// نوعان: نتيجة إجراء المستخدم (تظهر دائمًا وتحل محل سابقتها)، والإشعارات الواردة (واحد ظاهر، والبقية تُجمع في «تنبيهات أخرى»)
+function toast(msg, kind = '', onClick, { notif = false } = {}) {
+  if (!notif) $$('#toasts .toast.act').forEach(t => t.remove());
+  if (notif && $$('#toasts .toast.notif').length >= 1) {
     let more = $('#toasts .toast.more');
     if (!more) { more = document.createElement('div'); more.className = 'toast more'; more.dataset.n = '0'; more.setAttribute('role', 'status'); more.onclick = () => { more.remove(); location.hash = '#/notifications'; }; $('#toasts').appendChild(more); }
     more.dataset.n = String(Number(more.dataset.n) + 1);
@@ -99,9 +100,9 @@ function toast(msg, kind = '', onClick) {
     clearTimeout(more._t); more._t = setTimeout(() => more.remove(), 9000);
     return;
   }
-  const el = document.createElement('div'); el.className = `toast ${kind}`; el.textContent = msg; el.setAttribute('role', 'status');
+  const el = document.createElement('div'); el.className = `toast ${kind} ${notif ? 'notif' : 'act'}`; el.textContent = msg; el.setAttribute('role', 'status');
   el.onclick = () => { el.remove(); onClick && onClick(); };
-  $('#toasts').appendChild(el); setTimeout(() => el.remove(), kind === 'urgent' ? 9000 : 4500);
+  $('#toasts').appendChild(el); setTimeout(() => el.remove(), kind === 'urgent' ? 9000 : notif ? 6000 : 4500);
 }
 const showErr = (e) => toast(e.message || String(e), 'err');
 
@@ -282,24 +283,30 @@ function navItems() {
     { h: '#/sops', i: 'book', t: 'الإجراءات التشغيلية' },
     { h: '#/partners', i: 'handshake', t: 'العلاقات والشراكات' },
     { h: '#/reports', i: 'chart', t: 'التقارير والإنجازات' },
+    { h: '#/files', i: 'folder', t: 'الأرشيف والملفات' },
   ];
   if (isMember()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
     { h: '#/tasks', i: 'list', t: state.me.grants && state.me.grants.scope !== 'own' ? 'المهام' : 'مهامي' },
+    { h: '#/files', i: 'folder', t: 'الملفات' },
     ...common.filter(n => n.h === '#/sops' || can({ '#/meetings': 'meetings.view', '#/partners': 'partners.view', '#/reports': 'reports.view' }[n.h])),
   ];
   if (isOwner()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
+    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
     { h: '#/my', i: 'list', t: 'طلباتي وتكليفاتي' },
     { h: '#/decisions', i: 'gavel', t: 'بانتظار قراري', n: c.pending_decisions },
+    { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
     ...common,
   ];
   return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/inbox', i: 'inbox', t: 'الوارد من رجل الأعمال', n: c.inbox_pending },
+    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
+    { h: '#/inbox', i: 'inbox', t: 'الوارد من ' + OT() + '', n: c.inbox_pending },
     { h: '#/dashboard', i: 'alert', t: 'لوحة المتابعة' },
     { h: '#/tasks', i: 'list', t: 'كل المهام' },
     { h: '#/approvals', i: 'gavel', t: 'طلبات الاعتماد', n: c.pending_decisions, o: true },
+    { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
     ...common,
   ];
 }
@@ -360,12 +367,16 @@ const routes = [
   [/^#\/section\/(\w+)$/, viewSection],
   [/^#\/item\/(\d+)$/, viewItem],
   [/^#\/folder\/(\d+)$/, viewFolder],
+  [/^#\/directives$/, viewDirectives],
+  [/^#\/directive\/(\d+)$/, viewDirective],
   [/^#\/my$/, viewMy],
   [/^#\/decisions$/, viewDecisions],
   [/^#\/approvals$/, viewDecisions],
   [/^#\/inbox$/, viewInbox],
   [/^#\/dashboard$/, viewDashboard],
-  [/^#\/tasks$/, viewTasks],
+  [/^#\/tasks(?:\?(.*))?$/, viewTasks],
+  [/^#\/command$/, viewCommand],
+  [/^#\/files$/, viewFiles],
   [/^#\/meetings$/, viewMeetings],
   [/^#\/meeting\/(\d+)$/, viewMeeting],
   [/^#\/sops$/, viewSops],
@@ -381,6 +392,8 @@ async function route() {
   if (!state.me) return;
   const h = location.hash || '#/';
   const main = $('#main'); if (!main) return;
+  // الانتقال إلى صفحة أخرى (أو زر الرجوع في الجوال) يغلق النوافذ المفتوحة فلا تبقى نافذة مخفية خلف أخرى
+  $$('.modal-bg [data-close]').forEach(x => x.click());
   renderNav();
   for (const [re, fn] of routes) {
     const m = h.match(re);
@@ -465,7 +478,7 @@ async function systemNotify(n) {
 let es = null, ws = null, wsWanted = false, wsTries = 0, wsPing = null;
 function onNotification(n) {
   systemNotify(n);
-  toast(n.title, n.urgent ? 'urgent' : '', () => { if (n.link) location.hash = n.link.replace(/^#/, ''); });
+  toast(n.title, n.urgent ? 'urgent' : '', () => { if (n.link) location.hash = n.link.replace(/^#/, ''); }, { notif: true });
   refreshCounts();
 }
 function connectWs() {
@@ -577,9 +590,10 @@ async function viewHome(main) {
       return;
     }
     const s = h.summary;
-    let roleHtml = '';
+    const cmdLink = `<a class="cmd-link section-gap" href="#/command">${I('chart')}<span><b>لوحة القيادة</b><small>المؤشرات، ما يحتاج تدخلك، توزيع العمل، والتوجيهات</small></span>${I('back', 'chev')}</a>`;
+    let roleHtml = cmdLink;
     if (isOwner()) {
-      roleHtml = `
+      roleHtml += `
       <div class="card section-gap"><div class="card-h"><h2>ملخص المكتب</h2></div>
         <div class="kpis">
           <a class="kpi blue" href="#/my"><b>${s.open_assignments}</b><span>تكليفاتي المفتوحة</span></a>
@@ -606,8 +620,8 @@ async function viewHome(main) {
     } else {
       const inbox = await GET('/api/items?kind=inbox');
       const pendingInbox = inbox.filter(inboxPending);
-      roleHtml = `
-      <div class="card section-gap"><div class="card-h">${I('inbox')}<h2>الوارد من رجل الأعمال</h2><span class="chip ${pendingInbox.length ? 'p-urgent' : ''}">${pendingInbox.length} يحتاج إجراء</span><span class="spacer"></span><a class="btn sm" href="#/inbox">صندوق الوارد</a></div>
+      roleHtml += `
+      <div class="card section-gap"><div class="card-h">${I('inbox')}<h2>الوارد من ${OT()}</h2><span class="chip ${pendingInbox.length ? 'p-urgent' : ''}">${pendingInbox.length} يحتاج إجراء</span><span class="spacer"></span><a class="btn sm" href="#/inbox">صندوق الوارد</a></div>
         ${listOrEmpty(pendingInbox.slice(0, 5), i => itemRow(i, { actions: inboxActions(i) }), 'لا يوجد وارد جديد')}
       </div>
       <div class="cols section-gap">
@@ -616,7 +630,7 @@ async function viewHome(main) {
             <a class="kpi blue" href="#/tasks"><b>${s.open}</b><span>مهام مفتوحة</span></a>
             <a class="kpi red" href="#/dashboard"><b>${s.overdue}</b><span>متأخرة</span></a>
             <a class="kpi red" href="#/dashboard"><b>${s.urgent}</b><span>عاجلة</span></a>
-            <a class="kpi orange" href="#/approvals"><b>${s.pending_decisions}</b><span>تنتظر قرار رجل الأعمال</span></a>
+            <a class="kpi orange" href="#/approvals"><b>${s.pending_decisions}</b><span>تنتظر قرار ${OT()}</span></a>
           </div></div>
         <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2></div>${listOrEmpty(h.meetings, meetingRow, 'لا توجد اجتماعات قادمة')}</div>
       </div>`;
@@ -659,7 +673,7 @@ async function viewInbox(main) {
   async function load() {
     const items = await GET('/api/items?kind=inbox');
     const shown = tab === 'pending' ? items.filter(inboxPending) : items;
-    main.innerHTML = `<div class="page-h">${I('inbox')}<h1>الوارد من رجل الأعمال</h1></div>
+    main.innerHTML = `<div class="page-h">${I('inbox')}<h1>الوارد من ${OT()}</h1></div>
       <div class="tabs"><button data-tab="pending" class="${tab === 'pending' ? 'active' : ''}">يحتاج إجراء (${items.filter(inboxPending).length})</button><button data-tab="all" class="${tab === 'all' ? 'active' : ''}">الكل (${items.length})</button></div>
       ${listOrEmpty(shown, i => itemRow(i, { actions: inboxActions(i), showUpdated: true }), 'لا يوجد وارد يحتاج إجراء')}`;
     $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
@@ -712,13 +726,14 @@ function modalPostpone(i, after) {
     body: `<p class="small muted">الموعد الحالي: ${esc(fmtDue(i))}</p>
       <div class="btn-row" style="margin:8px 0 12px">${opts.map(([l, d]) => `<button type="button" class="btn" data-pp="${d}">${l}${fmtDate(d) !== l ? ` <span class="small muted">(${esc(fmtDate(d))})</span>` : ''}</button>`).join('')}</div>
       ${field('أو اختر تاريخًا', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
-      ${field('سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
+      ${field(i.is_overdue ? 'سبب التأخير * (يُحفظ في سجل المهمة)' : 'سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
     init: (form) => $$('[data-pp]', form).forEach(b => b.onclick = async () => { try { await save(b.dataset.pp, form.elements.reason.value); m.close(); } catch (e) { showErr(e); } }),
     onSubmit: async (d) => { if (!d.due_date) throw new Error('اختر التاريخ'); await save(d.due_date, d.reason); },
   });
   async function save(date, reason) {
+    if (i.is_overdue && !(reason || '').trim()) throw new Error('المهمة متأخرة: اكتب سبب التأخير قبل التأجيل');
     await api('PATCH', `/api/items/${i.id}`, { due_date: date });
-    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `تأجيل الموعد إلى ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
+    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `${i.is_overdue ? 'سبب التأخير' : 'تأجيل الموعد'} — الموعد الجديد ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
     toast(`أُجّل الموعد إلى ${fmtDate(date)}`, 'ok'); after && after();
   }
 }
@@ -751,6 +766,11 @@ const STALL_REASONS = ['طرف خارجي لم يرد', 'نقص معلومات �
 async function changeStatus(i, status, after) {
   const done = async (body) => { await api('PATCH', `/api/items/${i.id}`, body); toast('تم تحديث الحالة', 'ok'); after && after(); };
   if (status === 'stalled') return modalStalled(i, done);
+  if (status === 'in_progress' && ['done', 'cancelled'].includes(i.status)) return openModal({
+    title: i.status === 'done' ? 'إعادة المهمة للتعديل' : 'إعادة فتح المهمة', submit: 'إعادة فتح',
+    body: field('ما المطلوب تعديله أو سبب إعادة الفتح؟ *', '<textarea name="note" required style="min-height:70px"></textarea>') + '<p class="small muted">يصل السبب إلى المسؤول ويُحفظ في سجل المهمة.</p>',
+    onSubmit: async (d) => { if (!(d.note || '').trim()) throw new Error('اكتب السبب'); await done({ status: 'in_progress', status_note: d.note.trim() }); },
+  });
   if (status === 'done') return modalDone(i, done, after);
   if (status === 'cancelled' && !confirm('تأكيد إلغاء المهمة؟')) return;
   try { await done({ status }); } catch (e) { showErr(e); }
@@ -776,6 +796,7 @@ function modalDone(i, done) {
     body: `${open > 0 ? `<div class="warn-box" style="margin-bottom:10px">في هذه المهمة ${open === 1 ? 'مهمة فرعية مفتوحة' : `${open} مهام فرعية مفتوحة`}.</div>
         <div class="radios" style="margin-bottom:10px"><label class="check"><input type="radio" name="subs" value="all" checked> إنجازها معها</label>
         <label class="check"><input type="radio" name="subs" value="keep"> إبقاؤها مفتوحة</label></div>` : ''}
+      ${i.deliverable ? `<div class="info-box" style="margin-bottom:10px"><b>المخرج المطلوب:</b> ${esc(i.deliverable)} — أرفقه أو صِف ما سُلّم.</div>` : ''}
       ${field('ما الذي أُنجز؟ (اختياري)', '<textarea name="body" style="min-height:70px" placeholder="ملخص قصير للنتيجة يصل إلى مدير المكتب"></textarea>')}
       ${field('مرفقات (اختياري)', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
@@ -813,9 +834,13 @@ function bindFilters(root, f, reload) {
 }
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
-async function viewTasks(main) {
+async function viewTasks(main, query) {
   const f = { scope: 'open' };
-  main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
+  // فلاتر قادمة من لوحة القيادة (مثل #/tasks?scope=overdue&priority=urgent)
+  const from = new URLSearchParams(query || '');
+  for (const k of ['scope', 'status', 'priority', 'section', 'assignee_id', 'assignee', 'done_since', 'q', 'category']) if (from.has(k)) f[k] = from.get(k);
+  const ctxLabel = from.get('label');
+  main.innerHTML = `${ctxLabel ? `<div class="btn-row crumbs"><a class="btn sm ghost" href="#/command">${I('back')} لوحة القيادة</a><b>${esc(ctxLabel)}</b></div>` : ''}<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
   async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${countTxt(items.length, 'نتيجة', 'نتيجتان', 'نتائج')}</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
@@ -880,6 +905,190 @@ async function viewSection(main, key) {
   await load(); return { refresh: load };
 }
 
+// ===== الأرشيف: كل الملفات المرتبطة بالمهام والاجتماعات والإجراءات، مع البحث =====
+async function viewFiles(main) {
+  let q = '';
+  async function load() {
+    const files = await GET('/api/files?' + qs({ q }));
+    const where = (f) => f.item_id ? `<a href="#/item/${f.item_id}">${esc(f.item_ref || '')} — ${esc(f.item_title || '')}</a>` : f.meeting_id ? `<a href="#/meeting/${f.meeting_id}">اجتماع: ${esc(f.meeting_title || '')}</a>` : `<a href="#/sop/${f.sop_id}">إجراء: ${esc(f.sop_name || '')}</a>`;
+    $('#fl', main).innerHTML = `<p class="small muted">${countTxt(files.length, 'ملف', 'ملفان', 'ملفات')}</p>` + listOrEmpty(files, f => `<div class="row"><div class="main">
+      <a class="title" href="/api/files/${f.id}" target="_blank" rel="noopener">${I('file')} ${esc(f.original_name)}</a>
+      <div class="meta"><span class="txt">${where(f)}</span>${f.section_name ? `<span class="chip">${esc(f.section_name)}</span>` : ''}<span class="txt">${esc(f.uploader_name || '')} • ${fmtTs(f.created_at)}</span></div></div></div>`, q ? 'لا توجد ملفات مطابقة' : 'لا توجد ملفات بعد');
+  }
+  main.innerHTML = `<div class="page-h">${I('folder')}<h1>الأرشيف والملفات</h1></div>
+    <p class="small muted">كل مرفقات المهام والاجتماعات والإجراءات التي يحق لك الاطلاع عليها، مع المكان الذي تنتمي إليه.</p>
+    <div class="filters-top" style="margin-bottom:10px"><input type="search" id="fq" placeholder="بحث باسم الملف أو المهمة أو الاجتماع" aria-label="بحث"></div><div id="fl"></div>`;
+  let t; $('#fq', main).oninput = (e) => { clearTimeout(t); t = setTimeout(() => { q = e.target.value; load(); }, 300); };
+  await load(); return { refresh: load };
+}
+
+// ===== لوحة القيادة: ماذا لدينا؟ من المسؤول؟ ماذا أُنجز وتأخر؟ ما الذي يحتاج تدخل المدير؟ =====
+async function viewCommand(main) {
+  async function load() {
+    const d = await GET('/api/command'); const k = d.kpis;
+    const link = (params, label) => `#/tasks?${qs({ ...params, label })}`;
+    const kpi = (tone, n, label, href, sub = '') => `<a class="kpi ${tone}" href="${href}"><b>${n ?? '—'}</b><span>${label}${sub ? `<small class="muted"> ${sub}</small>` : ''}</span></a>`;
+    const trend = k.on_time_rate == null || k.on_time_prev == null ? '' : k.on_time_rate > k.on_time_prev ? `↑ من ${k.on_time_prev}%` : k.on_time_rate < k.on_time_prev ? `↓ من ${k.on_time_prev}%` : 'كالشهر السابق';
+    const attText = `ما يحتاج تدخل ${OT()} (${d.attention.length}):\n` + d.attention.map((i, n) => `${n + 1}. ${i.title} — ${i.attention_reason}${i.assignee ? ` (${i.assignee})` : ''}`).join('\n');
+    main.innerHTML = `<div class="page-h">${I('chart')}<h1>لوحة القيادة</h1><span class="spacer"></span><span class="small muted">${esc(fmtDate(d.today))}</span></div>
+      <div class="kpis cmd">
+        ${kpi('blue', k.open, 'مهام مفتوحة', link({ scope: 'open' }, 'المهام المفتوحة'))}
+        ${kpi('red', k.overdue, 'متأخرة', link({ scope: 'overdue' }, 'المهام المتأخرة'))}
+        ${kpi('red', k.urgent, 'عاجلة', link({ scope: 'open', priority: 'urgent' }, 'المهام العاجلة'))}
+        ${kpi('red', k.stalled, 'متعثرة', link({ scope: 'open', status: 'stalled' }, 'المهام المتعثرة'))}
+        ${kpi('orange', k.awaiting_approval, `تنتظر قرار ${OT()}`, isOwner() ? '#/decisions' : '#/approvals')}
+        ${kpi('green', k.done_week, 'أُنجزت هذا الأسبوع', link({ scope: 'closed', status: 'done', done_since: d.week_start }, 'المنجزة خلال 7 أيام'), `• ${k.done_month} خلال 30 يومًا`)}
+        ${kpi(k.on_time_rate == null ? '' : k.on_time_rate >= 80 ? 'green' : k.on_time_rate >= 60 ? 'orange' : 'red', k.on_time_rate == null ? '—' : k.on_time_rate + '%', 'الالتزام بالمواعيد (30 يومًا)', '#/reports', k.on_time_total ? `${trend}` : 'لا بيانات كافية')}
+        ${kpi('orange', k.directives_open + k.decisions_open, 'توجيهات وقرارات لم تُنفَّذ', '#/directives', k.directives_at_risk ? `• ${k.directives_at_risk} متأخر` : '')}
+        ${kpi('', k.meetings_week, 'اجتماعات خلال 7 أيام', '#/meetings')}
+      </div>
+      <div class="cols section-gap">
+        <div class="card ${d.attention.length ? 'attn' : ''}"><div class="card-h">${I('alert')}<h2>تحتاج تدخل ${esc(OT())}</h2><span class="chip ${d.attention.length ? 'p-urgent' : ''}">${d.attention.length}</span><span class="spacer"></span>
+            ${d.attention.length && isManager() ? shareLinks(attText, `ما يحتاج تدخل ${OT()}`) : ''}</div>
+          <p class="small muted">مهام متعثرة، أو مهمة/عاجلة متأخرة 3 أيام فأكثر.</p>
+          ${listOrEmpty(d.attention.slice(0, 8), i => `<a class="row p-urgent" href="#/item/${i.id}"><div class="main"><span class="title">${esc(i.title)}</span>
+            <div class="meta"><span class="chip overdue">${esc(i.attention_reason)}</span>${i.assignee ? `<span class="txt">${esc(i.assignee)}</span>` : ''}<span class="txt">${esc(i.section_name || '')}</span></div></div></a>`, 'لا شيء يحتاج تدخلك الآن 👍')}</div>
+        <div class="card"><div class="card-h">${I('gavel')}<h2>تنتظر القرار</h2><span class="chip">${d.approvals.length}</span><span class="spacer"></span><a class="btn sm" href="${isOwner() ? '#/decisions' : '#/approvals'}">الكل</a></div>
+          ${listOrEmpty(d.approvals.slice(0, 6), a => `<a class="row ${a.blocking ? 'p-urgent' : 'p-important'}" href="#/item/${a.item_id}"><div class="main"><span class="title">${esc(a.title)}</span>
+            <div class="meta"><span class="chip st-waiting_approval">${esc(a.kind_label)}</span>${a.blocking ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}<span class="txt">منذ ${esc(fmtTs(a.requested_at).replace('منذ ', ''))}</span></div></div></a>`, 'لا توجد طلبات معلقة')}</div>
+        <div class="card"><div class="card-h">${I('users')}<h2>توزيع العمل والالتزام</h2><span class="spacer"></span><a class="btn sm" href="#/reports">التقارير</a></div>
+          ${d.workload.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>أُنجزت (أسبوع)</th><th>في الموعد</th></tr></thead><tbody>
+            ${d.workload.map(p => { const ln = link(p.user_id ? { scope: 'open', assignee_id: p.user_id } : { scope: 'open', assignee: p.name }, `مهام ${p.name}`);
+              return `<tr><td><a href="${ln}">${esc(p.name)}</a></td><td><a href="${ln}">${p.open}</a></td><td class="${p.overdue ? 'late' : ''}">${p.overdue ? `<a href="${link(p.user_id ? { scope: 'overdue', assignee_id: p.user_id } : { scope: 'overdue', assignee: p.name }, `متأخرات ${p.name}`)}">${p.overdue}</a>` : 0}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`; }).join('')}
+            </tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
+        <div class="card"><div class="card-h">${I('flag')}<h2>التوجيهات الجارية</h2><span class="spacer"></span><a class="btn sm" href="#/directives">السجل</a></div>
+          ${d.directives_ready.length ? `<div class="info-box" style="margin-bottom:8px">${d.directives_ready.length} ${d.directives_ready.length === 1 ? 'توجيه اكتملت مهامه' : 'توجيهات اكتملت مهامها'} — تحتاج تسجيل النتيجة.</div>` : ''}
+          ${listOrEmpty(d.directives, directiveRowHtml, 'لا توجد توجيهات جارية')}</div>
+        <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2><span class="spacer"></span><a class="btn sm" href="#/meetings">الكل</a></div>
+          ${listOrEmpty(d.meetings, meetingRow, 'لا توجد اجتماعات قادمة')}</div>
+      </div>`;
+  }
+  await load(); return { refresh: load };
+}
+
+// ===== المشاركة مع المدير خارج المنصة (واتساب / بريد) =====
+const shareLinks = (text, subject = '') => `<a class="btn sm" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(text)}" title="إرسال عبر واتساب">${I('send')} واتساب</a>
+  <a class="btn sm" href="mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}" title="إرسال بالبريد">${I('note')} بريد</a>`;
+const channelSeg = (sel, name = 'channel', skipPlatform = true) => `<div class="seg">${Object.entries(state.meta.channels).filter(([k]) => !skipPlatform || k !== 'platform').map(([k, v]) => `<label><input type="radio" name="${name}" value="${k}" ${sel === k ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>`;
+
+// تسجيل قرار المدير نيابةً عنه (وصل بالواتس أو البريد أو شفهيًا)
+function modalProxyDecision(ap, after) {
+  const D = { approved: 'اعتماد', changes_requested: 'طلب تعديل', rejected: 'رفض', ...(ap.options.length ? { chosen: 'اختيار بديل' } : {}), ...(ap.kind === 'inquiry' ? { answered: 'رد على الاستفسار' } : {}) };
+  openModal({
+    title: `تسجيل قرار ${OT()}`, submit: 'تسجيل القرار',
+    body: `<p class="small muted">«${esc(ap.title)}» — يُسجَّل القرار باسم ${esc(OT())} مع قناة وروده واسمك كمسجِّل.</p>
+      ${field('القرار *', `<div class="seg">${Object.entries(D).map(([k, v], n) => `<label><input type="radio" name="decision" value="${k}" ${n ? '' : 'checked'}><span>${v}</span></label>`).join('')}</div>`)}
+      ${ap.options.length ? field('البديل المختار', `<select name="option_index">${ap.options.map((o, k) => opt(k, o)).join('')}</select>`) : ''}
+      ${field('كيف وصل القرار؟ *', channelSeg('whatsapp'))}
+      ${field('نص القرار أو الملاحظة (مطلوبة عند الرفض أو طلب التعديل)', '<textarea name="note" style="min-height:70px"></textarea>')}`,
+    onSubmit: async (d) => {
+      await POST(`/api/approvals/${ap.id}/decide`, { decision: d.decision, note: d.note, option_index: d.option_index, channel: d.channel, on_behalf: true });
+      toast('سُجّل القرار', 'ok'); after && after();
+    },
+  });
+}
+
+// ===== التوجيهات والقرارات: توجيه ← مهام ← متابعة ← نتيجة =====
+const dirStateTone = (st) => ({ pending: 'st-new', in_progress: 'st-in_progress', at_risk: 'overdue', ready: 'st-waiting_approval', done: 'st-done', cancelled: 'st-cancelled' })[st] || '';
+const progressBar = (p) => `<div class="progress" role="progressbar" aria-valuenow="${p}" aria-valuemax="100"><span style="width:${p}%"></span></div>`;
+function directiveRowHtml(d) {
+  return `<div class="row p-${d.importance === 'urgent' ? 'urgent' : d.importance === 'important' ? 'important' : 'normal'} ${d.state === 'done' ? 'done' : ''}"><div class="main">
+    <a class="title" href="#/directive/${d.id}">${esc(d.title)}</a>
+    <div class="meta"><span class="chip ${dirStateTone(d.state)}">${esc(d.state_label)}</span>${d.importance !== 'normal' ? `<span class="chip p-${d.importance}">${esc(d.importance_label)}</span>` : ''}
+      ${d.due_date ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.due_date))}${d.is_overdue ? ' — متأخر' : ''}</span>` : ''}
+      ${d.tasks_total ? `<span class="chip">${I('list')}${d.tasks_done}/${d.tasks_total} مهام</span>` : ''}${d.tasks_overdue ? `<span class="chip overdue">${d.tasks_overdue} متأخرة</span>` : ''}
+      ${d.channel_label ? `<span class="txt">${esc(d.channel_label)}</span>` : ''}<span class="txt ltr">${esc(d.ref)}</span>${demoChip(d)}</div>
+    ${d.tasks_total && d.state !== 'done' ? progressBar(d.progress) : ''}</div></div>`;
+}
+async function viewDirectives(main) {
+  let tab = 'open'; let q = '';
+  async function load() {
+    const [list, reg] = await Promise.all([tab === 'register' ? [] : GET('/api/directives?' + qs({ status: tab === 'open' ? 'open' : '', q })), tab === 'register' ? GET('/api/register') : null]);
+    const closed = tab === 'closed' ? list.filter(d => d.status !== 'open') : list;
+    main.innerHTML = `<div class="page-h">${I('flag')}<h1>التوجيهات والقرارات</h1><span class="spacer"></span>${can('directives.manage') ? `<button class="btn primary" id="addDir">${I('plus')} توجيه جديد</button>` : ''}</div>
+      <p class="small muted">كل توجيه من ${esc(OT())} — مهما كانت قناة وروده — يُسجَّل هنا ويتحول إلى مهام تنفيذية، ثم يُغلق بنتيجة موثقة. وقرارات الاجتماعات تظهر في «لم يتحول إلى نتيجة».</p>
+      <div class="tabs"><button data-tab="open" class="${tab === 'open' ? 'active' : ''}">المفتوحة</button><button data-tab="register" class="${tab === 'register' ? 'active' : ''}">لم يتحول إلى نتيجة بعد</button><button data-tab="closed" class="${tab === 'closed' ? 'active' : ''}">المنفّذة والملغاة</button></div>
+      ${tab !== 'register' ? `<div class="filters-top" style="margin-bottom:10px"><input type="search" id="dq" placeholder="بحث في التوجيهات" value="${esc(q)}" aria-label="بحث"></div>` : ''}
+      <div id="dl"></div>`;
+    const el = $('#dl', main);
+    if (tab === 'register') {
+      el.innerHTML = `<div class="card"><div class="card-h"><h2>توجيهات مفتوحة</h2><span class="chip">${reg.directives.length}</span></div>${listOrEmpty(reg.directives, directiveRowHtml, 'لا توجد')}</div>
+        <div class="card"><div class="card-h"><h2>قرارات اجتماعات لم تُنفَّذ</h2><span class="chip">${reg.decisions.length}</span></div>
+        ${listOrEmpty(reg.decisions, d => `<div class="row ${d.is_overdue ? 'p-urgent' : ''}"><div class="main"><span class="title">${esc(d.text)}</span><div class="meta">
+          ${d.unassigned ? '<span class="chip overdue">لم يتحول إلى مهمة</span>' : `<span class="chip st-in_progress">${esc(state.meta.statuses[d.task_status] || 'قيد التنفيذ')}</span>`}
+          ${d.task_ref ? `<a class="chip kind" href="#/item/${d.task_id}">${esc(d.task_ref)}</a>` : ''}${(d.task_due || d.due_date) ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.task_due || d.due_date))}</span>` : ''}
+          ${d.responsible ? `<span class="txt">المسؤول: ${esc(d.responsible)}</span>` : ''}<a class="txt" href="#/meeting/${d.meeting_id}">${esc(d.meeting_title)}</a></div></div></div>`, 'كل قرارات الاجتماعات منفّذة')}</div>`;
+    } else el.innerHTML = listOrEmpty(closed, directiveRowHtml, tab === 'open' ? 'لا توجد توجيهات مفتوحة' : 'لا توجد');
+    $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
+    const dq = $('#dq', main); if (dq) { let t; dq.oninput = () => { clearTimeout(t); t = setTimeout(() => { q = dq.value; load().then(() => { const x = $('#dq', main); x.focus(); x.setSelectionRange(q.length, q.length); }); }, 300); }; }
+    const ad = $('#addDir', main); if (ad) ad.onclick = () => modalDirective();
+  }
+  await load(); return { refresh: load };
+}
+// توجيه جديد: نصه، قناة وروده، أهميته، موعده، ومهامه التنفيذية مباشرة
+function modalDirective(pre = {}) {
+  const people = state.meta.users.filter(u => u.role !== 'owner');
+  const row = () => `<div class="dir-task"><input type="text" name="t_title" placeholder="مهمة تنفيذية…" aria-label="عنوان المهمة">
+    <select name="t_assignee" aria-label="المسؤول">${opt('', '— المسؤول —')}${people.map(u => opt(u.id, u.name)).join('')}</select>
+    <input type="date" name="t_due" aria-label="موعد المهمة"></div>`;
+  openModal({
+    title: 'تسجيل توجيه وتحويله إلى مهام', submit: 'حفظ التوجيه والمهام', wide: true,
+    body: `${field('التوجيه *', '<textarea name="title" required maxlength="300" style="min-height:60px" placeholder="نص التوجيه كما ورد"></textarea>')}
+      ${field('تفاصيل أو سياق (اختياري)', '<textarea name="details" style="min-height:50px"></textarea>')}
+      ${isOwner() ? '' : field('كيف ورد التوجيه؟ *', channelSeg('whatsapp'))}
+      <div class="grid2">${field('القسم', sectionSelect(pre.section, 'section', true))}${field('الموعد المستهدف', '<input type="date" name="due_date">')}</div>
+      ${field('الأهمية', `<div class="seg">${Object.entries(state.meta.importance).map(([k, v]) => `<label><input type="radio" name="importance" value="${k}" ${k === 'normal' ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`)}
+      <h3 class="section-gap">المهام التنفيذية <span class="small muted">(يمكن إضافتها لاحقًا)</span></h3>
+      <div id="dirTasks">${row()}${row()}</div><button type="button" class="btn sm" id="addRow">${I('plus')} مهمة أخرى</button>`,
+    init: (form) => { $('#addRow', form).onclick = () => { $('#dirTasks', form).insertAdjacentHTML('beforeend', row()); }; },
+    onSubmit: async (d, form) => {
+      const tasks = $$('.dir-task', form).map(r => ({ title: $('[name=t_title]', r).value.trim(), assignee_id: $('[name=t_assignee]', r).value || undefined, due_date: $('[name=t_due]', r).value || undefined })).filter(x => x.title);
+      if (tasks.length && !d.section) throw new Error('اختر القسم لإنشاء المهام');
+      const r = await POST('/api/directives', { title: d.title, details: d.details, channel: d.channel, section: d.section, due_date: d.due_date, importance: d.importance, tasks });
+      toast(`سُجّل التوجيه ${r.ref}${tasks.length ? ` و${tasks.length} مهام` : ''}`, 'ok'); location.hash = `#/directive/${r.id}`;
+    },
+  });
+}
+async function viewDirective(main, id) {
+  async function load() {
+    const d = await GET(`/api/directives/${id}`);
+    const manage = can('directives.manage') && d.status === 'open';
+    const summary = `توجيه ${d.ref}: ${d.title}\nالحالة: ${d.state_label} — ${d.tasks_done}/${d.tasks_total} مهام${d.tasks_overdue ? ` (${d.tasks_overdue} متأخرة)` : ''}\n` + d.tasks.map(t => `• ${t.title} — ${state.meta.statuses[t.status]}${t.assignee ? ` (${t.assignee})` : ''}`).join('\n') + (d.outcome ? `\nالنتيجة: ${d.outcome}` : '');
+    main.innerHTML = `<div class="card item-head"><div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="#/directives">${I('back')} التوجيهات</a><span class="ref">${esc(d.ref)}</span>${demoChip(d)}</div>
+      <h1>${esc(d.title)}</h1>
+      <div class="meta btn-row" style="margin-top:8px"><span class="chip ${dirStateTone(d.state)}">${esc(d.state_label)}</span>${d.importance !== 'normal' ? `<span class="chip p-${d.importance}">${esc(d.importance_label)}</span>` : ''}
+        ${d.due_date ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.due_date))}</span>` : ''}</div>
+      <dl class="facts">${[['ورد عبر', d.channel_label], ['تاريخ الورود', d.received_at ? fmtDate(d.received_at) : ''], ['القسم', d.section_name || ''], ['سجّله', d.created_by_name || ''], ['الإغلاق', d.closed_at ? fmtTs(d.closed_at) : '']].filter(x => x[1]).map(([k, v]) => `<div><dt>${k}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+      ${d.details ? `<div class="desc">${esc(d.details)}</div>` : ''}
+      ${d.tasks_total ? `<div class="small muted" style="margin-top:10px">التنفيذ: ${d.progress}%</div>${progressBar(d.progress)}` : ''}
+      ${d.outcome ? `<div class="info-box" style="margin-top:10px"><b>النتيجة المتحققة:</b> ${esc(d.outcome)}</div>` : ''}
+      <div class="actions-bar no-print">${manage ? `<button class="btn ${d.state === 'ready' ? 'green' : ''}" id="closeDir">${I('checkCircle')} تسجيل النتيجة وإغلاق التوجيه</button><button class="btn" id="editDir">${I('edit')} تعديل</button><button class="btn ghost" id="cancelDir">إلغاء التوجيه</button>` : ''}
+        ${shareLinks(summary, `توجيه ${d.ref}`)}</div></div>
+      <div class="card"><div class="card-h">${I('list')}<h2>المهام التنفيذية</h2><span class="chip">${d.tasks_done}/${d.tasks_total}</span><span class="spacer"></span>${manage && can('task.create') ? `<button class="btn sm primary" id="addT">${I('plus')} مهمة</button>` : ''}</div>
+        ${listOrEmpty(d.tasks, i => itemRow(i, { showUpdated: true }), 'لم يتحول التوجيه إلى مهام بعد')}</div>
+      <div class="card"><details class="log"><summary>سجل التوجيه</summary>${d.log.map(l => `<div class="log-row">${fmtTs(l.created_at)} — ${esc(l.user_name || '')}: ${esc({ created: 'سجّل التوجيه', updated: `عدّل ${l.field || ''}` }[l.action] || l.action)}</div>`).join('')}</details></div>`;
+    const at = $('#addT', main); if (at) at.onclick = () => modalTask({ section: d.section, directive_id: d.id, priority: d.importance, due_date: d.due_date, description: `ضمن التوجيه ${d.ref}: ${d.title}` });
+    const cd = $('#closeDir', main); if (cd) cd.onclick = () => openModal({
+      title: 'تسجيل النتيجة وإغلاق التوجيه', submit: 'إغلاق التوجيه', submitClass: 'green',
+      body: `${d.state !== 'ready' && d.tasks_total ? `<div class="warn-box" style="margin-bottom:10px">لم تكتمل كل المهام بعد (${d.tasks_done}/${d.tasks_total}).</div>` : ''}${field('ما النتيجة المتحققة؟ *', `<textarea name="outcome" required style="min-height:80px">${esc(d.outcome || '')}</textarea>`)}`,
+      onSubmit: async (x) => { await api('PATCH', `/api/directives/${d.id}`, { status: 'done', outcome: x.outcome }); toast('أُغلق التوجيه ووُثّقت نتيجته', 'ok'); load(); },
+    });
+    const xd = $('#cancelDir', main); if (xd) xd.onclick = () => openModal({
+      title: 'إلغاء التوجيه', submit: 'إلغاء التوجيه', submitClass: 'red',
+      body: field('سبب الإلغاء *', '<textarea name="reason" required></textarea>') + '<p class="small muted">يبقى التوجيه وسجله محفوظين. المهام المرتبطة لا تُلغى تلقائيًا.</p>',
+      onSubmit: async (x) => { await api('PATCH', `/api/directives/${d.id}`, { status: 'cancelled', reason: x.reason }); toast('أُلغي التوجيه مع الاحتفاظ بسجله', 'ok'); load(); },
+    });
+    const ed = $('#editDir', main); if (ed) ed.onclick = () => openModal({
+      title: 'تعديل التوجيه', wide: true,
+      body: `${field('التوجيه', `<textarea name="title" required>${esc(d.title)}</textarea>`)}${field('التفاصيل', `<textarea name="details">${esc(d.details || '')}</textarea>`)}
+        <div class="grid2">${field('القسم', sectionSelect(d.section, 'section', true))}${field('الموعد المستهدف', `<input type="date" name="due_date" value="${esc(d.due_date || '')}">`)}</div>
+        ${field('الأهمية', `<div class="seg">${Object.entries(state.meta.importance).map(([k, v]) => `<label><input type="radio" name="importance" value="${k}" ${k === d.importance ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`)}`,
+      onSubmit: async (x) => { await api('PATCH', `/api/directives/${d.id}`, x); toast('حُفظت التعديلات', 'ok'); load(); },
+    });
+  }
+  await load(); return { refresh: load };
+}
+
 // ===== المجلدات: القسم ← المجلد ← المشاريع والمهام =====
 const kindChip = (p) => p.kind === 'initiative' ? `<span class="chip kind-i">${I('flag')}مبادرة</span>` : `<span class="chip kind-p">${I('briefcase')}مشروع</span>`;
 const folderCard = (fo) => `<a class="folder-card" href="#/folder/${fo.id}">${I('folder', 'fi')}<span class="fname">${esc(fo.name)}</span>
@@ -935,7 +1144,7 @@ async function viewItem(main, id) {
   main.innerHTML = `<div id="ih"></div><div id="subs"></div>
     <div class="card section-gap"><div class="card-h">${I('note')}<h2>المحادثة والتحديثات والقرارات</h2></div><div class="timeline" id="tl"></div></div>
     <form class="composer no-print" id="cmp">
-      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا لرجل الأعمال…')}" aria-label="نص الرسالة"></textarea>
+      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا ل" + OT() + "…')}" aria-label="نص الرسالة"></textarea>
       ${!isOwner() ? `<div class="grid2" style="margin-top:8px"><select name="kind" aria-label="نوع الرسالة">${opt('update', 'تحديث تنفيذ')}${opt('message', 'رسالة / استفسار')}</select>${isManager() ? '<input type="text" name="next_step" placeholder="الخطوة التالية (اختياري)">' : ''}</div>` : ''}
       <div class="tools">${fileFieldHtml()}<span class="spacer" style="flex:1"></span><button class="btn primary" type="submit">${I('send')} إرسال</button></div>
     </form>
@@ -974,8 +1183,10 @@ async function viewItem(main, id) {
       <dl class="facts">
         ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
+        ${i.deliverable ? fact('المخرج المطلوب', esc(i.deliverable)) : ''}
+        ${i.directive_id ? fact('ضمن التوجيه', can('directives.view') ? `<a href="#/directive/${i.directive_id}">${esc(i.directive_ref)}</a>` : esc(i.directive_ref || '')) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
-        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
+        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
@@ -984,7 +1195,7 @@ async function viewItem(main, id) {
         ${data.partner ? fact('الجهة', `<a href="#/partner/${data.partner.id}">${esc(data.partner.name)}</a>`) : ''}
       </dl>
       ${i.description ? `<div class="desc">${esc(i.description)}</div>` : ''}
-      ${i.original_text && i.source === 'owner' ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">النص الأصلي كما أرسله رجل الأعمال</summary><div class="orig">${esc(i.original_text)}</div></details>` : ''}
+      ${i.original_text && i.source === 'owner' ? `<details style="margin-top:10px"><summary class="small muted" style="cursor:pointer">النص الأصلي كما أرسله ${OT()}</summary><div class="orig">${esc(i.original_text)}</div></details>` : ''}
       ${data.files.length ? `<div style="margin-top:10px"><div class="small muted">المرفقات</div>${filesHtml(data.files)}</div>` : ''}
       <div class="actions-bar no-print" id="acts"></div>
     </div>`;
@@ -1046,6 +1257,7 @@ async function viewItem(main, id) {
     }
     if (canEditItem(i) && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
     if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
+    if (i.sop_id && i.is_open && !i.parent_task_id && canAddSub() && (!isMember() || i.kind === 'task')) a.push(`<button class="btn" data-a="applySop">${I('book')} خطوات الإجراء كقائمة تحقق</button>`);
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     bar.innerHTML = a.join('');
     bar.classList.toggle('hidden', !a.length);
@@ -1053,7 +1265,7 @@ async function viewItem(main, id) {
     $$('[data-a]', bar).forEach(b => b.onclick = async () => {
       const act = b.dataset.a;
       try {
-        if (act === 'ack') { await POST(`/api/items/${id}/ack`); toast('تم تأكيد الاستلام وإبلاغ رجل الأعمال', 'ok'); await load(); }
+        if (act === 'ack') { await POST(`/api/items/${id}/ack`); toast('تم تأكيد الاستلام وإبلاغ ' + OT() + '', 'ok'); await load(); }
         else if (act === 'convert') modalConvert(data.item, load);
         else if (act === 'noteDone') { await api('PATCH', `/api/items/${id}`, { status: 'done' }); await load(); }
         else if (act === 'approval') modalApproval(data.item, load);
@@ -1062,6 +1274,7 @@ async function viewItem(main, id) {
         else if (act === 'edit') modalTask(data.item, load);
         else if (act === 'noteOn') modalNote({ parent_id: data.item.id });
         else if (act === 'postpone') modalPostpone(data.item, load);
+        else if (act === 'applySop') { const r = await POST(`/api/items/${id}/apply-sop`); toast(r.added ? `أُضيفت ${r.added} خطوات كمهام فرعية` : 'كل خطوات الإجراء مضافة مسبقًا', 'ok'); await load(); }
       } catch (e) { showErr(e); }
     });
   }
@@ -1081,7 +1294,10 @@ async function viewItem(main, id) {
           <button class="btn red sm" data-d="rejected">رفض</button>`}
         </div></form>`;
     } else if (!decided && isManager()) {
-      ctl = `<div class="btn-row" style="margin-top:6px"><span class="small muted">بانتظار قرار رجل الأعمال</span><button class="btn sm ghost" data-withdraw="${ap.id}">سحب الطلب</button></div>`;
+      ctl = `<div class="btn-row" style="margin-top:6px"><span class="small muted">بانتظار قرار ${OT()}</span>
+        ${can('approval.record') ? `<button class="btn sm primary" data-proxy="${ap.id}">${I('gavel')} تسجيل قرار ${OT()}</button>` : ''}
+        ${shareLinks(`طلب قرار: ${ap.title}${ap.body ? '\n' + ap.body : ''}${ap.options.length ? '\nالبدائل: ' + ap.options.join(' | ') : ''}`, `طلب قرار: ${ap.title}`)}
+        <button class="btn sm ghost" data-withdraw="${ap.id}">سحب الطلب</button></div>`;
     }
     return `<div class="approval ${decided ? 'decided-' + ap.status : ''}">
       <div class="who">${I('gavel')}<b>${esc(ap.kind_label)}</b> • ${esc(ap.requested_by_name)} • ${fmtTs(ap.requested_at)} ${ap.blocking && !decided ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}</div>
@@ -1090,7 +1306,7 @@ async function viewItem(main, id) {
       ${filesHtml(ap.files)}
       ${ap.options.length && decided ? `<div class="small muted">البدائل: ${ap.options.map(esc).join(' | ')}</div>` : ''}
       ${decided ? `<div style="margin-top:6px"><span class="chip ${ap.status === 'approved' || ap.status === 'chosen' || ap.status === 'answered' ? 'st-done' : ap.status === 'rejected' ? 'st-stalled' : 'p-important'}">${decLabel}</span>
-        ${ap.decided_by_name ? `<span class="small muted"> — ${esc(ap.decided_by_name)} • ${fmtTs(ap.decided_at)}</span>` : ''}
+        ${ap.decided_by_name ? `<span class="small muted"> — ${esc(ap.decided_by_name)} • ${fmtTs(ap.decided_at)}${ap.decided_channel && ap.decided_channel !== 'platform' ? ` • ورد ${esc(state.meta.channels[ap.decided_channel] || '')}${ap.recorded_by_name ? `، سجّله ${esc(ap.recorded_by_name)}` : ''}` : ''}</span>` : ''}
         ${ap.chosen_option ? `<div><b>البديل المختار:</b> ${esc(ap.chosen_option)}</div>` : ''}${ap.decision_note ? `<div class="desc">${esc(ap.decision_note)}</div>` : ''}</div>` : ''}
       ${ctl}</div>`;
   }
@@ -1134,6 +1350,7 @@ async function viewItem(main, id) {
         } catch (ex) { showErr(ex); }
       };
     });
+    $$('[data-proxy]', main).forEach(b => b.onclick = () => modalProxyDecision(data.approvals.find(x => x.id == b.dataset.proxy), load));
     $$('[data-withdraw]', main).forEach(b => b.onclick = async () => { if (!confirm('سحب طلب الاعتماد؟')) return; try { await POST(`/api/approvals/${b.dataset.withdraw}/withdraw`); await load(); } catch (e) { showErr(e); } });
   }
   function renderLog() {
@@ -1174,11 +1391,13 @@ function modalAdd(pre = {}) {
   const m = openModal({
     title: 'إضافة جديدة',
     body: `<div class="add-choices">
+      ${can('directives.manage') ? choice('directive', 'flag', `توجيه من ${OT()}`, 'يُسجَّل بقناة وروده ويتحول إلى مهام تنفيذية تُتابع حتى النتيجة') : ''}
       ${can('task.create') || can('assignment.create') ? choice('task', 'checkCircle', isOwner() ? 'مهمة / تكليف' : 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة') : ''}
       ${can('projects.manage') ? choice('project', 'briefcase', 'مشروع', 'يجمع مهامًا تحت هدف واحد') + choice('initiative', 'flag', 'مبادرة', 'فكرة أو برنامج تُتابع مهامه') : ''}</div>`,
     init: (form) => $$('[data-k]', form).forEach(b => b.onclick = () => {
       m.close(); const k = b.dataset.k;
       if (k === 'task') isOwner() ? modalAssignment(pre) : modalTask(pre);
+      else if (k === 'directive') modalDirective(pre);
       else modalProject({ section: pre.section, folder_id: pre.folder_id, kind: k });
     }),
   });
@@ -1254,6 +1473,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
   const people = state.meta.users.filter(u => u.role !== 'owner');
   return `${field('العنوان *', `<input type="text" name="title" required value="${esc(i.title || '')}">`)}
     ${withDesc ? field('الوصف', `<textarea name="description">${esc(i.description || '')}</textarea>`) : ''}
+    ${field('المخرج المطلوب (ما الذي يُسلَّم عند الإنجاز؟)', `<input type="text" name="deliverable" maxlength="1000" value="${esc(i.deliverable || '')}" placeholder="مثل: تقرير معتمد، جدول نهائي، خطاب مرسل">`)}
     <div class="grid2">
       ${field('القسم *', sectionSelect(i.section, 'section', true))}
       ${can('folders.view') ? field('المجلد', folderSelect(folders, i.folder_id, '— بدون —')) : ''}
@@ -1262,6 +1482,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
     </div>
     ${field('الأولوية', prioSeg(i.priority || 'normal'))}
     ${classifyHtml(i, projects)}
+    ${!i.id && i.directive_id ? `<input type="hidden" name="directive_id" value="${esc(i.directive_id)}">` : ''}
     <details class="more-opts" ${i.id ? 'open' : ''}><summary>خيارات إضافية: الوقت، التصنيف، الخطوة التالية، الإجراء، الجهة${isMember() ? '' : '، اشتراط الاعتماد'}</summary>
     <div class="grid2">
       ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}
@@ -1272,7 +1493,7 @@ async function taskFormBody(i = {}, { withDesc = true } = {}) {
       ${can('sops.view') ? field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`) : ''}
       ${can('partners.view') ? field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`) : ''}
     </div>
-    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}
+    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد ${OT()} للنتيجة النهائية قبل الإغلاق</label>`}
     </details>`;
 }
 // في نموذج المهمة: المجلدات والمشاريع تتبع القسم المختار، واختيار مشروع يضبط مجلده
@@ -1341,26 +1562,26 @@ async function modalConvert(i, after) {
 function modalApproval(i, after, preset = {}) {
   const kinds = Object.entries(state.meta.approval_kinds).filter(([k]) => k !== 'final');
   openModal({
-    title: 'طلب اعتماد أو قرار من رجل الأعمال', submit: 'إرسال الطلب',
+    title: 'طلب اعتماد أو قرار من ' + OT() + '', submit: 'إرسال الطلب',
     body: `${field('نوع الطلب', `<select name="kind">${kinds.map(([k, v]) => opt(k, v, preset.kind || 'report')).join('')}</select>`)}
       ${field('العنوان *', `<input type="text" name="title" required value="${esc(preset.title || '')}">`)}
       ${field('التفاصيل', '<textarea name="body" placeholder="ملخص ما يحتاج إلى قرار، والتوصية إن وجدت"></textarea>')}
       ${field('بدائل مقترحة (اختياري — كل بديل في سطر)', '<textarea name="options" style="min-height:70px"></textarea>')}
       <label class="check"><input type="checkbox" name="blocking" checked> هذا القرار يعطل التنفيذ (يظهر في شريط المهام العاجلة)</label>
       ${field('المرفقات (تقرير، عرض…)', fileFieldHtml('file_ids', false))}`,
-    onSubmit: async (d) => { await POST(`/api/items/${i.id}/approvals`, d); toast('أُرسل الطلب إلى رجل الأعمال', 'ok'); after && after(); },
+    onSubmit: async (d) => { await POST(`/api/items/${i.id}/approvals`, d); toast('أُرسل الطلب إلى ' + OT() + '', 'ok'); after && after(); },
   });
 }
 function modalResult(i, after) {
   openModal({
     title: 'رفع النتيجة النهائية', submit: i.requires_approval ? 'رفع النتيجة وطلب الاعتماد' : 'رفع النتيجة وإكمال المهمة', submitClass: 'green',
-    body: `${i.requires_approval ? '<div class="warn-box" style="margin-bottom:10px">هذه المهمة تتطلب اعتماد رجل الأعمال؛ ستُرسل النتيجة إليه وتكتمل المهمة بعد اعتماده.</div>' : ''}
+    body: `${i.requires_approval ? '<div class="warn-box" style="margin-bottom:10px">هذه المهمة تتطلب اعتماد ' + OT() + '؛ ستُرسل النتيجة إليه وتكتمل المهمة بعد اعتماده.</div>' : ''}
       ${field('ملخص النتيجة *', '<textarea name="body" required></textarea>')}${field('المرفقات', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
       if (!d.body.trim()) throw new Error('اكتب ملخص النتيجة');
       if (i.requires_approval) await POST(`/api/items/${i.id}/approvals`, { kind: 'final', title: i.title, body: d.body, file_ids: d.file_ids, blocking: true });
       else { await POST(`/api/items/${i.id}/messages`, { body: d.body, kind: 'result', file_ids: d.file_ids }); await api('PATCH', `/api/items/${i.id}`, { status: 'done' }); }
-      toast(i.requires_approval ? 'أُرسلت النتيجة لاعتماد رجل الأعمال' : 'اكتملت المهمة', 'ok'); after && after();
+      toast(i.requires_approval ? 'أُرسلت النتيجة لاعتماد ' + OT() + '' : 'اكتملت المهمة', 'ok'); after && after();
     },
   });
 }
@@ -1433,9 +1654,18 @@ async function viewMeeting(main, id) {
       ${m.topics ? `<h3 class="section-gap">الموضوعات</h3><div class="desc">${esc(m.topics)}</div>` : ''}
       ${m.minutes ? `<h3 class="section-gap">محضر الاجتماع</h3><div class="orig">${esc(m.minutes)}</div>` : ''}
       ${filesHtml(m.files)}</div>
-      <div class="card"><div class="card-h"><h2>القرارات الصادرة</h2><span class="spacer"></span>${can('meetings.manage') ? `<button class="btn sm primary" id="addD">${I('plus')} قرار</button>` : ''}</div>
+      <div class="card"><div class="card-h"><h2>القرارات الصادرة</h2><span class="chip">${m.decisions.length}</span><span class="spacer"></span>${can('meetings.manage') ? `<button class="btn sm" id="addMany">${I('list')} عدة قرارات</button><button class="btn sm primary" id="addD">${I('plus')} قرار</button>` : ''}</div>
+      <div class="btn-row no-print" style="margin-bottom:8px">${shareLinks(`محضر: ${m.title} — ${fmtDate(m.starts_at.slice(0, 10))}${m.minutes ? '\n\n' + m.minutes : ''}${m.decisions.length ? '\n\nالقرارات:\n' + m.decisions.map((x, n) => `${n + 1}. ${x.text}${x.responsible ? ` — ${x.responsible}` : ''}${x.due_date ? ` (${fmtDate(x.due_date)})` : ''}`).join('\n') : ''}`, `محضر ${m.title}`)}</div>
       ${listOrEmpty(m.decisions, decisionRowHtml, 'لا توجد قرارات مسجلة')}</div>`;
     const e = $('#edit', main); if (e) e.onclick = () => modalMeeting(m);
+    const mm = $('#addMany', main); if (mm) mm.onclick = () => openModal({
+      title: 'إضافة عدة قرارات', submit: 'حفظ القرارات', wide: true,
+      body: `${field('القرارات * (سطر لكل قرار)', '<textarea name="text" required style="min-height:140px" placeholder="اعتماد خطة الفصل الثاني\nتشكيل لجنة الاختبارات\n…"></textarea>')}
+        <label class="check"><input type="checkbox" name="to_task" checked> إنشاء مهمة لكل قرار فورًا</label>
+        <div class="grid2">${field('قسم المهام', sectionSelect(m.section, 'section', true))}${field('المسؤول (اختياري)', `<select name="assignee_id">${opt('', '— يُحدَّد لاحقًا —')}${state.meta.users.filter(u => u.role !== 'owner').map(u => opt(u.id, u.name)).join('')}</select>`)}
+        ${field('الموعد (اختياري)', '<input type="date" name="due_date">')}</div>`,
+      onSubmit: async (d) => { if (d.to_task && !d.section) throw new Error('اختر قسم المهام'); if (!d.assignee_id) delete d.assignee_id; const r = await POST(`/api/meetings/${id}/decisions/bulk`, d); toast(`سُجّل ${r.created} قرارات`, 'ok'); load(); },
+    });
     const ad = $('#addD', main); if (ad) ad.onclick = () => openModal({
       title: 'قرار جديد',
       body: `${field('نص القرار *', '<textarea name="text" required></textarea>')}<div class="grid2">${field('المسؤول', '<input type="text" name="responsible">')}${field('الموعد النهائي', '<input type="date" name="due_date">')}</div>
@@ -1486,6 +1716,7 @@ async function viewSop(main, id) {
       ${s.files.length ? `<h3 class="section-gap">النماذج والملفات</h3>${filesHtml(s.files)}` : ''}</div>
       <div class="card"><div class="card-h"><h2>مهام مرتبطة بهذا الإجراء</h2></div>${listOrEmpty(s.tasks, i => itemRow(i), 'لا توجد')}</div>`;
     const e = $('#edit', main); if (e) e.onclick = () => modalSop(s);
+    if (can('task.create')) { $('.page-h', main).insertAdjacentHTML('beforeend', `<button class="btn primary" id="useSop">${I('plus')} مهمة تتبع هذا الإجراء</button>`); $('#useSop', main).onclick = () => modalTask({ sop_id: s.id, section: s.section, title: s.name }); }
   }
   await load(); return { refresh: load };
 }
@@ -1562,14 +1793,15 @@ async function viewReports(main) {
         <div class="kpi green"><b>${r.completed}</b><span>مهام مكتملة</span></div><div class="kpi red"><b>${r.overdue_now}</b><span>متأخرة حاليًا</span></div>
         <div class="kpi"><b>${r.decisions_made}</b><span>قرارات واعتمادات صدرت</span></div><div class="kpi orange"><b>${r.approvals_pending}</b><span>طلبات تنتظر القرار</span></div>
         <div class="kpi green"><b>${r.meeting_decisions_done}</b><span>قرارات اجتماعات منفذة</span></div><div class="kpi orange"><b>${r.meeting_decisions_pending}</b><span>قرارات تنتظر التنفيذ</span></div>
+        <div class="kpi ${r.on_time.rate == null ? '' : r.on_time.rate >= 80 ? 'green' : r.on_time.rate >= 60 ? 'orange' : 'red'}"><b>${r.on_time.rate == null ? '—' : r.on_time.rate + '%'}</b><span>الالتزام بالمواعيد${r.on_time.total ? ` (${r.on_time.on_time} من ${r.on_time.total})` : ' — لا مهام منجزة ذات موعد'}</span></div>
         <div class="kpi"><b>${r.avg_completion_days ?? '—'}</b><span>متوسط مدة الإنجاز (يوم)${r.avg_completion_days == null ? ' — بيانات غير كافية' : ''}</span></div>
       </div>
       <div class="card section-gap"><div class="card-h"><h2>توزيع المهام حسب الأقسام الستة</h2><span class="spacer"></span><span class="small muted"><span class="chip st-in_progress">مفتوحة</span> <span class="chip st-done">مكتملة في الفترة</span> <span class="chip overdue">منها متأخرة</span></span></div>
         <div class="bars">${r.by_section.map(s => `<div class="bar"><span>${esc(s.name)}</span><div class="track" title="مفتوحة ${s.open} • مكتملة ${s.completed} • متأخرة ${s.overdue}">
           <div class="fill late" style="width:${s.overdue / max * 100}%"></div><div class="fill" style="width:${(s.open - s.overdue) / max * 100}%"></div><div class="fill done" style="width:${s.completed / max * 100}%"></div></div><b>${s.open + s.completed}</b></div>`).join('')}</div></div>
       <div class="card"><div class="card-h">${I('users')}<h2>عبء العمل حسب المسؤول</h2></div>
-        ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th></tr></thead><tbody>
-          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
+        ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th><th>في الموعد</th></tr></thead><tbody>
+          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
       <div class="card"><div class="card-h"><h2>المهام المكتملة في الفترة</h2></div>${listOrEmpty(r.completed_items, i => itemRow(i), 'لا توجد مهام مكتملة في هذه الفترة')}</div>`;
     $$('[data-p]', main).forEach(b => b.onclick = () => { period = b.dataset.p; load(); });
     $('#pdf', main).onclick = () => window.print();
@@ -1670,7 +1902,7 @@ function grantsEditorHtml(g = { scope: 'own', sections: [], perms: [] }) {
     ${field('ماذا يستطيع أن يفعل؟', `<div class="radios">
       <label class="check"><input type="checkbox" checked disabled> تحديث حالة مهامه وإضافة التحديثات والمرفقات (دائمًا)</label>
       ${Object.entries(m.grantable).map(([k, v]) => `<label class="check"><input type="checkbox" name="g_perms" data-multi="1" value="${k}" ${g.perms.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`)}
-    <p class="small muted">لا يملك الموظف أبدًا: الاعتماد والقرارات، إغلاق المهام نهائيًا، الوارد من رجل الأعمال، إدارة المستخدمين.</p></fieldset>`;
+    <p class="small muted">لا يملك الموظف أبدًا: الاعتماد والقرارات، إغلاق المهام نهائيًا، الوارد من ${OT()}، إدارة المستخدمين.</p></fieldset>`;
 }
 function bindGrantsEditor(form) {
   const m = state.meta;
@@ -1716,9 +1948,9 @@ async function renderUsersAdmin(el) {
       body: `<div class="grid2">${field('الاسم', `<input type="text" name="name" value="${esc(u.name)}" required>`)}${field('البريد', `<input type="email" name="email" dir="ltr" value="${esc(u.email || '')}">`)}
         ${field(u.id === state.me.id || u.role === 'member' ? 'كلمة مرور جديدة (اتركها فارغة للإبقاء)' + (u.role === 'member' ? ' — سيُطلب منه تغييرها عند دخوله' : '') : 'كلمة المرور', u.id === state.me.id || u.role === 'member' ? '<input type="password" name="password" dir="ltr" autocomplete="new-password">' : '<p class="small muted">يغيّرها صاحب الحساب من إعداداته.</p>')}
         ${u.role === 'member' ? field('المسمى الوظيفي', `<input type="text" name="title" maxlength="60" value="${esc(u.title || '')}">`) : ''}</div>
-        ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
+        ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">' + OT() + ' ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
       onSubmit: async (d) => {
-        if (u.id !== state.me.id && u.role !== 'member') { toast('حسابا رجل الأعمال ومدير المكتب يعدّلهما صاحباهما من الإعدادات', 'err'); return; }
+        if (u.id !== state.me.id && u.role !== 'member') { toast('حسابا ' + OT() + ' ومدير المكتب يعدّلهما صاحباهما من الإعدادات', 'err'); return; }
         const body = { name: d.name, email: d.email };
         if (u.role === 'member') body.title = d.title;
         if (d.password) body.password = d.password;

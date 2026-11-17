@@ -1,7 +1,7 @@
 'use strict';
 // واجهة API — تعمل بلا تغيير على Node (Hono + node-server) وعلى Cloudflare (Worker/Durable Object)
 const { Hono } = require('hono');
-const { get, all, run, nowIso } = require('./db');
+const { get, all, run, tx, nowIso } = require('./db');
 const cfg = require('./config');
 const D = require('./domain');
 const S = require('./services');
@@ -137,7 +137,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    owner_title: D.ownerTitle(), channels: D.CHANNELS, importance: D.IMPORTANCE, approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -187,6 +187,10 @@ function createApp(P) {
     if (q.priority) { where.push('i.priority=?'); p.push(q.priority); }
     if (q.project_id) { where.push('i.project_id=?'); p.push(Number(q.project_id)); }
     if (q.category) { where.push('i.category=?'); p.push(q.category); }
+    if (q.assignee_id) { where.push('i.assignee_id=?'); p.push(Number(q.assignee_id)); }
+    if (q.assignee && !q.assignee_id) { where.push('i.assignee_id IS NULL AND i.assignee=?'); p.push(String(q.assignee).slice(0, 200)); }
+    if (q.directive_id) { where.push('i.directive_id=?'); p.push(Number(q.directive_id)); }
+    if (q.done_since && /^\d{4}-\d{2}-\d{2}$/.test(q.done_since)) { where.push("i.status='done' AND i.completed_at>=?"); p.push(new Date(q.done_since + 'T00:00:00+03:00').toISOString()); }
     if (q.scope === 'open') where.push(`i.${D.OPEN}`);
     if (q.scope === 'overdue') { where.push(`i.${D.OPEN} AND i.due_date<?`); p.push(t); }
     if (q.scope === 'today') { where.push(`i.${D.OPEN} AND i.due_date=?`); p.push(t); }
@@ -226,6 +230,7 @@ function createApp(P) {
     return { item: it, ...th, ...extra };
   }));
   app.post('/api/items/:id/subtasks', wrap(req => S.createSubtask(req.user, Number(req.params.id), req.body)));
+  app.post('/api/items/:id/apply-sop', wrap(req => S.applySop(req.user, Number(req.params.id))));
   app.post('/api/items/:id/ack', wrap(req => S.acknowledge(req.user, Number(req.params.id))));
   app.post('/api/items/:id/convert', wrap(req => S.convertToTask(req.user, Number(req.params.id), req.body)));
   app.patch('/api/items/:id', wrap(req => S.updateItem(req.user, Number(req.params.id), req.body)));
@@ -258,8 +263,8 @@ function createApp(P) {
         { key: 'overdue', title: 'المهام المتأخرة', tone: 'red', items: q(`${TK} AND i.due_date<?`, t) },
         { key: 'unack', title: 'تكليفات جديدة غير مؤكدة الاستلام', tone: 'orange', items: q("i.kind IN ('assignment','note') AND i.acknowledged_at IS NULL AND i.status!='cancelled'") },
         { key: 'not_started', title: 'مهام لم يبدأ تنفيذها', tone: 'gray', items: q(`${TK} AND i.status IN ('new','acknowledged')`) },
-        { key: 'waiting_info', title: 'تنتظر معلومات من رجل الأعمال', tone: 'gray', items: q(`${TK} AND i.status='waiting_info'`) },
-        { key: 'waiting_approval', title: 'تنتظر اعتماد رجل الأعمال', tone: 'gray', items: q(`${TK} AND i.status='waiting_approval'`) },
+        { key: 'waiting_info', title: 'تنتظر معلومات من ' + D.ownerTitle() + '', tone: 'gray', items: q(`${TK} AND i.status='waiting_info'`) },
+        { key: 'waiting_approval', title: 'تنتظر اعتماد ' + D.ownerTitle() + '', tone: 'gray', items: q(`${TK} AND i.status='waiting_approval'`) },
         { key: 'waiting_reply', title: 'تنتظر أطرافًا خارجية', tone: 'gray', items: q(`${TK} AND i.status='waiting_reply'`) },
         { key: 'stalled', title: 'تحتاج تدخلًا أو تصعيدًا', tone: 'red', items: q(`${TK} AND i.status='stalled'`) },
         { key: 'to_close', title: 'مكتملة تنتظر الإغلاق النهائي', tone: 'green', items: q("i.kind IN ('assignment','task') AND i.status='done' AND i.closed_at IS NULL") },
@@ -403,6 +408,25 @@ function createApp(P) {
     if (req.body.to_task) S.decisionToTask(req.user, id, req.body);
     return { id };
   }));
+  // قرارات متعددة دفعة واحدة (سطر لكل قرار)، ويمكن تحويلها كلها إلى مهام
+  app.post('/api/meetings/:id/decisions/bulk', wrap(req => {
+    S.require_(req.user, 'meetings.manage');
+    const m = get('SELECT * FROM meetings WHERE id=?', Number(req.params.id)); if (!m) throw S.notFound();
+    const lines = String(req.body.text || '').split('\n').map(x => x.trim().replace(/^[-•*\d.)]+\s*/, '')).filter(Boolean).slice(0, 30);
+    if (!lines.length) throw S.bad('اكتب قرارًا واحدًا على الأقل (سطر لكل قرار)');
+    const section = S.validSection(req.body.section || m.section);
+    if (req.body.to_task && !section) throw S.bad('اختر قسم المهام');
+    const ids = [];
+    tx(() => {
+      for (const text of lines) {
+        const { id } = run('INSERT INTO decisions(meeting_id,text,responsible,due_date) VALUES(?,?,?,?)', m.id, text.slice(0, 2000), S.str(req.body.responsible, 200), S.validDate(req.body.due_date));
+        S.audit('decision', id, req.user.id, 'created'); ids.push(id);
+        if (req.body.to_task) S.decisionToTask(req.user, id, { section, assignee_id: req.body.assignee_id || undefined, due_date: req.body.due_date || undefined });
+      }
+    });
+    events.broadcastChange({ meeting: m.id });
+    return { created: ids.length };
+  }));
   app.patch('/api/decisions/:id', wrap(req => {
     S.require_(req.user, 'meetings.manage');
     const d = get('SELECT * FROM decisions WHERE id=?', Number(req.params.id)); if (!d) throw S.notFound();
@@ -519,6 +543,74 @@ function createApp(P) {
     return folderCounts(get('SELECT * FROM folders WHERE id=?', f.id));
   }));
 
+  // ===== لوحة القيادة: صورة المكتب كاملة، وكل رقم يفتح تفاصيله =====
+  app.get('/api/command', wrap(req => {
+    if (!(D.can(req.user, 'item.view') && req.user.role !== 'member')) throw S.forbidden();
+    const t = D.todayStr(); const c = (sql, ...p) => get(sql, ...p).c;
+    const weekStart = D.addDays(t, -6), monthStart = D.addDays(t, -29), prevFrom = D.addDays(t, -59), prevTo = D.addDays(t, -30);
+    const iso = (d) => new Date(d + 'T00:00:00+03:00').toISOString();
+    const TK = `kind IN ${D.TASK_KINDS}`;
+    const month = D.onTimeStats(monthStart, t), prev = D.onTimeStats(prevFrom, prevTo);
+    const rep = D.report('week');
+    const regDirectives = all("SELECT * FROM directives WHERE status='open'").map(d => S.directiveRow(d, req.user));
+    const decisionsOpen = c(`SELECT COUNT(*) c FROM decisions d LEFT JOIN items i ON i.id=d.task_id WHERE COALESCE(i.status,d.status) NOT IN ('done','cancelled')`);
+    return {
+      today: t, week_start: weekStart, month_start: monthStart,
+      kpis: {
+        open: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND ${D.OPEN}`),
+        done_week: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND status='done' AND completed_at>=?`, iso(weekStart)),
+        done_month: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND status='done' AND completed_at>=?`, iso(monthStart)),
+        overdue: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND ${D.OPEN} AND due_date<?`, t),
+        urgent: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND ${D.OPEN} AND priority='urgent'`),
+        stalled: c(`SELECT COUNT(*) c FROM items WHERE ${TK} AND status='stalled'`),
+        awaiting_approval: c("SELECT COUNT(*) c FROM approvals WHERE status='pending'"),
+        meetings_week: c("SELECT COUNT(*) c FROM meetings WHERE status='scheduled' AND substr(starts_at,1,10) BETWEEN ? AND ?", t, D.addDays(t, 7)),
+        directives_open: regDirectives.length, directives_at_risk: regDirectives.filter(d => d.state === 'at_risk' || d.is_overdue).length,
+        decisions_open: decisionsOpen,
+        on_time_rate: month.rate, on_time_total: month.total, on_time_prev: prev.rate,
+      },
+      attention: D.needsAttention(),
+      approvals: all(`SELECT a.id, a.title, a.kind, a.blocking, a.requested_at, i.id AS item_id, i.ref, i.title AS item_title FROM approvals a JOIN items i ON i.id=a.item_id WHERE a.status='pending' ORDER BY a.blocking DESC, a.id LIMIT 20`)
+        .map(a => ({ ...a, kind_label: D.APPROVAL_KINDS[a.kind] })),
+      directives: regDirectives.filter(d => d.state !== 'ready').slice(0, 8), directives_ready: regDirectives.filter(d => d.state === 'ready'),
+      meetings: all("SELECT * FROM meetings WHERE status='scheduled' AND substr(starts_at,1,10)>=? ORDER BY starts_at LIMIT 5", t),
+      workload: rep.by_person,
+    };
+  }));
+
+  // ===== سجل التوجيهات والقرارات =====
+  app.get('/api/directives', wrap(req => {
+    S.require_(req.user, 'directives.view');
+    const w = []; const p = [];
+    if (req.query.status && ['open', 'done', 'cancelled'].includes(req.query.status)) { w.push('status=?'); p.push(req.query.status); }
+    if (req.query.q) { w.push('(instr(lower(title), lower(?))>0 OR instr(lower(COALESCE(details,"")), lower(?))>0 OR instr(ref, ?)>0)'); const q = String(req.query.q).slice(0, 100); p.push(q, q, q); }
+    return all(`SELECT * FROM directives ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY CASE status WHEN 'open' THEN 0 ELSE 1 END, CASE importance WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(due_date,'9999'), id DESC LIMIT 300`, ...p)
+      .map(d => S.directiveRow(d, req.user));
+  }));
+  app.get('/api/directives/:id', wrap(req => {
+    S.require_(req.user, 'directives.view');
+    const d = get('SELECT * FROM directives WHERE id=?', Number(req.params.id)); if (!d) throw S.notFound('التوجيه غير موجود');
+    const sc = S.scopeFor(req.user);
+    const out = S.directiveRow(d, req.user);
+    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.directive_id=?${sc.sql} ORDER BY i.id`, d.id, ...sc.params).map(i => D.decorate(i));
+    out.created_by_name = (get('SELECT name FROM users WHERE id=?', d.created_by) || {}).name;
+    out.log = all("SELECT a.*, u.name AS user_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE entity='directive' AND entity_id=? ORDER BY a.id", d.id);
+    return out;
+  }));
+  app.post('/api/directives', wrap(req => S.createDirective(req.user, req.body)));
+  app.patch('/api/directives/:id', wrap(req => S.updateDirective(req.user, Number(req.params.id), req.body)));
+  // ما لم يتحول بعد إلى نتيجة: التوجيهات المفتوحة وقرارات الاجتماعات غير المنفذة
+  app.get('/api/register', wrap(req => {
+    S.require_(req.user, 'directives.view');
+    const t = D.todayStr();
+    const directives = all("SELECT * FROM directives WHERE status='open' ORDER BY COALESCE(due_date,'9999')").map(d => S.directiveRow(d, req.user));
+    const decisions = D.can(req.user, 'meetings.view') ? all(`SELECT d.*, m.title AS meeting_title, m.starts_at, i.status AS task_status, i.ref AS task_ref, i.due_date AS task_due
+        FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id
+        WHERE COALESCE(i.status, d.status) NOT IN ('done','cancelled') ORDER BY COALESCE(COALESCE(i.due_date, d.due_date),'9999')`)
+      .map(d => ({ ...d, task_ref: d.task_id && S.canSee(req.user, { id: d.task_id }) ? d.task_ref : null, is_overdue: !!(d.task_due || d.due_date) && (d.task_due || d.due_date) < t, unassigned: !d.task_id })) : [];
+    return { directives, decisions };
+  }));
+
   // ===== إدارة المستخدمين (حسابات الفريق) =====
   app.get('/api/admin/users', wrap(req => S.listUsers(req.user)));
   app.post('/api/admin/users', wrap(req => S.createUser(req.user, req.body)));
@@ -550,6 +642,17 @@ function createApp(P) {
     return c.json(out);
   });
   const INLINE = /^(image\/(png|jpeg|gif|webp)|audio\/|video\/(mp4|webm)|application\/pdf)/;
+  // أرشيف الملفات: كل ما يحق للمستخدم رؤيته، مع العنصر الذي ينتمي إليه، وبحث بالاسم
+  app.get('/api/files', wrap(req => {
+    const u = req.user; const q = String(req.query.q || '').slice(0, 100);
+    const rows = all(`SELECT f.id,f.original_name,f.mime,f.size,f.is_voice,f.created_at,f.item_id,f.meeting_id,f.sop_id,f.uploader_id,
+        i.ref AS item_ref, i.title AS item_title, i.section AS item_section, m.title AS meeting_title, s.name AS sop_name, us.name AS uploader_name
+      FROM files f LEFT JOIN items i ON i.id=f.item_id LEFT JOIN meetings m ON m.id=f.meeting_id LEFT JOIN sops s ON s.id=f.sop_id LEFT JOIN users us ON us.id=f.uploader_id
+      WHERE f.is_voice=0 AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL)${q ? ' AND (instr(lower(f.original_name), lower(?))>0 OR instr(lower(COALESCE(i.title,"")), lower(?))>0 OR instr(lower(COALESCE(m.title,"")), lower(?))>0)' : ''}
+      ORDER BY f.id DESC LIMIT 400`, ...(q ? [q, q, q] : []));
+    return rows.filter(f => (f.item_id && S.canSee(u, { id: f.item_id })) || (f.meeting_id && D.can(u, 'meetings.view')) || (f.sop_id && D.can(u, 'sops.view')))
+      .map(f => ({ ...f, section_name: f.item_section ? D.sectionName(f.item_section) : null })).slice(0, 200);
+  }));
   app.get('/api/files/:id', async (c) => {
     const user = c.get('user');
     const f = get('SELECT * FROM files WHERE id=?', Number(c.req.param('id')));

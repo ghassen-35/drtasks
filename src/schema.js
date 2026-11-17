@@ -29,6 +29,7 @@ module.exports = [
   "CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
   "CREATE TABLE IF NOT EXISTS file_chunks (name TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY (name, seq))",
   "CREATE TABLE IF NOT EXISTS folders (id INTEGER PRIMARY KEY, section TEXT NOT NULL, name TEXT NOT NULL, description TEXT, is_demo INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
+  "-- سجل التوجيهات والقرارات: توجيه من المدير (عبر أي قناة) يتحول إلى مهام تنفيذية ثم نتيجة موثقة\nCREATE TABLE IF NOT EXISTS directives (\n  id INTEGER PRIMARY KEY,\n  ref TEXT UNIQUE NOT NULL,\n  title TEXT NOT NULL,\n  details TEXT,\n  source TEXT NOT NULL DEFAULT 'director', -- director|meeting|other\n  channel TEXT, -- platform|whatsapp|email|verbal|meeting|letter\n  section TEXT,\n  importance TEXT NOT NULL DEFAULT 'normal',\n  received_at TEXT,\n  due_date TEXT,\n  status TEXT NOT NULL DEFAULT 'open', -- open|done|cancelled\n  outcome TEXT,\n  closed_at TEXT,\n  is_demo INTEGER NOT NULL DEFAULT 0,\n  created_by INTEGER REFERENCES users(id),\n  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\n  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))\n)",
   "CREATE TABLE IF NOT EXISTS project_members (project_id INTEGER NOT NULL REFERENCES projects(id), user_id INTEGER NOT NULL REFERENCES users(id), PRIMARY KEY (project_id, user_id))",
 ];
 
@@ -62,5 +63,16 @@ module.exports.migrations = [
   [
     'ALTER TABLE users ADD COLUMN title TEXT',
     'ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0',
+  ],
+  // 5) ربط المهام بالتوجيهات، وتسجيل قرار المدير نيابةً عنه مع قناة وروده
+  [
+    'ALTER TABLE items ADD COLUMN directive_id INTEGER REFERENCES directives(id)',
+    'CREATE INDEX IF NOT EXISTS idx_items_directive ON items(directive_id)',
+    'ALTER TABLE approvals ADD COLUMN decided_channel TEXT',
+    'ALTER TABLE approvals ADD COLUMN recorded_by INTEGER REFERENCES users(id)',
+  ],
+  // 6) المخرج المطلوب من المهمة (ما الذي يُسلَّم عند الإنجاز)
+  [
+    'ALTER TABLE items ADD COLUMN deliverable TEXT',
   ],
 ];
