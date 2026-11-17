@@ -39,6 +39,7 @@ const write = (s, event, data) => s.writeSSE({ event, data: JSON.stringify(data)
 events.setTransport({
   sendTo: (userId, event, data) => { for (const s of clients.get(userId) || []) write(s, event, data); },
   broadcast: (event, data) => { for (const set of clients.values()) for (const s of set) write(s, event, data); },
+  disconnect: (userId) => { for (const s of clients.get(userId) || []) { write(s, 'logout', {}).then(() => { s.abort(); s.close().catch(() => { }); }); } clients.delete(userId); },
 });
 
 const hops = Number(cfg.get('TRUST_PROXY', '0')) || 0;

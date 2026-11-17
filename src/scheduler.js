@@ -10,11 +10,16 @@ function runScheduler({ dailyBackup } = {}) {
     const t = D.todayStr(); const tomorrow = D.addDays(t, 1);
     const due = all(`SELECT * FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN} AND due_date IN (?,?)`, t, tomorrow);
     for (const i of due) {
+      // المسؤول (موظف في المنصة) يُذكَّر أيضًا قبل الموعد
+      if (i.assignee_id) {
+        const u = get('SELECT id, member FROM users WHERE id=? AND active=1', i.assignee_id);
+        if (u && u.member) N.notify(u.id, { type: 'deadline_soon', title: `${i.due_date === t ? 'مستحقة اليوم' : 'مستحقة غدًا'}: ${i.title}`, body: i.ref, link: `#/item/${i.id}`, urgent: i.priority === 'urgent', dedupe: `due:${i.id}:${i.due_date}:${i.due_date === t ? 'today' : 'tomorrow'}` });
+      }
       N.notifyRole('manager', { type: 'deadline_soon', title: `${i.due_date === t ? 'مستحقة اليوم' : 'مستحقة غدًا'}: ${i.title}`, body: `${i.ref} — ${D.sectionName(i.section)}`, link: `#/item/${i.id}`, urgent: i.priority === 'urgent', dedupe: `due:${i.id}:${i.due_date}:${i.due_date === t ? 'today' : 'tomorrow'}` });
     }
     const overdue = all(`SELECT * FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN} AND due_date<?`, t);
     for (const i of overdue) {
-      const p = { type: 'overdue', title: `مهمة متأخرة: ${i.title}`, body: `${i.ref} — كان موعدها ${i.due_date}`, link: `#/item/${i.id}`, urgent: i.priority !== 'normal', dedupe: `overdue:${i.id}:${i.due_date}` };
+      const p = { type: 'overdue', title: `مهمة متأخرة: ${i.title}`, body: `${i.ref} — كان موعدها ${D.fmtDateAr(i.due_date)}`, link: `#/item/${i.id}`, urgent: i.priority !== 'normal', dedupe: `overdue:${i.id}:${i.due_date}` };
       N.notifyRole('manager', p);
       if (i.source === 'owner' && i.priority !== 'normal') N.notify(i.created_by, p);
     }
@@ -23,7 +28,16 @@ function runScheduler({ dailyBackup } = {}) {
     if (hour >= 7) {
       const h = { today: D.todayRibbon().length, urgent: D.urgentRibbon().length, overdue: overdue.length, approvals: get("SELECT COUNT(*) c FROM approvals WHERE status='pending'").c };
       const body = `مهام اليوم: ${h.today} • عاجلة: ${h.urgent} • متأخرة: ${h.overdue} • بانتظار قرار: ${h.approvals}`;
-      for (const u of all('SELECT id FROM users WHERE active=1')) N.notify(u.id, { type: 'digest', title: `الملخص اليومي ${t}`, body, link: '#/', dedupe: `digest:${t}` });
+      const S = require('./services');
+      for (const u of all(`SELECT id,name,grants,${D.roleSql()} AS role FROM users WHERE active=1`)) {
+        let b = body;
+        if (u.role === 'member') { // الموظف: أرقامه هو فقط
+          const sc = S.scopeFor(u);
+          const n = (cond, ...p) => get(`SELECT COUNT(*) c FROM items i WHERE i.kind IN ${D.TASK_KINDS} AND i.${D.OPEN} AND ${cond}${sc.sql}`, ...p, ...sc.params).c;
+          b = `مهامك اليوم: ${n('i.due_date=?', t)} • متأخرة: ${n('i.due_date<?', t)} • عاجلة: ${n("i.priority='urgent'")}`;
+        }
+        N.notify(u.id, { type: 'digest', title: 'الملخص اليومي', body: b, link: '#/', dedupe: `digest:${t}` });
+      }
       if (dailyBackup) dailyBackup();
     }
     run('DELETE FROM sessions WHERE expires_at<?', nowIso());

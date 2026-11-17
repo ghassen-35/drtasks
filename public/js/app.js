@@ -14,7 +14,8 @@ async function api(method, url, body) {
   else if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
   const res = await fetch(url, opt);
   let data = null; try { data = await res.json(); } catch { }
-  if (res.status === 401 && url !== '/api/login') { state.me = null; renderLogin(); throw new Error('يلزم تسجيل الدخول'); }
+  // انتهت الجلسة: تظهر شاشة الدخول ويُترك الطلب معلقًا (لا خطأ غير ملتقط من طلبات خلفية متزامنة)
+  if (res.status === 401 && url !== '/api/login') { if (state.me) { state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); } else if (!$('#lf')) renderLogin(); return new Promise(() => { }); }
   if (!res.ok) throw new Error((data && data.error) || 'تعذر تنفيذ الطلب');
   return data;
 }
@@ -38,8 +39,8 @@ function fmtTs(iso) {
   if (!iso) return '—';
   const d = new Date(iso); const s = (Date.now() - d) / 1000;
   if (s < 60) return 'الآن';
-  if (s < 3600) return `منذ ${Math.floor(s / 60)} د`;
-  if (s < 86400) return `منذ ${Math.floor(s / 3600)} س`;
+  if (s < 3600) { const m = Math.floor(s / 60); return m === 1 ? 'منذ دقيقة' : m === 2 ? 'منذ دقيقتين' : `منذ ${m} دقيقة`; }
+  if (s < 86400) { const h = Math.floor(s / 3600); return h === 1 ? 'منذ ساعة' : h === 2 ? 'منذ ساعتين' : `منذ ${h} ساعات`; }
   return `${dfmtY.format(d)} ${tfmt.format(d)}`;
 }
 const fmtDue = (i) => i.due_date ? `${fmtDate(i.due_date)}${i.due_time ? ' ' + i.due_time : ''}` : 'بدون موعد';
@@ -57,14 +58,20 @@ const isMember = () => state.me.role === 'member';
 const DEFAULT_APP_NAME = 'مكتب عبدالله عبدالعزيز التويجري';
 const appName = () => (state.meta && state.meta.app_name) || state.appName || DEFAULT_APP_NAME;
 const can = (p) => state.me.perms.includes(p);
+const canAddAny = () => can('task.create') || can('assignment.create') || can('projects.manage');
+const canEditItem = (i) => can('item.manage') || (can('item.edit') && (!isMember() || !i || i.kind === 'task'));
+const canAddSub = () => ['task.create', 'item.edit', 'subtask.create'].some(can);
 
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
   return `<div class="row p-${i.priority} ${i.status === 'done' ? 'done' : ''}">
     <div class="main">
       <a class="title" href="#/item/${i.id}">${esc(i.title)}</a>
       <div class="meta">
-        <span class="chip kind">${esc(kindLabel(i))}</span>
+        ${i.kind !== 'task' ? `<span class="chip kind">${esc(kindLabel(i))}</span>` : ''}
         ${statusChip(i.status)} ${prioChip(i.priority)} ${dueChip(i)}
+        ${i.recurrence ? `<span class="chip rec">${I('repeat')}${esc(state.meta.recurrences[i.recurrence] || '')}</span>` : ''}
+        ${i.subtasks_total ? `<span class="chip">${I('list')}${i.subtasks_done}/${i.subtasks_total}</span>` : ''}
+        ${i.parent_task_id ? `<span class="chip">فرعية من: ${esc(i.parent_task_title || '')}</span>` : ''}
         ${showSection && i.section ? `<span class="chip">${esc(sectionName(i.section))}</span>` : ''}
         ${i.pending_approvals ? `<span class="chip st-waiting_approval">${I('gavel')}بانتظار قرار</span>` : ''}
         ${i.files_count ? `<span class="chip">${I('clip')}${i.files_count}</span>` : ''}
@@ -78,9 +85,20 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
     ${actions ? `<div class="side">${actions}</div>` : ''}
   </div>`;
 }
+const countTxt = (n, one, two, many) => n === 0 ? 'لا نتائج' : n === 1 ? `${one} واحدة` : n === 2 ? two : `${n} ${n <= 10 ? many : one}`;
 const listOrEmpty = (items, fn, empty = 'لا توجد عناصر') => items.length ? `<div class="list">${items.map(fn).join('')}</div>` : `<div class="empty">${empty}</div>`;
 
 function toast(msg, kind = '', onClick) {
+  if (kind !== 'urgent') $$('#toasts .toast:not(.urgent):not(.more)').forEach(t => t.remove()); // تنبيه واحد في كل مرة
+  // التنبيهات العاجلة: اثنان على الأكثر، والباقي يُجمع في تنبيه واحد يفتح الإشعارات
+  if (kind === 'urgent' && $$('#toasts .toast.urgent').length >= 2) {
+    let more = $('#toasts .toast.more');
+    if (!more) { more = document.createElement('div'); more.className = 'toast more'; more.dataset.n = '0'; more.setAttribute('role', 'status'); more.onclick = () => { more.remove(); location.hash = '#/notifications'; }; $('#toasts').appendChild(more); }
+    more.dataset.n = String(Number(more.dataset.n) + 1);
+    more.textContent = `+${more.dataset.n} ${Number(more.dataset.n) === 1 ? 'تنبيه آخر' : 'تنبيهات أخرى'} — اضغط لعرض الإشعارات`;
+    clearTimeout(more._t); more._t = setTimeout(() => more.remove(), 9000);
+    return;
+  }
   const el = document.createElement('div'); el.className = `toast ${kind}`; el.textContent = msg; el.setAttribute('role', 'status');
   el.onclick = () => { el.remove(); onClick && onClick(); };
   $('#toasts').appendChild(el); setTimeout(() => el.remove(), kind === 'urgent' ? 9000 : 4500);
@@ -93,14 +111,18 @@ function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', on
   bg.innerHTML = `<form class="modal" ${wide ? 'style="max-width:820px"' : ''} novalidate>
     <div class="mh"><h2>${esc(title)}</h2><button type="button" class="iconbtn" data-close aria-label="إغلاق">${I('x')}</button></div>
     <div class="mb"><div class="err-box hidden"></div>${body}</div>
-    <div class="mf">${onSubmit ? `<button class="btn ${submitClass}" type="submit">${esc(submit)}</button>` : ''}<button type="button" class="btn ghost" data-close>إلغاء</button></div>
+    <div class="mf">${onSubmit ? `<button class="btn ${submitClass}" type="submit">${esc(submit)}</button>` : ''}<button type="button" class="btn ghost" data-close>${onSubmit ? 'إلغاء' : 'إغلاق'}</button></div>
   </form>`;
   document.body.appendChild(bg); document.body.style.overflow = 'hidden';
   const form = $('form', bg);
-  const close = () => { bg.remove(); document.body.style.overflow = ''; if (state.stale) refreshView(); };
+  // Escape يغلق النافذة العليا أينما كان التركيز
+  const onKey = (e) => { if (e.key === 'Escape' && bg === $$('.modal-bg').pop()) close(); };
+  const close = () => { document.removeEventListener('keydown', onKey); bg.remove(); document.body.style.overflow = ''; if (state.reloadMe && !$('.modal-bg')) { state.reloadMe = false; onChange({ user: state.me.id }); } else if (state.stale) refreshView(); };
   $$('[data-close]', bg).forEach(b => b.onclick = close);
-  bg.addEventListener('mousedown', e => { if (e.target === bg) close(); });
-  bg.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  // الضغط خارج النافذة لا يضيّع ما كُتب دون تأكيد
+  let dirty = false; form.addEventListener('input', () => { dirty = true; });
+  bg.addEventListener('mousedown', e => { if (e.target === bg && (!dirty || confirm('إغلاق النافذة وتجاهل ما كتبته؟'))) close(); });
+  document.addEventListener('keydown', onKey);
   form.onsubmit = async (e) => {
     e.preventDefault();
     const btn = $('button[type=submit]', form); btn.disabled = true;
@@ -126,10 +148,53 @@ function formData(form) {
   return o;
 }
 const opt = (v, label, sel) => `<option value="${esc(v)}" ${String(sel ?? '') === String(v) ? 'selected' : ''}>${esc(label)}</option>`;
-const sectionSelect = (sel, name = 'section', blank = false) => `<select name="${name}">${blank ? opt('', '— اختر —', sel) : ''}${state.meta.sections.map(s => opt(s.key, s.name, sel)).join('')}</select>`;
-const sectionSeg = (sel, name = 'section') => `<div class="seg">${state.meta.sections.map(s => `<label><input type="radio" name="${name}" value="${s.key}" ${sel === s.key ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div>`;
+// الأقسام التي يعمل فيها المستخدم (الموظف بنطاق «أقسام محددة» يرى أقسامه فقط)
+const mySections = () => { const g = state.me.grants; return g && g.scope === 'sections' ? state.meta.sections.filter(s => g.sections.includes(s.key)) : state.meta.sections; };
+const sectionSelect = (sel, name = 'section', blank = false) => `<select name="${name}">${blank ? opt('', '— اختر —', sel) : ''}${mySections().map(s => opt(s.key, s.name, sel)).join('')}</select>`;
+const sectionSeg = (sel, name = 'section') => `<div class="seg">${mySections().map(s => `<label><input type="radio" name="${name}" value="${s.key}" ${sel === s.key ? 'checked' : ''}><span>${esc(s.name)}</span></label>`).join('')}</div>`;
 const prioSeg = (sel = 'normal') => `<div class="seg">${Object.entries(state.meta.priorities).map(([k, v]) => `<label><input type="radio" name="priority" value="${k}" ${sel === k ? 'checked' : ''}><span class="p-${k}">${v}</span></label>`).join('')}</div>`;
 const field = (label, html) => `<label class="f"><span>${label}</span>${html}</label>`;
+
+// ===== المجلدات: أسماء بالمسار الكامل (مجلد / مجلد فرعي) =====
+function folderPaths(folders) {
+  const by = Object.fromEntries(folders.map(f => [f.id, f]));
+  const pathOf = (f) => { const p = []; for (let x = f, n = 0; x && n < 20; x = by[x.parent_id], n++) p.unshift(x.name); return p.join(' / '); };
+  return folders.map(f => ({ ...f, path: pathOf(f) })).sort((a, b) => (a.section + a.path).localeCompare(b.section + b.path, 'ar'));
+}
+const optData = (v, label, sel, data = '') => `<option value="${esc(v)}" ${String(sel ?? '') === String(v) ? 'selected' : ''} ${data}>${esc(label)}</option>`;
+const folderSelect = (folders, sel, blank = '— بدون مجلد —') => `<select name="folder_id">${opt('', blank, sel)}${folderPaths(folders).map(fo => optData(fo.id, fo.path, sel, `data-section="${fo.section}"`)).join('')}</select>`;
+
+// ===== نوع المهمة: مستقلة، دورية، ضمن مشروع، ضمن مبادرة =====
+const TASK_TYPES = { single: 'مستقلة', recurring: 'دورية', project: 'ضمن مشروع', initiative: 'ضمن مبادرة' };
+function taskTypeOf(i, projects) {
+  if (i.recurrence) return 'recurring';
+  if (i.project_id) { const p = projects.find(x => x.id == i.project_id); return p && p.kind === 'initiative' ? 'initiative' : 'project'; }
+  return i.task_type || 'single';
+}
+function classifyHtml(i, projects) {
+  const t = taskTypeOf(i, projects);
+  return `${field('نوع المهمة', `<div class="seg">${Object.entries(TASK_TYPES).map(([k, v]) => `<label><input type="radio" name="task_type" value="${k}" ${k === t ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>`)}
+    <div class="grid2">
+      <label class="f" data-show="recurring"><span>تتكرر</span><select name="recurrence">${Object.entries(state.meta.recurrences).map(([k, v]) => opt(k, v, i.recurrence || 'weekly')).join('')}</select></label>
+      <label class="f" data-show="project initiative"><span data-plabel>المشروع</span><select name="project_id">${opt('', '— اختر —', i.project_id)}${projects.map(p => optData(p.id, `${sectionName(p.section)}: ${p.name}`, i.project_id, `data-section="${p.section}" data-folder="${p.folder_id || ''}" data-kind="${p.kind || 'project'}"`)).join('')}</select></label>
+    </div>
+    <p class="small muted" data-show="recurring">عند إنجاز المهمة الدورية تُنشأ تلقائيًا للموعد التالي.</p>`;
+}
+// تحويل اختيار «نوع المهمة» إلى الحقول التي يحفظها الخادم
+function applyTaskType(d) {
+  const t = d.task_type; delete d.task_type;
+  if (t === undefined) return d;
+  if (t !== 'recurring') d.recurrence = '';
+  if (t === 'recurring' && !d.recurrence) throw new Error('اختر مدة التكرار');
+  if (t === 'project' || t === 'initiative') { if (!d.project_id) throw new Error(t === 'initiative' ? 'اختر المبادرة' : 'اختر المشروع'); }
+  else d.project_id = '';
+  return d;
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return; } catch { }
+  const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove();
+}
 
 // ===== المرفقات والملاحظات الصوتية =====
 function fileFieldHtml(name = 'file_ids', voice = true) {
@@ -220,8 +285,8 @@ function navItems() {
   ];
   if (isMember()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/tasks', i: 'list', t: 'مهامي' },
-    { h: '#/sops', i: 'book', t: 'الإجراءات التشغيلية' },
+    { h: '#/tasks', i: 'list', t: state.me.grants && state.me.grants.scope !== 'own' ? 'المهام' : 'مهامي' },
+    ...common.filter(n => n.h === '#/sops' || can({ '#/meetings': 'meetings.view', '#/partners': 'partners.view', '#/reports': 'reports.view' }[n.h])),
   ];
   if (isOwner()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
@@ -240,7 +305,7 @@ function navItems() {
 }
 function bottomItems() {
   const c = state.counts;
-  if (isMember()) return [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/tasks', i: 'list', t: 'مهامي' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/settings', i: 'settings', t: 'الإعدادات' }];
+  if (isMember()) return [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/tasks', i: 'list', t: 'المهام' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
   return isOwner()
     ? [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/my', i: 'list', t: 'طلباتي' }, { h: '#/decisions', i: 'gavel', t: 'قراري', n: c.pending_decisions }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }]
     : [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/inbox', i: 'inbox', t: 'الوارد', n: c.inbox_pending }, { h: '#/dashboard', i: 'alert', t: 'المتابعة' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
@@ -253,9 +318,9 @@ function renderShell() {
     <span class="role-chip desk-only">${esc(me.role_label || '')}</span>
     <span class="spacer"></span>
     <div class="actions">
-      ${isOwner() ? `<button class="btn primary" id="btnAssign">${I('plus')} <span>تكليف جديد</span></button>
-        <button class="btn" id="btnNote" title="إرسال ملاحظة أو طلب">${I('note')} <span class="desk-only">إرسال ملاحظة أو طلب</span></button>`
-      : isManager() ? `<button class="btn primary" id="btnTask">${I('plus')} <span>مهمة جديدة</span></button>` : ''}
+      ${canAddAny() ? `<button class="btn primary" id="btnAdd" title="إضافة مهمة أو مشروع أو مبادرة">${I('plus')} <span>إضافة</span></button>` : ''}
+      ${isOwner() ? `<button class="btn" id="btnNote" title="إرسال ملاحظة أو طلب">${I('note')} <span class="desk-only">إرسال ملاحظة أو طلب</span></button>` : ''}
+      <button class="iconbtn" id="btnToday" aria-label="مهام اليوم" title="مهام اليوم">${I('calendarCheck')}</button>
       <a class="iconbtn desk-only" href="#/notifications" aria-label="الإشعارات">${I('bell')}<span class="badge hidden" id="bellN"></span></a>
     </div>
   </header>
@@ -264,8 +329,9 @@ function renderShell() {
     <main id="main" tabindex="-1"></main>
   </div>
   <nav class="bottomnav" id="bottomnav" aria-label="التنقل السريع"></nav>`;
-  if (isOwner()) { $('#btnAssign').onclick = () => modalAssignment(); $('#btnNote').onclick = () => modalNote(); }
-  else if (isManager()) $('#btnTask').onclick = () => modalTask();
+  if (canAddAny()) $('#btnAdd').onclick = () => modalAdd();
+  if (isOwner()) $('#btnNote').onclick = () => modalNote();
+  $('#btnToday').onclick = () => modalToday();
   document.title = appName();
   renderNav();
 }
@@ -275,7 +341,7 @@ function renderNav() {
   const sn = $('#sidenav'); if (!sn) return;
   sn.innerHTML = navItems().map(n => `<a href="${n.h}" class="${active(n.h) ? 'active' : ''}">${I(n.i)}<span>${n.t}</span>${n.n ? `<span class="count ${n.o ? 'o' : ''}">${n.n}</span>` : ''}</a>`).join('')
     + (can('folders.view') ? `<div class="sep"></div><div class="lbl">الأقسام</div>`
-    + state.meta.sections.map(s => `<a href="#/section/${s.key}" class="${route === '#/section/' + s.key ? 'active' : ''}">${I(s.icon)}<span>${s.name}</span></a>`).join('') : '')
+    + mySections().map(s => `<a href="#/section/${s.key}" class="${route === '#/section/' + s.key ? 'active' : ''}">${I(s.icon)}<span>${s.name}</span></a>`).join('') : '')
     + `<div class="sep"></div><a href="#/notifications" class="${active('#/notifications') ? 'active' : ''}">${I('bell')}<span>الإشعارات</span>${state.counts.unread ? `<span class="count">${state.counts.unread}</span>` : ''}</a>
        <a href="#/settings" class="${active('#/settings') ? 'active' : ''}">${I('settings')}<span>الإعدادات</span></a>
        <a href="#" id="logoutLink">${I('logout')}<span>تسجيل الخروج</span></a>`;
@@ -409,7 +475,7 @@ function connectWs() {
   ws.onmessage = (e) => {
     if (e.data === 'pong') return;
     let m; try { m = JSON.parse(e.data); } catch { return; }
-    if (m.event === 'change') refreshView(); else if (m.event === 'notification') onNotification(m.data);
+    if (m.event === 'change') onChange(m.data); else if (m.event === 'notification') onNotification(m.data); else if (m.event === 'logout') forcedLogout();
   };
   ws.onclose = () => { clearInterval(wsPing); if (wsWanted) setTimeout(connectWs, Math.min(30000, 1000 * 2 ** Math.min(wsTries++, 5))); };
 }
@@ -417,10 +483,24 @@ function openEvents() {
   closeEvents();
   if (state.meta.realtime === 'ws') { wsWanted = true; connectWs(); return; }
   es = new EventSource('/api/events');
-  es.addEventListener('change', refreshView);
+  es.addEventListener('change', (e) => onChange(e.data));
   es.addEventListener('notification', (e) => onNotification(JSON.parse(e.data)));
+  es.addEventListener('logout', forcedLogout);
   es.onerror = () => { /* يعيد المتصفح الاتصال تلقائيًا */ };
 }
+// تغيّر شيء: إن كان حسابي (صلاحياتي مثلًا) أُعيد قراءة الحساب ورسم الواجهة، ثم تحديث العرض
+async function onChange(raw) {
+  if (!state.me) return;
+  let scope = raw; try { if (typeof raw === 'string') scope = JSON.parse(raw); } catch { scope = {}; }
+  if (scope && scope.user === state.me.id) {
+    if ($('.modal-bg')) { state.reloadMe = true; state.stale = true; return; } // لا نمسح نافذة مفتوحة؛ نُحدّث بعد إغلاقها
+    try { const me = await GET('/api/me'); state.me = me; state.meta = await GET('/api/meta'); renderShell(); route(); return; } catch { return; }
+  }
+  if (scope && scope.user) { state.meta = await GET('/api/meta').catch(() => state.meta); }
+  refreshView();
+}
+// أوقف المدير الحساب أو غيّر كلمة مروره: خروج فوري
+function forcedLogout() { closeEvents(); state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); }
 function closeEvents() {
   if (es) { es.close(); es = null; }
   wsWanted = false; clearInterval(wsPing);
@@ -448,7 +528,7 @@ function followRibbonHtml(urgent, today) {
       : '<div class="r-empty">لا توجد مهام عاجلة ولا مستحقة اليوم</div>'}</div>
     ${items.length >= 2 ? `<button type="button" class="r-ctl" data-toggle aria-label="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}" title="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}">${I(paused ? 'play' : 'pause')}</button>` : ''}
   </section>
-  <div class="r-legend small"><span><i class="lg red"></i>عاجلة (${urgent.length})</span><span><i class="lg orange"></i>مهمة ومستحقة اليوم</span><span><i class="lg slate"></i>مستحقة اليوم (${today.length})</span></div>`;
+  <div class="r-legend small"><span><i class="lg red"></i>عاجلة (${urgent.length})</span><span><i class="lg orange"></i>أولوية «مهم» ومستحقة اليوم</span><span><i class="lg slate"></i>مستحقة اليوم (${today.length})</span></div>`;
 }
 function bindRibbons(root) {
   $$('.ribbon .r-item', root).forEach(b => b.onclick = () => location.hash = `#/item/${b.dataset.id}`);
@@ -593,10 +673,19 @@ async function viewDashboard(main) {
   async function load() {
     const d = await GET('/api/dashboard');
     main.innerHTML = `<div class="page-h">${I('alert')}<h1>لوحة المتابعة التنفيذية</h1></div>
-      <div class="kpis" style="margin-bottom:14px">${d.groups.map(g => `<a class="kpi ${g.tone === 'gray' ? 'blue' : g.tone}" href="#g-${g.key}"><b>${g.items.length}</b><span>${esc(g.title)}</span></a>`).join('')}</div>
-      ${d.groups.map(g => `<div class="card" id="g-${g.key}"><div class="card-h"><h2>${esc(g.title)}</h2><span class="chip">${g.items.length}</span></div>
-        ${listOrEmpty(g.items.slice(0, 30), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }), 'لا يوجد')}</div>`).join('')}`;
-    bindInboxActions(main); bindQuickStatus(main);
+      <div class="kpis" style="margin-bottom:14px">${d.groups.map(g => `<a class="kpi ${g.tone === 'gray' ? 'blue' : g.tone}" href="javascript:void(0)" data-open-g="${g.key}"><b>${g.items.length}</b><span>${esc(g.title)}</span></a>`).join('')}</div>
+      ${d.groups.filter(g => g.items.length).map(g => `<details class="card dgroup" id="g-${g.key}" ${['urgent', 'today', 'overdue', 'unack', 'stalled'].includes(g.key) ? 'open' : ''}>
+        <summary><div class="card-h"><h2>${esc(g.title)}</h2><span class="chip">${g.items.length}</span><span class="spacer"></span>${I('back', 'chev')}</div></summary>
+        ${listOrEmpty(g.items.slice(0, 10), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }), 'لا يوجد')}
+        ${g.items.length > 10 ? `<button type="button" class="btn sm ghost" data-more="${g.key}" style="margin-top:8px">عرض الكل (${g.items.length})</button>` : ''}</details>`).join('')}
+      ${d.groups.every(g => !g.items.length) ? '<div class="empty">لا توجد متابعات مفتوحة 🎉</div>' : ''}`;
+    $$('[data-open-g]', main).forEach(k => k.onclick = () => { const el = $('#g-' + k.dataset.openG, main); if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+    $$('[data-more]', main).forEach(b => b.onclick = () => {
+      const g = d.groups.find(x => x.key === b.dataset.more);
+      b.previousElementSibling.outerHTML = listOrEmpty(g.items.slice(0, 100), i => itemRow(i, { actions: g.key === 'unack' ? inboxActions(i) : quickStatus(i) }));
+      b.remove(); bindInboxActions(main); bindQuickStatus(main, d.groups.flatMap(x => x.items));
+    });
+    bindInboxActions(main); bindQuickStatus(main, d.groups.flatMap(g => g.items));
   }
   await load(); return { refresh: load };
 }
@@ -605,38 +694,130 @@ function quickStatus(i) {
   return `<select class="qs" data-id="${i.id}" aria-label="تحديث الحالة" style="min-height:36px;width:auto">
     ${opt('', 'تحديث سريع للحالة…')}${['in_progress', 'waiting_reply', 'waiting_info', 'stalled', 'done'].filter(s => s !== i.status).map(s => opt(s, state.meta.statuses[s])).join('')}</select>`;
 }
-function bindQuickStatus(root) {
+function bindQuickStatus(root, items = []) {
   $$('select.qs', root).forEach(s => s.onchange = async () => {
     if (!s.value) return;
-    try { await api('PATCH', `/api/items/${s.dataset.id}`, { status: s.value }); toast('تم تحديث الحالة', 'ok'); refreshView(); }
-    catch (e) { showErr(e); s.value = ''; }
+    const it = items.find(x => x.id == s.dataset.id) || { id: Number(s.dataset.id) };
+    const v = s.value; s.value = '';
+    changeStatus(it, v, refreshView);
+  });
+}
+
+// ===== تأجيل الموعد بنقرة =====
+function modalPostpone(i, after) {
+  const base = i.due_date && i.due_date > today() ? i.due_date : today();
+  const opts = [['غدًا', addDays(today(), 1)], ['بعد 3 أيام', addDays(base, 3)], ['بعد أسبوع', addDays(base, 7)], ['بعد أسبوعين', addDays(base, 14)]];
+  const m = openModal({
+    title: 'تأجيل الموعد', submit: 'تأجيل إلى التاريخ المختار',
+    body: `<p class="small muted">الموعد الحالي: ${esc(fmtDue(i))}</p>
+      <div class="btn-row" style="margin:8px 0 12px">${opts.map(([l, d]) => `<button type="button" class="btn" data-pp="${d}">${l}${fmtDate(d) !== l ? ` <span class="small muted">(${esc(fmtDate(d))})</span>` : ''}</button>`).join('')}</div>
+      ${field('أو اختر تاريخًا', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
+      ${field('سبب التأجيل (اختياري، يظهر في المحادثة)', '<input type="text" name="reason" maxlength="200">')}`,
+    init: (form) => $$('[data-pp]', form).forEach(b => b.onclick = async () => { try { await save(b.dataset.pp, form.elements.reason.value); m.close(); } catch (e) { showErr(e); } }),
+    onSubmit: async (d) => { if (!d.due_date) throw new Error('اختر التاريخ'); await save(d.due_date, d.reason); },
+  });
+  async function save(date, reason) {
+    await api('PATCH', `/api/items/${i.id}`, { due_date: date });
+    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `تأجيل الموعد إلى ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
+    toast(`أُجّل الموعد إلى ${fmtDate(date)}`, 'ok'); after && after();
+  }
+}
+// أول دخول بكلمة مرور أعطاها المدير: يجب تغييرها قبل استخدام المنصة
+function renderForcePassword() {
+  closeEvents();
+  app.innerHTML = `<div class="login"><form class="card" id="fpw">
+    <img src="/img/logo.png" alt="الشعار"><h1>مرحبًا ${esc(state.me.name)}</h1>
+    <p class="small muted">لأمان حسابك، اختر كلمة مرور جديدة خاصة بك قبل البدء.</p>
+    <div class="err-box hidden"></div>
+    ${field('كلمة المرور الحالية (التي أعطاك إياها المدير)', '<input type="password" name="current" autocomplete="current-password" dir="ltr" required>')}
+    ${field('كلمة المرور الجديدة (8 أحرف على الأقل)', '<input type="password" name="next" autocomplete="new-password" dir="ltr" minlength="8" required>')}
+    ${field('تأكيد كلمة المرور الجديدة', '<input type="password" name="again" autocomplete="new-password" dir="ltr" required>')}
+    <button class="btn primary block" type="submit">حفظ والمتابعة</button>
+    <button class="btn ghost block" type="button" id="fpwOut">تسجيل الخروج</button></form></div>`;
+  const f = $('#fpw'); const err = $('.err-box', f);
+  $('#fpwOut').onclick = () => logout();
+  f.onsubmit = async (e) => {
+    e.preventDefault(); const d = formData(f); err.classList.add('hidden');
+    try {
+      if (d.next !== d.again) throw new Error('التأكيد لا يطابق كلمة المرور الجديدة');
+      await POST('/api/password', { current: d.current, next: d.next });
+      toast('تم حفظ كلمة المرور', 'ok'); boot();
+    } catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); }
+  };
+}
+
+// ===== تغيير الحالة: نوافذ «أنجزت» و«متعثرة» بدل نوافذ المتصفح =====
+const STALL_REASONS = ['طرف خارجي لم يرد', 'نقص معلومات أو مستندات', 'تعارض مع أولوية أخرى', 'عائق مالي أو إداري'];
+async function changeStatus(i, status, after) {
+  const done = async (body) => { await api('PATCH', `/api/items/${i.id}`, body); toast('تم تحديث الحالة', 'ok'); after && after(); };
+  if (status === 'stalled') return modalStalled(i, done);
+  if (status === 'done') return modalDone(i, done, after);
+  if (status === 'cancelled' && !confirm('تأكيد إلغاء المهمة؟')) return;
+  try { await done({ status }); } catch (e) { showErr(e); }
+}
+function modalStalled(i, done) {
+  openModal({
+    title: 'المهمة متعثرة — ما السبب؟', submit: 'حفظ', submitClass: 'red',
+    body: `<div class="radios">${STALL_REASONS.map((r, n) => `<label class="check"><input type="radio" name="reason" value="${esc(r)}" ${n ? '' : 'checked'}> ${esc(r)}</label>`).join('')}
+        <label class="check"><input type="radio" name="reason" value=""> سبب آخر</label></div>
+      ${field('تفاصيل (مطلوبة عند اختيار «سبب آخر»)', '<textarea name="note" style="min-height:70px" placeholder="ما الذي يعيق التنفيذ؟ وما المطلوب لحله؟"></textarea>')}
+      <p class="small muted">تظهر المهمة المتعثرة في المهام العاجلة ويُبلَّغ بها مدير المكتب.</p>`,
+    onSubmit: async (d) => {
+      const note = [d.reason, (d.note || '').trim()].filter(Boolean).join(' — ');
+      if (!note) throw new Error('اكتب سبب التعثر');
+      await done({ status: 'stalled', status_note: note });
+    },
+  });
+}
+function modalDone(i, done) {
+  const open = (i.subtasks_total || 0) - (i.subtasks_done || 0);
+  openModal({
+    title: 'إنجاز المهمة', submit: 'تم الإنجاز', submitClass: 'green',
+    body: `${open > 0 ? `<div class="warn-box" style="margin-bottom:10px">في هذه المهمة ${open === 1 ? 'مهمة فرعية مفتوحة' : `${open} مهام فرعية مفتوحة`}.</div>
+        <div class="radios" style="margin-bottom:10px"><label class="check"><input type="radio" name="subs" value="all" checked> إنجازها معها</label>
+        <label class="check"><input type="radio" name="subs" value="keep"> إبقاؤها مفتوحة</label></div>` : ''}
+      ${field('ما الذي أُنجز؟ (اختياري)', '<textarea name="body" style="min-height:70px" placeholder="ملخص قصير للنتيجة يصل إلى مدير المكتب"></textarea>')}
+      ${field('مرفقات (اختياري)', fileFieldHtml('file_ids', false))}`,
+    onSubmit: async (d) => {
+      await done({ status: 'done', complete_subtasks: d.subs !== 'keep' }); // الحالة أولًا؛ الملخص بعد نجاحها فقط
+      if ((d.body || '').trim() || (d.file_ids || []).length) await POST(`/api/items/${i.id}/messages`, { body: d.body, file_ids: d.file_ids, kind: isManager() ? 'result' : 'update' }).catch(showErr);
+    },
   });
 }
 
 // ===== قوائم المهام مع البحث والتصفية =====
-function filtersHtml(f, { section = true, kindSel = false } = {}) {
+// شريط التصفية: بحث + شرائح سريعة + «تصفية متقدمة» مطوية + تصدير القائمة كما تظهر
+function filtersHtml(f, { section = true } = {}) {
+  const adv = ['section', 'status', 'priority', 'category'].filter(k => f[k] && !(k === 'section' && !section)).length;
+  const chip = (v, label) => `<label><input type="radio" name="scope" value="${v}" ${String(f.scope ?? '') === v ? 'checked' : ''}><span>${label}</span></label>`;
   return `<form class="filters" id="flt">
-    <input type="search" name="q" placeholder="بحث بالعنوان أو الرقم المرجعي أو المسؤول" value="${esc(f.q || '')}">
-    ${section ? `<select name="section">${opt('', 'كل الأقسام', f.section)}${state.meta.sections.map(s => opt(s.key, s.name, f.section)).join('')}</select>` : ''}
-    <select name="scope">${opt('open', 'المفتوحة', f.scope)}${opt('today', 'مستحقة اليوم', f.scope)}${opt('overdue', 'المتأخرة', f.scope)}${opt('closed', 'المكتملة والملغاة', f.scope)}${opt('', 'الكل', f.scope)}</select>
-    <select name="status">${opt('', 'كل الحالات', f.status)}${Object.entries(state.meta.statuses).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
-    <select name="priority">${opt('', 'كل الأولويات', f.priority)}${Object.entries(state.meta.priorities).map(([k, v]) => opt(k, v, f.priority)).join('')}</select>
-    <select name="category">${opt('', 'كل التصنيفات', f.category)}${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, f.category)).join('')}</select>
+    <div class="filters-top"><input type="search" name="q" placeholder="بحث بالعنوان أو الرقم المرجعي أو المسؤول" value="${esc(f.q || '')}" aria-label="بحث">
+      <a class="btn sm" data-export href="#" download title="تصدير القائمة كما تظهر (Excel)">${I('download')}<span class="desk-only"> تصدير</span></a></div>
+    <div class="seg quick" role="group" aria-label="عرض">${chip('open', 'المفتوحة')}${chip('today', 'اليوم')}${chip('overdue', 'المتأخرة')}${chip('closed', 'المنجزة')}${chip('', 'الكل')}</div>
+    <details class="adv" ${adv ? 'open' : ''}><summary>تصفية متقدمة${adv ? ` (${adv})` : ''}</summary><div class="adv-grid">
+      ${section ? `<select name="section" aria-label="القسم">${opt('', 'كل الأقسام', f.section)}${mySections().map(s => opt(s.key, s.name, f.section)).join('')}</select>` : ''}
+      <select name="status" aria-label="الحالة">${opt('', 'كل الحالات', f.status)}${Object.entries(state.meta.statuses).map(([k, v]) => opt(k, v, f.status)).join('')}</select>
+      <select name="priority" aria-label="الأولوية">${opt('', 'كل الأولويات', f.priority)}${Object.entries(state.meta.priorities).map(([k, v]) => opt(k, v, f.priority)).join('')}</select>
+      <select name="category" aria-label="التصنيف">${opt('', 'كل التصنيفات', f.category)}${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, f.category)).join('')}</select>
+    </div></details>
   </form>`;
 }
 function bindFilters(root, f, reload) {
   const form = $('#flt', root); if (!form) return;
-  let t; const go = () => { Object.assign(f, formData(form)); reload(); };
-  form.oninput = () => { clearTimeout(t); t = setTimeout(go, 300); };
+  const ex = $('[data-export]', form);
+  const syncExport = () => { if (ex) ex.href = '/api/items-export.csv?' + qs(f); };
+  let t; const go = () => { Object.assign(f, formData(form)); syncExport(); reload(); };
+  form.oninput = (e) => { clearTimeout(t); t = setTimeout(go, e.target.type === 'search' ? 300 : 0); };
   form.onsubmit = (e) => { e.preventDefault(); go(); };
+  syncExport();
 }
 const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== '' && v != null)).toString();
 
 async function viewTasks(main) {
   const f = { scope: 'open' };
-  main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${isManager() ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
+  main.innerHTML = `<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
-  async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${items.length} نتيجة</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main); }
+  async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${countTxt(items.length, 'نتيجة', 'نتيجتان', 'نتائج')}</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
 }
 
@@ -659,9 +840,10 @@ async function viewSection(main, key) {
   let tab = 'folders';
   async function load() {
     const [home, projects, folders] = await Promise.all([GET('/api/home'), GET('/api/projects?section=' + key), GET('/api/folders?section=' + key)]);
-    const s = home.tiles.find(t => t.key === key);
+    const s = (home.tiles || []).find(t => t.key === key);
+    if (!s) throw new Error('هذا القسم خارج صلاحياتك');
     main.innerHTML = `<div class="page-h"><div class="tile" style="min-height:0;padding:0;border:0;box-shadow:none;background:none;cursor:default"><div class="th"><div class="ic">${I(sec.icon)}</div><h1>${esc(sec.name)}</h1></div></div><span class="spacer"></span>
-        ${isOwner() ? `<button class="btn primary" id="add">${I('plus')} تكليف في هذا القسم</button>` : `<button class="btn primary" id="add">${I('plus')} مهمة في هذا القسم</button>`}</div>
+        ${canAddAny() ? `<button class="btn primary" id="add">${I('plus')} إضافة في هذا القسم</button>` : ''}</div>
       <div class="kpis">
         <div class="kpi blue"><b>${s.open}</b><span>مهام مفتوحة</span></div><div class="kpi orange"><b>${s.due_today}</b><span>متابعات مستحقة اليوم</span></div>
         <div class="kpi red"><b>${s.overdue}</b><span>متأخرة</span></div><div class="kpi orange"><b>${s.awaiting_decision}</b><span>بانتظار قرار أو اعتماد</span></div>
@@ -670,23 +852,25 @@ async function viewSection(main, key) {
       <div class="tabs section-gap"><button data-tab="folders" class="${tab === 'folders' ? 'active' : ''}">${I('folder')} المجلدات (${folders.length})</button><button data-tab="tasks" class="${tab === 'tasks' ? 'active' : ''}">كل المهام</button><button data-tab="projects" class="${tab === 'projects' ? 'active' : ''}">المشاريع والمبادرات (${projects.length})</button>
         ${key === 'partnerships' ? `<button data-tab="partners" class="${tab === 'partners' ? 'active' : ''}">سجل الجهات والشخصيات</button>` : ''}</div>
       <div id="tabc"></div>`;
-    $('#add', main).onclick = () => isOwner() ? modalAssignment({ section: key }) : modalTask({ section: key });
+    const addB = $('#add', main); if (addB) addB.onclick = () => modalAdd({ section: key });
     $$('[data-tab]', main).forEach(b => b.onclick = () => { tab = b.dataset.tab; load(); });
     const tc = $('#tabc', main);
     if (tab === 'folders') {
-      tc.innerHTML = `${can('projects.manage') ? `<div class="btn-row" style="margin-bottom:10px"><button class="btn" id="addF">${I('plus')} مجلد جديد</button></div>` : ''}
-        ${folders.length ? `<div class="folders">${folders.map(folderCard).join('')}</div>` : `<div class="empty">لا توجد مجلدات بعد${can('projects.manage') ? ' — أنشئ مجلدًا لتجمع فيه المشاريع والمهام المتعلقة به' : ''}</div>`}`;
+      const roots = folders.filter(fo => !fo.parent_id);
+      tc.innerHTML = `${can('projects.manage') ? `<div class="btn-row" style="margin-bottom:10px"><button class="btn" id="addF">${I('folderPlus')} مجلد جديد</button></div>` : ''}
+        ${roots.length ? `<div class="folders">${roots.map(folderCard).join('')}</div>` : `<div class="empty">لا توجد مجلدات بعد${can('projects.manage') ? ' — أنشئ مجلدًا لتجمع فيه المشاريع والمهام المتعلقة به' : ''}</div>`}`;
       const addF = $('#addF', tc); if (addF) addF.onclick = () => modalFolder({ section: key });
     } else if (tab === 'tasks') {
       tc.innerHTML = filtersHtml(f, { section: false }) + '<div id="res"></div>';
-      const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', tc).innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(tc); };
+      const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', tc).innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(tc, items); };
       bindFilters(tc, f, loadTasks); await loadTasks();
     } else if (tab === 'projects') {
-      tc.innerHTML = `${can('projects.manage') ? `<div class="btn-row" style="margin-bottom:10px"><button class="btn" id="addP">${I('plus')} مشروع / مبادرة</button></div>` : ''}
-        ${listOrEmpty(projects, p => `<div class="row"><div class="main"><span class="title">${esc(p.name)}</span>${p.description ? `<div class="small muted">${esc(p.description)}</div>` : ''}
+      tc.innerHTML = `${can('projects.manage') ? `<div class="btn-row" style="margin-bottom:10px"><button class="btn" id="addP">${I('briefcase')} مشروع جديد</button><button class="btn" id="addI">${I('flag')} مبادرة جديدة</button></div>` : ''}
+        ${listOrEmpty(projects, p => `<div class="row"><div class="main"><span class="title">${kindChip(p)} ${esc(p.name)}</span>${p.description ? `<div class="small muted">${esc(p.description)}</div>` : ''}
           <div class="meta"><span class="chip ${p.status === 'active' ? 'st-in_progress' : p.status === 'done' ? 'st-done' : ''}">${({ active: 'جارٍ', paused: 'متوقف', done: 'منتهٍ' })[p.status]}</span><span class="txt">${p.open_tasks} مهمة مفتوحة</span>${demoChip(p)}</div></div>
           <div class="side"><button class="btn sm" data-pf="${p.id}">مهامه</button>${can('projects.manage') ? `<button class="btn sm" data-pe="${p.id}">تعديل</button>` : ''}</div></div>`, 'لا توجد مشاريع مسجلة')}`;
-      const addP = $('#addP', tc); if (addP) addP.onclick = () => modalProject({ section: key });
+      const addP = $('#addP', tc); if (addP) addP.onclick = () => modalProject({ section: key, kind: 'project' });
+      const addI = $('#addI', tc); if (addI) addI.onclick = () => modalProject({ section: key, kind: 'initiative' });
       $$('[data-pe]', tc).forEach(b => b.onclick = () => modalProject(projects.find(p => p.id == b.dataset.pe)));
       $$('[data-pf]', tc).forEach(b => b.onclick = (e) => { e.preventDefault(); f.project_id = b.dataset.pf; f.scope = ''; tab = 'tasks'; load(); });
     } else if (tab === 'partners') {
@@ -697,14 +881,15 @@ async function viewSection(main, key) {
 }
 
 // ===== المجلدات: القسم ← المجلد ← المشاريع والمهام =====
+const kindChip = (p) => p.kind === 'initiative' ? `<span class="chip kind-i">${I('flag')}مبادرة</span>` : `<span class="chip kind-p">${I('briefcase')}مشروع</span>`;
 const folderCard = (fo) => `<a class="folder-card" href="#/folder/${fo.id}">${I('folder', 'fi')}<span class="fname">${esc(fo.name)}</span>
-  <span class="small muted">${fo.projects} مشروع • ${fo.open_tasks} مهمة مفتوحة</span>${fo.description ? `<span class="small">${esc(fo.description.slice(0, 90))}</span>` : ''}${demoChip(fo)}</a>`;
+  <span class="small muted">${fo.subfolders ? `${fo.subfolders} مجلد فرعي • ` : ''}${fo.projects} مشروع • ${fo.open_tasks} مهمة مفتوحة</span>${fo.description ? `<span class="small">${esc(fo.description.slice(0, 90))}</span>` : ''}${demoChip(fo)}</a>`;
 function modalFolder(fo = {}) {
   openModal({
-    title: fo.id ? 'تعديل المجلد' : 'مجلد جديد',
+    title: fo.id ? 'تعديل المجلد' : fo.parent ? `مجلد فرعي داخل «${fo.parent.name}»` : 'مجلد جديد',
     body: `${field('اسم المجلد *', `<input type="text" name="name" required value="${esc(fo.name || '')}" placeholder="مثل: الحلقات، برنامج الصيف، الأوقاف">`)}
       ${field('وصف مختصر', `<textarea name="description" style="min-height:60px">${esc(fo.description || '')}</textarea>`)}
-      ${fo.id ? '' : field('القسم', sectionSelect(fo.section))}`,
+      ${fo.id ? '' : fo.parent ? `<input type="hidden" name="parent_id" value="${fo.parent.id}">` : field('القسم', sectionSelect(fo.section))}`,
     onSubmit: async (d) => {
       if (fo.id) { await api('PATCH', `/api/folders/${fo.id}`, d); refreshView(); }
       else { const r = await POST('/api/folders', d); location.hash = `#/folder/${r.id}`; }
@@ -716,26 +901,30 @@ async function viewFolder(main, id) {
   async function load() {
     const [fo, projects] = await Promise.all([GET(`/api/folders/${id}`), GET(`/api/projects?folder_id=${id}`)]);
     const sec = state.meta.sections.find(x => x.key === fo.section);
-    main.innerHTML = `<div class="btn-row crumbs"><a class="btn sm ghost" href="#/section/${fo.section}">${I('back')} ${esc(sec.name)}</a><span class="muted">/</span><b>${esc(fo.name)}</b></div>
+    const crumbs = fo.path.map((p, n) => n === fo.path.length - 1 ? `<b>${esc(p.name)}</b>` : `<a href="#/folder/${p.id}">${esc(p.name)}</a>`);
+    main.innerHTML = `<div class="btn-row crumbs"><a class="btn sm ghost" href="${fo.parent_id ? `#/folder/${fo.parent_id}` : `#/section/${fo.section}`}">${I('back')} رجوع</a>
+        <a href="#/section/${fo.section}">${esc(sec.name)}</a>${crumbs.map(c => `<span class="muted">/</span>${c}`).join('')}</div>
       <div class="page-h">${I('folder')}<h1>${esc(fo.name)}</h1><span class="spacer"></span>
-        ${can('projects.manage') ? `<button class="btn" id="editF">تعديل المجلد</button>` : ''}
-        ${isOwner() ? `<button class="btn primary" id="addT">${I('plus')} تكليف في هذا المجلد</button>` : isManager() ? `<button class="btn primary" id="addT">${I('plus')} مهمة في هذا المجلد</button>` : ''}</div>
+        ${can('projects.manage') ? `<button class="btn" id="addSub">${I('folderPlus')} مجلد فرعي</button><button class="btn" id="editF">${I('edit')} تعديل المجلد</button>` : ''}
+        ${canAddAny() ? `<button class="btn primary" id="addT">${I('plus')} إضافة في هذا المجلد</button>` : ''}</div>
       ${fo.description ? `<p class="muted">${esc(fo.description)}</p>` : ''}
-      <div class="card"><div class="card-h"><h2>المشاريع</h2><span class="chip">${projects.length}</span><span class="spacer"></span>${can('projects.manage') ? `<button class="btn sm" id="addP">${I('plus')} مشروع في المجلد</button>` : ''}</div>
-        ${listOrEmpty(projects, p => `<div class="row"><div class="main"><span class="title">${esc(p.name)}</span>${p.description ? `<div class="small muted">${esc(p.description)}</div>` : ''}
+      ${fo.children.length ? `<div class="card"><div class="card-h"><h2>المجلدات الفرعية</h2><span class="chip">${fo.children.length}</span></div><div class="folders">${fo.children.map(folderCard).join('')}</div></div>` : ''}
+      <div class="card"><div class="card-h"><h2>المشاريع والمبادرات</h2><span class="chip">${projects.length}</span><span class="spacer"></span>${can('projects.manage') ? `<button class="btn sm" id="addP">${I('plus')} مشروع / مبادرة في المجلد</button>` : ''}</div>
+        ${listOrEmpty(projects, p => `<div class="row"><div class="main"><span class="title">${kindChip(p)} ${esc(p.name)}</span>${p.description ? `<div class="small muted">${esc(p.description)}</div>` : ''}
           <div class="meta"><span class="chip ${p.status === 'active' ? 'st-in_progress' : p.status === 'done' ? 'st-done' : ''}">${({ active: 'جارٍ', paused: 'متوقف', done: 'منتهٍ' })[p.status]}</span><span class="txt">${p.open_tasks} مهمة مفتوحة</span>
           ${(p.members || []).length ? `<span class="txt">${I('users')} ${p.members.map(m => esc(m.name)).join('، ')}</span>` : ''}${demoChip(p)}</div></div>
           <div class="side"><button class="btn sm" data-pf="${p.id}">مهامه</button>${can('projects.manage') ? `<button class="btn sm" data-pe="${p.id}">تعديل</button>` : ''}</div></div>`, 'لا توجد مشاريع في هذا المجلد')}</div>
       <div class="card"><div class="card-h"><h2>المهام</h2>${f.project_id ? `<span class="chip">${esc((projects.find(p => p.id == f.project_id) || {}).name || '')} <button type="button" class="iconbtn" id="clrP" aria-label="إظهار كل مهام المجلد" style="width:24px;height:24px">${I('x')}</button></span>` : ''}</div>
         ${filtersHtml(f, { section: false })}<div id="res"></div></div>`;
     const eF = $('#editF', main); if (eF) eF.onclick = () => modalFolder(fo);
-    const aT = $('#addT', main); if (aT) aT.onclick = () => isOwner() ? modalAssignment({ section: fo.section, folder_id: fo.id }) : modalTask({ section: fo.section, folder_id: fo.id });
+    const aT = $('#addT', main); if (aT) aT.onclick = () => modalAdd({ section: fo.section, folder_id: fo.id });
+    const aS = $('#addSub', main); if (aS) aS.onclick = () => modalFolder({ parent: fo });
     const aP = $('#addP', main); if (aP) aP.onclick = () => modalProject({ section: fo.section, folder_id: fo.id });
     $$('[data-pe]', main).forEach(b => b.onclick = () => modalProject(projects.find(p => p.id == b.dataset.pe)));
     $$('[data-pf]', main).forEach(b => b.onclick = () => { f.project_id = b.dataset.pf; load(); });
     const clr = $('#clrP', main); if (clr) clr.onclick = () => { delete f.project_id; load(); };
     const res = $('#res', main);
-    const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); res.innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(main); };
+    const loadTasks = async () => { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); res.innerHTML = listOrEmpty(items, i => itemRow(i, { showSection: false, actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مطابقة'); bindQuickStatus(main, items); };
     bindFilters(main, f, loadTasks); await loadTasks();
   }
   await load(); return { refresh: load };
@@ -743,10 +932,10 @@ async function viewFolder(main, id) {
 
 // ===== تفاصيل المهمة + المحادثة =====
 async function viewItem(main, id) {
-  main.innerHTML = `<div id="ih"></div>
+  main.innerHTML = `<div id="ih"></div><div id="subs"></div>
     <div class="card section-gap"><div class="card-h">${I('note')}<h2>المحادثة والتحديثات والقرارات</h2></div><div class="timeline" id="tl"></div></div>
     <form class="composer no-print" id="cmp">
-      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : 'اكتب رسالة أو تحديثًا لرجل الأعمال…'}" aria-label="نص الرسالة"></textarea>
+      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا لرجل الأعمال…')}" aria-label="نص الرسالة"></textarea>
       ${!isOwner() ? `<div class="grid2" style="margin-top:8px"><select name="kind" aria-label="نوع الرسالة">${opt('update', 'تحديث تنفيذ')}${opt('message', 'رسالة / استفسار')}</select>${isManager() ? '<input type="text" name="next_step" placeholder="الخطوة التالية (اختياري)">' : ''}</div>` : ''}
       <div class="tools">${fileFieldHtml()}<span class="spacer" style="flex:1"></span><button class="btn primary" type="submit">${I('send')} إرسال</button></div>
     </form>
@@ -767,7 +956,7 @@ async function viewItem(main, id) {
   let data;
   async function load() {
     data = await GET(`/api/items/${id}`);
-    renderHead(); renderTimeline(); renderLog();
+    renderHead(); renderSubtasks(); renderTimeline(); renderLog();
     refreshCounts(); // الخادم يعلّم إشعارات هذه المهمة كمقروءة عند فتحها
   }
   function renderHead() {
@@ -775,15 +964,18 @@ async function viewItem(main, id) {
     const fact = (k, v) => v ? `<div><dt>${k}</dt><dd>${v}</dd></div>` : '';
     const pendingCount = data.approvals.filter(a => a.status === 'pending').length;
     $('#ih', main).innerHTML = `<div class="card item-head">
-      <div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="javascript:history.back()">${I('back')} رجوع</a><span class="ref">${esc(i.ref)}</span>${demoChip(i)}</div>
+      <div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="javascript:history.back()">${I('back')} رجوع</a><span class="ref">${esc(i.ref)}</span>${demoChip(i)}
+        ${canEditItem(i) && !i.closed_at && i.kind !== 'note' ? `<span class="spacer" style="flex:1"></span><button class="btn sm" id="editTop">${I('edit')} تعديل التفاصيل</button>` : ''}</div>
       <h1>${esc(i.title)}</h1>
       <div class="meta btn-row" style="margin-top:8px"><span class="chip kind">${esc(kindLabel(i))}</span>${statusChip(i.status)}${prioChip(i.priority)}${dueChip(i)}
         ${i.acknowledged_at ? `<span class="chip st-acknowledged">${I('check')}تم تأكيد الاستلام ${fmtTs(i.acknowledged_at)}</span>` : (i.kind !== 'task' && i.status !== 'cancelled' ? '<span class="chip st-new">لم يُؤكد الاستلام بعد</span>' : '')}
         ${i.requires_approval ? '<span class="chip st-waiting_approval">يتطلب اعتماد النتيجة</span>' : ''}${i.closed_at ? '<span class="chip st-done">مغلقة نهائيًا</span>' : ''}
         ${pendingCount ? `<span class="chip overdue">${I('gavel')}${pendingCount} طلب ينتظر القرار</span>` : ''}</div>
       <dl class="facts">
-        ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact('المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
-        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : 'مدير المكتب')}
+        ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
+        ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
+        ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
+        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? 'رجل الأعمال' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
@@ -796,7 +988,38 @@ async function viewItem(main, id) {
       ${data.files.length ? `<div style="margin-top:10px"><div class="small muted">المرفقات</div>${filesHtml(data.files)}</div>` : ''}
       <div class="actions-bar no-print" id="acts"></div>
     </div>`;
+    const et = $('#editTop', main); if (et) et.onclick = () => modalTask(data.item, load);
     renderActions();
+  }
+  // المهام الفرعية: قائمة بإنجاز سريع، وإضافة من المكان نفسه
+  function renderSubtasks() {
+    const i = data.item; const el = $('#subs', main);
+    if (i.kind === 'note' || i.parent_task_id) { el.innerHTML = ''; return; }
+    const subs = data.subtasks || [];
+    const active = subs.filter(x => x.status !== 'cancelled'); const done = active.filter(x => x.status === 'done').length;
+    const canAdd = !i.closed_at && canAddSub();
+    const canTick = (st) => !st.closed_at && st.status !== 'cancelled' && (isOwner() || isManager() || isMember());
+    if (!subs.length && !canAdd) { el.innerHTML = ''; return; }
+    el.innerHTML = `<div class="card section-gap"><div class="card-h">${I('list')}<h2>المهام الفرعية</h2>${active.length ? `<span class="chip">${done}/${active.length}</span>` : ''}</div>
+      ${active.length ? `<div class="progress" role="progressbar" aria-valuenow="${done}" aria-valuemax="${active.length}"><span style="width:${Math.round(done * 100 / active.length)}%"></span></div>` : ''}
+      <div class="subtasks">${subs.map(st => `<div class="subtask ${st.status === 'done' ? 'done' : ''} ${st.status === 'cancelled' ? 'cancelled' : ''}">
+          <input type="checkbox" data-st="${st.id}" ${st.status === 'done' ? 'checked' : ''} ${canTick(st) ? '' : 'disabled'} aria-label="إنجاز: ${esc(st.title)}">
+          <a href="#/item/${st.id}" class="st-title">${esc(st.title)}</a>${dueChip(st)}${st.assignee ? `<span class="small muted">${esc(st.assignee)}</span>` : ''}</div>`).join('') || '<div class="small muted">لا توجد مهام فرعية بعد</div>'}</div>
+      ${canAdd ? `<form class="sub-add no-print" id="subAdd"><input type="text" name="title" placeholder="أضف مهمة فرعية…" maxlength="300" aria-label="عنوان المهمة الفرعية">
+        <input type="date" name="due_date" aria-label="موعد المهمة الفرعية (اختياري)" title="الموعد (اختياري)"><button class="btn sm primary" type="submit">${I('plus')} إضافة</button></form>` : ''}</div>`;
+    $$('[data-st]', el).forEach(cb => cb.onchange = async () => {
+      cb.disabled = true;
+      try { await api('PATCH', `/api/items/${cb.dataset.st}`, { status: cb.checked ? 'done' : 'in_progress' }); await load(); }
+      catch (e) { cb.checked = !cb.checked; cb.disabled = false; showErr(e); }
+    });
+    const f = $('#subAdd', el);
+    if (f && state.subFocusUntil > Date.now()) setTimeout(() => { const t = $('input[name=title]', f); if (t && document.activeElement !== t) t.focus(); }, 0);
+    if (f) f.onsubmit = async (e) => {
+      e.preventDefault(); const d = formData(f); if (!d.title.trim()) return;
+      const b = $('button', f); b.disabled = true;
+      try { await POST(`/api/items/${id}/subtasks`, d); toast('أُضيفت المهمة الفرعية', 'ok'); state.subFocusUntil = Date.now() + 4000; await load(); }
+      catch (ex) { showErr(ex); b.disabled = false; }
+    };
   }
   function renderActions() {
     const i = data.item; const a = []; const bar = $('#acts', main);
@@ -813,26 +1036,20 @@ async function viewItem(main, id) {
       }
       if (i.status === 'done' && !i.closed_at) a.push(`<button class="btn green" data-a="close">إغلاق نهائي</button>`);
       if (!i.is_open) a.push(`<button class="btn" data-s="in_progress">إعادة فتح</button>`);
-      a.push(`<button class="btn" data-a="edit">تعديل</button>`);
       if (i.is_open) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء</button>`);
     }
-    if (isMember() && i.is_open && !i.closed_at) {
+    if (isMember() && i.is_open && !i.closed_at && i.kind === 'task') {
       if (i.status !== 'in_progress') a.push(`<button class="btn primary" data-s="in_progress">${I('play')} بدء التنفيذ</button>`);
       if (i.status !== 'waiting_reply') a.push(`<button class="btn" data-s="waiting_reply">بانتظار رد طرف خارجي</button>`);
       if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">متعثرة</button>`);
       a.push(`<button class="btn green" data-s="done">${I('checkCircle')} أنجزت المهمة</button>`);
     }
+    if (canEditItem(i) && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
     if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     bar.innerHTML = a.join('');
     bar.classList.toggle('hidden', !a.length);
-    $$('[data-s]', bar).forEach(b => b.onclick = async () => {
-      const s = b.dataset.s;
-      if (s === 'cancelled' && !confirm('تأكيد الإلغاء؟')) return;
-      let note = '';
-      if (s === 'stalled') { note = prompt('سبب التعثر (اختياري):') || ''; }
-      try { await api('PATCH', `/api/items/${id}`, { status: s, status_note: note }); toast('تم تحديث الحالة', 'ok'); await load(); } catch (e) { showErr(e); }
-    });
+    $$('[data-s]', bar).forEach(b => b.onclick = () => changeStatus(data.item, b.dataset.s, load));
     $$('[data-a]', bar).forEach(b => b.onclick = async () => {
       const act = b.dataset.a;
       try {
@@ -844,6 +1061,7 @@ async function viewItem(main, id) {
         else if (act === 'close') { await POST(`/api/items/${id}/close`); toast('أُغلقت المهمة وحُفظ سجلها', 'ok'); await load(); }
         else if (act === 'edit') modalTask(data.item, load);
         else if (act === 'noteOn') modalNote({ parent_id: data.item.id });
+        else if (act === 'postpone') modalPostpone(data.item, load);
       } catch (e) { showErr(e); }
     });
   }
@@ -920,7 +1138,7 @@ async function viewItem(main, id) {
   }
   function renderLog() {
     const L = { created: 'إنشاء', acknowledged: 'تأكيد الاستلام', converted: 'تحويل إلى مهمة', status: 'تغيير الحالة', updated: 'تعديل', message: 'رسالة', update_posted: 'تحديث تنفيذ', closed: 'إغلاق نهائي' };
-    const F = { kind: 'النوع', status: 'الحالة', title: 'العنوان', description: 'الوصف', section: 'القسم', assignee: 'المسؤول', due_date: 'الموعد', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', category: 'التصنيف', project_id: 'المشروع', due_time: 'الوقت', sop_id: 'الإجراء', partner_id: 'الجهة' };
+    const F = { kind: 'النوع', status: 'الحالة', title: 'العنوان', description: 'الوصف', section: 'القسم', assignee: 'المسؤول', due_date: 'الموعد', priority: 'الأولوية', next_step: 'الخطوة التالية', requires_approval: 'اشتراط الاعتماد', category: 'التصنيف', project_id: 'المشروع', due_time: 'الوقت', sop_id: 'الإجراء', partner_id: 'الجهة', folder_id: 'المجلد', assignee_id: 'المسؤول (حساب)', recurrence: 'التكرار', parent_task_id: 'المهمة الأصل' };
     const val = (f, v) => v == null ? '—' : f === 'status' ? (state.meta.statuses[v] || v) : f === 'priority' ? (state.meta.priorities[v] || v) : f === 'section' ? sectionName(v) : f === 'kind' ? ({ assignment: 'تكليف', note: 'ملاحظة', task: 'مهمة' }[v] || v) : v;
     $('#logc', main).innerHTML = data.audit.map(a => `<div class="log-row">${fmtTs(a.created_at)} — <b>${esc(a.user_name || '')}</b>: ${esc(L[a.action] || a.action)}${a.field && a.action !== 'created' ? ` (${esc(F[a.field] || a.field)}: ${esc(String(val(a.field, a.old_value)).slice(0, 60))} ← ${esc(String(val(a.field, a.new_value)).slice(0, 60))})` : ''}</div>`).join('') || '<div class="muted">لا يوجد</div>';
   }
@@ -950,18 +1168,63 @@ async function viewDecisions(main) {
 }
 
 // ===== النماذج =====
-function modalAssignment(pre = {}) {
+// «إضافة»: اختيار نوع العنصر الجديد — مهمة، مشروع، مبادرة
+function modalAdd(pre = {}) {
+  const choice = (k, icon, title, sub) => `<button type="button" class="add-choice" data-k="${k}">${I(icon)}<b>${title}</b><span>${sub}</span></button>`;
+  const m = openModal({
+    title: 'إضافة جديدة',
+    body: `<div class="add-choices">
+      ${can('task.create') || can('assignment.create') ? choice('task', 'checkCircle', isOwner() ? 'مهمة / تكليف' : 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة') : ''}
+      ${can('projects.manage') ? choice('project', 'briefcase', 'مشروع', 'يجمع مهامًا تحت هدف واحد') + choice('initiative', 'flag', 'مبادرة', 'فكرة أو برنامج تُتابع مهامه') : ''}</div>`,
+    init: (form) => $$('[data-k]', form).forEach(b => b.onclick = () => {
+      m.close(); const k = b.dataset.k;
+      if (k === 'task') isOwner() ? modalAssignment(pre) : modalTask(pre);
+      else modalProject({ section: pre.section, folder_id: pre.folder_id, kind: k });
+    }),
+  });
+}
+// «مهام اليوم»: المستحقة اليوم والمتأخرة، مع نسخها كرسالة (لواتساب أو غيره)
+async function modalToday() {
+  const [today, overdue] = await Promise.all([GET('/api/items?' + qs({ kind: 'tasks', scope: 'today' })), GET('/api/items?' + qs({ kind: 'tasks', scope: 'overdue' }))]);
+  const dateTxt = new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+  const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+  const row = (i) => `<a class="today-row" href="#/item/${i.id}"><span class="pdot p-${i.priority}" aria-hidden="true"></span>
+    <span class="tt">${i.section ? `<b>${esc(i.section_name)}:</b> ` : ''}${esc(i.title)}</span>
+    <span class="small muted">${esc(i.is_overdue ? fmtDate(i.due_date) : (i.due_time || (i.assignee !== state.me.name ? i.assignee : '') || ''))}</span></a>`;
+  const mark = (i) => i.priority === 'urgent' ? '🔴 ' : i.priority === 'important' ? '🟠 ' : '';
+  const who = (i) => i.assignee && i.assignee !== state.me.name ? ` (${i.assignee})` : '';
+  const line = (i, n, late) => `${n + 1}. ${mark(i)}${i.section ? `[${i.section_name}] ` : ''}${i.title}${late ? ` — منذ ${fmtDate(i.due_date)}` : i.due_time ? ` — ${i.due_time}` : ''}${who(i)}`;
+  const text = [`📋 مهام اليوم — ${dateTxt}`, '',
+    `مستحقة اليوم (${today.length}):`, ...(today.length ? today.map((i, n) => line(i, n)) : ['لا توجد']),
+    ...(overdue.length ? ['', `متأخرة لم تُنجز (${overdue.length}):`, ...overdue.map((i, n) => line(i, n, true))] : [])].join('\n');
+  const m = openModal({
+    title: 'مهام اليوم',
+    body: `<div class="today-top"><p class="small muted">${esc(dateTxt)} • ${esc(hijri)}</p><button type="button" class="btn primary sm" id="copyToday">${I('copy')} نسخ كرسالة</button></div>
+      <h3 class="today-h">${I('calendarCheck')} مستحقة اليوم (${today.length})</h3>
+      ${today.length ? `<div class="today-list">${today.map(row).join('')}</div>` : '<div class="small muted">لا توجد مهام مستحقة اليوم</div>'}
+      ${overdue.length ? `<h3 class="today-h red">${I('alert')} متأخرة لم تُنجز (${overdue.length})</h3><div class="today-list">${overdue.map(row).join('')}</div>` : ''}
+      <div class="r-legend small" style="margin-top:12px"><span><i class="lg red"></i>عاجل</span><span><i class="lg orange"></i>مهم</span><span><i class="lg slate"></i>عادي</span></div>`,
+    init: (form) => {
+      $('#copyToday', form).onclick = async () => { await copyText(text); toast('نُسخت القائمة — الصقها في واتساب أو أي رسالة', 'ok'); };
+      $$('.today-row', form).forEach(a => a.addEventListener('click', () => m.close()));
+    },
+  });
+}
+async function modalAssignment(pre = {}) {
+  const [projects, folders] = await Promise.all([GET('/api/projects'), can('folders.view') ? GET('/api/folders') : []]);
   openModal({
-    title: 'تكليف جديد إلى مدير المكتب', submit: 'إرسال إلى مدير المكتب',
+    title: 'تكليف جديد إلى مدير المكتب', submit: 'إرسال إلى مدير المكتب', init: bindTaskForm,
     body: `${field('عنوان التكليف *', '<input type="text" name="title" required maxlength="300">')}
       ${field('وصف المطلوب', '<textarea name="description" placeholder="ما المطلوب تحديدًا؟ أي تفاصيل أو سياق مهم"></textarea>')}
       ${field('القسم المعني *', sectionSeg(pre.section))}
+      ${field('المجلد (اختياري)', folderSelect(folders, pre.folder_id))}
+      ${classifyHtml(pre, projects)}
       ${field('درجة الأهمية', prioSeg('normal'))}
       <div class="grid2">${field('الموعد المطلوب (اختياري)', '<input type="date" name="due_date">')}${field('الوقت (اختياري)', '<input type="time" name="due_time">')}</div>
-      ${field('المرفقات والملاحظة الصوتية', fileFieldHtml())}
-      ${pre.folder_id ? `<input type="hidden" name="folder_id" value="${esc(pre.folder_id)}">` : ''}`,
+      ${field('المرفقات والملاحظة الصوتية', fileFieldHtml())}`,
     onSubmit: async (d) => {
       if (!d.section) throw new Error('اختر القسم المعني');
+      applyTaskType(d);
       const it = await POST('/api/assignments', d);
       toast(`أُرسل التكليف ${it.ref} إلى مدير المكتب`, 'ok'); location.hash = `#/item/${it.id}`; refreshView();
     },
@@ -987,39 +1250,71 @@ async function modalNote(pre = {}) {
   });
 }
 async function taskFormBody(i = {}, { withDesc = true } = {}) {
-  const [projects, sops, partners, folders] = await Promise.all([GET('/api/projects'), GET('/api/sops'), GET('/api/partners'), GET('/api/folders')]);
+  const [projects, sops, partners, folders] = await Promise.all([GET('/api/projects'), can('sops.view') ? GET('/api/sops') : [], can('partners.view') ? GET('/api/partners') : [], can('folders.view') ? GET('/api/folders') : []]);
   const people = state.meta.users.filter(u => u.role !== 'owner');
-  const optD = (v, label, sel, data) => `<option value="${esc(v)}" ${String(sel ?? '') === String(v) ? 'selected' : ''} ${data}>${esc(label)}</option>`;
   return `${field('العنوان *', `<input type="text" name="title" required value="${esc(i.title || '')}">`)}
     ${withDesc ? field('الوصف', `<textarea name="description">${esc(i.description || '')}</textarea>`) : ''}
     <div class="grid2">
       ${field('القسم *', sectionSelect(i.section, 'section', true))}
-      ${field('التصنيف', `<select name="category">${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, i.category || 'general')).join('')}</select>`)}
-      ${field('المجلد', `<select name="folder_id">${opt('', '— بدون —', i.folder_id)}${folders.map(fo => optD(fo.id, fo.name, i.folder_id, `data-section="${fo.section}"`)).join('')}</select>`)}
-      ${field('المشروع', `<select name="project_id">${opt('', '— بدون —', i.project_id)}${projects.map(p => optD(p.id, `${sectionName(p.section)}: ${p.name}`, i.project_id, `data-section="${p.section}" data-folder="${p.folder_id || ''}"`)).join('')}</select>`)}
-      ${field('المسؤول (حساب في المنصة)', `<select name="assignee_id">${opt('', '— لا أحد / شخص خارج المنصة —', i.assignee_id)}${people.map(u => opt(u.id, `${u.name}${u.role === 'member' ? ' (عضو فريق)' : ''}`, i.assignee_id)).join('')}</select>`)}
-      ${field('أو اسم المسؤول (إن كان خارج المنصة)', `<input type="text" name="assignee" value="${esc(i.assignee || (i.assignee_id ? '' : state.me.name))}">`)}
+      ${can('folders.view') ? field('المجلد', folderSelect(folders, i.folder_id, '— بدون —')) : ''}
+      ${assigneeFieldHtml(i, people)}
       ${field('الموعد النهائي', `<input type="date" name="due_date" value="${esc(i.due_date || '')}">`)}
-      ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}
     </div>
     ${field('الأولوية', prioSeg(i.priority || 'normal'))}
+    ${classifyHtml(i, projects)}
+    <details class="more-opts" ${i.id ? 'open' : ''}><summary>خيارات إضافية: الوقت، التصنيف، الخطوة التالية، الإجراء، الجهة${isMember() ? '' : '، اشتراط الاعتماد'}</summary>
+    <div class="grid2">
+      ${field('الوقت', `<input type="time" name="due_time" value="${esc(i.due_time || '')}">`)}
+      ${field('التصنيف', `<select name="category">${Object.entries(state.meta.categories).map(([k, v]) => opt(k, v, i.category || 'general')).join('')}</select>`)}
+    </div>
     ${field('الخطوة التالية', `<input type="text" name="next_step" value="${esc(i.next_step || '')}">`)}
     <div class="grid2">
-      ${field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`)}
-      ${field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`)}
+      ${can('sops.view') ? field('الإجراء التشغيلي المرتبط', `<select name="sop_id">${opt('', '— بدون —', i.sop_id)}${sops.map(s => opt(s.id, s.name, i.sop_id)).join('')}</select>`) : ''}
+      ${can('partners.view') ? field('الجهة / الشراكة المرتبطة', `<select name="partner_id">${opt('', '— بدون —', i.partner_id)}${partners.map(p => opt(p.id, p.name, i.partner_id)).join('')}</select>`) : ''}
     </div>
-    <label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`;
+    ${isMember() ? '' : `<label class="check"><input type="checkbox" name="requires_approval" ${i.requires_approval ? 'checked' : ''}> تتطلب اعتماد رجل الأعمال للنتيجة النهائية قبل الإغلاق</label>`}
+    </details>`;
 }
 // في نموذج المهمة: المجلدات والمشاريع تتبع القسم المختار، واختيار مشروع يضبط مجلده
+// حقل مسؤول واحد: حسابات المنصة، أو «شخص خارج المنصة» يُكتب اسمه
+function assigneeFieldHtml(i, people) {
+  const isNew = !i.id;
+  const sel = i.assignee_id ? String(i.assignee_id) : (i.assignee ? '__other' : (isNew && !isOwner() ? String(state.me.id) : ''));
+  return `<label class="f"><span>المسؤول عن التنفيذ</span><select name="assignee_pick">${opt('', '— غير محدد —', sel)}
+      ${people.map(u => opt(u.id, `${u.name}${u.id === state.me.id ? ' (أنا)' : u.role === 'member' ? ` — ${u.title || 'موظف'}` : ''}`, sel)).join('')}
+      ${opt('__other', 'شخص خارج المنصة…', sel)}</select></label>
+    <label class="f ${sel === '__other' ? '' : 'hidden'}" data-assignee-other><span>اسم المسؤول (خارج المنصة)</span><input type="text" name="assignee" maxlength="200" value="${esc(i.assignee_id ? '' : (i.assignee || ''))}"></label>`;
+}
+// تحويل اختيار المسؤول إلى حقول الخادم
+function applyAssignee(d) {
+  if (d.assignee_pick === undefined) return d;
+  const p = d.assignee_pick; delete d.assignee_pick;
+  if (p === '__other') { d.assignee_id = ''; d.assignee = (d.assignee || '').trim(); if (!d.assignee) throw new Error('اكتب اسم المسؤول'); }
+  else { d.assignee_id = p; d.assignee = ''; }
+  return d;
+}
+
+// المجلدات والمشاريع تتبع القسم المختار، والمشاريع تتبع النوع (مشروع/مبادرة)، واختيار مشروع يضبط مجلده
 function bindTaskForm(form) {
-  const sec = form.elements.section, fol = form.elements.folder_id, prj = form.elements.project_id;
-  if (!sec || !fol) return;
-  const filter = () => {
-    for (const sel of [fol, prj]) for (const o of sel.options) if (o.value) { const ok = !sec.value || o.dataset.section === sec.value; o.hidden = !ok; if (!ok && o.selected) sel.value = ''; }
+  const E = form.elements; const fol = E.folder_id, prj = E.project_id;
+  const val = (n) => (E[n] ? E[n].value : '');
+  const sync = (ev) => {
+    const sec = val('section'), type = val('task_type');
+    $$('[data-show]', form).forEach(el => el.classList.toggle('hidden', !el.dataset.show.split(' ').includes(type)));
+    const pl = $('[data-plabel]', form);
+    const filter = (sel, ok) => { for (const o of sel.options) if (o.value) { const y = ok(o); o.hidden = !y; o.disabled = !y; if (!y && o.selected) sel.value = ''; } };
+    if (fol) filter(fol, o => !sec || o.dataset.section === sec);
+    if (prj) filter(prj, o => (!sec || o.dataset.section === sec) && (!['project', 'initiative'].includes(type) || o.dataset.kind === type));
+    if (pl && prj) {
+      const word = type === 'initiative' ? 'المبادرة' : 'المشروع';
+      const none = ['project', 'initiative'].includes(type) && ![...prj.options].some(o => o.value && !o.hidden);
+      pl.textContent = none ? `${word} — ${type === 'initiative' ? 'لا توجد مبادرات' : 'لا توجد مشاريع'} في ${sec ? 'هذا القسم' : 'المنصة'} بعد` : word;
+    }
+    if (ev && ev.target === prj && fol) { const o = prj.selectedOptions[0]; if (o && o.dataset.folder) fol.value = o.dataset.folder; }
+    const ap = E.assignee_pick, other = $('[data-assignee-other]', form);
+    if (ap && other) other.classList.toggle('hidden', ap.value !== '__other');
   };
-  sec.addEventListener('change', filter);
-  prj.addEventListener('change', () => { const o = prj.selectedOptions[0]; if (o && o.dataset.folder) fol.value = o.dataset.folder; });
-  filter();
+  form.addEventListener('change', sync); sync();
 }
 async function modalTask(i, after) {
   const editing = i && i.id;
@@ -1028,6 +1323,8 @@ async function modalTask(i, after) {
     body: await taskFormBody(i || {}) + (editing ? '' : field('المرفقات', fileFieldHtml())),
     onSubmit: async (d) => {
       if (!d.section) throw new Error('اختر القسم');
+      applyTaskType(d); applyAssignee(d);
+      if (!can('partners.view')) delete d.partner_id; // لا يمسح ربطًا لا يراه
       if (editing) { delete d.file_ids; await api('PATCH', `/api/items/${i.id}`, d); toast('حُفظت التعديلات', 'ok'); after && after(); }
       else { const it = await POST('/api/tasks', d); toast(`أُنشئت المهمة ${it.ref}`, 'ok'); location.hash = `#/item/${it.id}`; }
       refreshView();
@@ -1038,7 +1335,7 @@ async function modalConvert(i, after) {
   openModal({
     title: `تحويل ${i.ref} إلى مهمة منظمة`, wide: true, submit: 'تحويل إلى مهمة', init: bindTaskForm,
     body: `<div class="info-box" style="margin-bottom:12px">يتم التحويل في السجل نفسه — يبقى الرقم المرجعي والنص الأصلي والمحادثة كما هي دون إنشاء نسخة مكررة.</div>` + await taskFormBody(i),
-    onSubmit: async (d) => { await POST(`/api/items/${i.id}/convert`, d); toast('حُوّل إلى مهمة', 'ok'); after ? after() : (location.hash = `#/item/${i.id}`); refreshView(); },
+    onSubmit: async (d) => { applyTaskType(d); applyAssignee(d); await POST(`/api/items/${i.id}/convert`, d); toast('حُوّل إلى مهمة', 'ok'); after ? after() : (location.hash = `#/item/${i.id}`); refreshView(); },
   });
 }
 function modalApproval(i, after, preset = {}) {
@@ -1061,7 +1358,7 @@ function modalResult(i, after) {
       ${field('ملخص النتيجة *', '<textarea name="body" required></textarea>')}${field('المرفقات', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
       if (!d.body.trim()) throw new Error('اكتب ملخص النتيجة');
-      if (i.requires_approval) await POST(`/api/items/${i.id}/approvals`, { kind: 'final', title: `اعتماد النتيجة النهائية: ${i.title}`, body: d.body, file_ids: d.file_ids, blocking: true });
+      if (i.requires_approval) await POST(`/api/items/${i.id}/approvals`, { kind: 'final', title: i.title, body: d.body, file_ids: d.file_ids, blocking: true });
       else { await POST(`/api/items/${i.id}/messages`, { body: d.body, kind: 'result', file_ids: d.file_ids }); await api('PATCH', `/api/items/${i.id}`, { status: 'done' }); }
       toast(i.requires_approval ? 'أُرسلت النتيجة لاعتماد رجل الأعمال' : 'اكتملت المهمة', 'ok'); after && after();
     },
@@ -1069,14 +1366,19 @@ function modalResult(i, after) {
 }
 async function modalProject(p = {}) {
   const folders = await GET('/api/folders');
-  const folderSel = (sec) => `<select name="folder_id">${opt('', '— بدون مجلد —', p.folder_id)}${folders.filter(fo => !sec || fo.section === sec).map(fo => opt(fo.id, `${sectionName(fo.section)}: ${fo.name}`, p.folder_id)).join('')}</select>`;
+  const folderSel = (sec) => `<select name="folder_id">${opt('', '— بدون مجلد —', p.folder_id)}${folderPaths(folders).filter(fo => !sec || fo.section === sec).map(fo => opt(fo.id, `${sectionName(fo.section)}: ${fo.path}`, p.folder_id)).join('')}</select>`;
+  const kind = p.kind || 'project'; const label = state.meta.project_kinds[kind];
   openModal({
-    title: p.id ? 'تعديل المشروع' : 'مشروع / مبادرة جديدة',
-    body: `${field('الاسم *', `<input type="text" name="name" required value="${esc(p.name || '')}">`)}${field('الوصف', `<textarea name="description">${esc(p.description || '')}</textarea>`)}
+    title: p.id ? `تعديل ${label}` : `${label === 'مبادرة' ? 'مبادرة جديدة' : 'مشروع جديد'}`,
+    body: `${field('النوع', `<div class="seg">${Object.entries(state.meta.project_kinds).map(([k, v]) => `<label><input type="radio" name="kind" value="${k}" ${k === kind ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div>`)}
+      ${field('الاسم *', `<input type="text" name="name" required value="${esc(p.name || '')}">`)}${field('الوصف', `<textarea name="description">${esc(p.description || '')}</textarea>`)}
       <div class="grid2">${p.id ? `<input type="hidden" name="section" value="${esc(p.section)}">` : field('القسم', sectionSelect(p.section))}${field('المجلد', folderSel(p.id ? p.section : null))}
       ${p.id ? field('الحالة', `<select name="status">${opt('active', 'جارٍ', p.status)}${opt('paused', 'متوقف', p.status)}${opt('done', 'منتهٍ', p.status)}</select>`) : ''}</div>`,
-    init: (form) => { if (!p.id) { const sec = form.elements.section, fol = form.elements.folder_id; const f = () => { for (const o of fol.options) if (o.value) { const fo = folders.find(x => x.id == o.value); o.hidden = fo.section !== sec.value; if (o.hidden && o.selected) fol.value = ''; } }; sec.addEventListener('change', f); f(); } },
-    onSubmit: async (d) => { p.id ? await api('PATCH', `/api/projects/${p.id}`, d) : await POST('/api/projects', d); refreshView(); },
+    init: (form) => { if (!p.id) { const sec = form.elements.section, fol = form.elements.folder_id; const f = () => { for (const o of fol.options) if (o.value) { const fo = folders.find(x => x.id == o.value); o.hidden = o.disabled = fo.section !== sec.value; if (o.hidden && o.selected) fol.value = ''; } }; sec.addEventListener('change', f); f(); } },
+    onSubmit: async (d) => {
+      p.id ? await api('PATCH', `/api/projects/${p.id}`, d) : await POST('/api/projects', d);
+      toast(p.id ? 'حُفظت التعديلات' : (d.kind === 'initiative' ? `أُنشئت المبادرة «${d.name}»` : `أُنشئ المشروع «${d.name}»`), 'ok'); refreshView();
+    },
   });
 }
 
@@ -1105,15 +1407,18 @@ function decisionRowHtml(d) {
   return `<div class="row ${d.is_overdue ? 'p-urgent' : d.effective_status === 'done' ? 'done' : ''}"><div class="main"><span class="title">${esc(d.text)}</span><div class="meta">
     <span class="chip st-${d.effective_status}">${esc(d.status_label)}</span>${d.due_date ? `<span class="chip ${d.is_overdue ? 'overdue' : ''}">${I('clock')}${esc(fmtDate(d.due_date))}${d.is_overdue ? ' — متأخر' : ''}</span>` : ''}
     ${d.responsible ? `<span class="txt">المسؤول: ${esc(d.responsible)}</span>` : ''}${d.meeting_title ? `<a class="txt" href="#/meeting/${d.meeting_id}">${esc(d.meeting_title)}</a>` : ''}
-    ${d.task_id ? `<a class="chip kind" href="#/item/${d.task_id}">المهمة ${esc(d.task_ref)}</a>` : ''}</div></div>
-    ${can('meetings.manage') && !d.task_id ? `<div class="side"><button class="btn sm primary" data-d2t="${d.id}" data-section="${esc(d.meeting_section || '')}">تحويل إلى مهمة</button>
+    ${d.task_id ? (d.task_hidden ? '<span class="chip">مرتبط بمهمة</span>' : `<a class="chip kind" href="#/item/${d.task_id}">المهمة ${esc(d.task_ref)}</a>`) : ''}</div></div>
+    ${can('meetings.manage') && !d.task_id ? `<div class="side"><button class="btn sm primary" data-d2t="${d.id}" data-section="${esc(d.meeting_section || '')}" data-resp="${esc(d.responsible || '')}" data-due="${esc(d.due_date || '')}">تحويل إلى مهمة</button>
       <select class="dst" data-id="${d.id}" style="min-height:36px;width:auto">${['pending', 'in_progress', 'done', 'cancelled'].map(s => opt(s, ({ pending: 'لم يبدأ', in_progress: 'قيد التنفيذ', done: 'منفذ', cancelled: 'ملغى' })[s], d.status)).join('')}</select></div>` : ''}</div>`;
 }
 function bindDecisionActions(root, reload) {
   $$('[data-d2t]', root).forEach(b => b.onclick = () => openModal({
     title: 'تحويل القرار إلى مهمة', submit: 'إنشاء المهمة',
-    body: `${field('القسم *', sectionSelect(b.dataset.section, 'section', true))}${field('الأولوية', prioSeg('normal'))}<p class="small muted">تُربط المهمة بالاجتماع والقرار، ويتبع القرار حالتها دون تكرار.</p>`,
-    onSubmit: async (d) => { if (!d.section) throw new Error('اختر القسم'); const t = await POST(`/api/decisions/${b.dataset.d2t}/task`, d); toast(`أُنشئت المهمة ${t.ref} مرتبطة بالاجتماع`, 'ok'); reload(); },
+    body: `${field('القسم *', sectionSelect(b.dataset.section, 'section', true))}
+      <div class="grid2">${field('المسؤول', `<select name="assignee_id">${opt('', b.dataset.resp ? `كما في القرار: ${b.dataset.resp}` : '— غير محدد —')}${state.meta.users.filter(u => u.role !== 'owner').map(u => opt(u.id, u.name, (state.meta.users.find(x => x.name === b.dataset.resp) || {}).id)).join('')}</select>`)}
+      ${field('الموعد النهائي', `<input type="date" name="due_date" value="${esc(b.dataset.due || '')}">`)}</div>
+      ${field('الأولوية', prioSeg('normal'))}<p class="small muted">تُربط المهمة بالاجتماع والقرار، ويتبع القرار حالتها دون تكرار. اختيار حساب يجعل المهمة تظهر للموظف وتصله إشعارًا.</p>`,
+    onSubmit: async (d) => { if (!d.section) throw new Error('اختر القسم'); if (!d.assignee_id) delete d.assignee_id; const t = await POST(`/api/decisions/${b.dataset.d2t}/task`, d); toast(`أُنشئت المهمة ${t.ref} مرتبطة بالاجتماع`, 'ok'); reload(); },
   }));
   $$('select.dst', root).forEach(s => s.onchange = async () => { try { await api('PATCH', `/api/decisions/${s.dataset.id}`, { status: s.value }); reload(); } catch (e) { showErr(e); } });
 }
@@ -1262,6 +1567,9 @@ async function viewReports(main) {
       <div class="card section-gap"><div class="card-h"><h2>توزيع المهام حسب الأقسام الستة</h2><span class="spacer"></span><span class="small muted"><span class="chip st-in_progress">مفتوحة</span> <span class="chip st-done">مكتملة في الفترة</span> <span class="chip overdue">منها متأخرة</span></span></div>
         <div class="bars">${r.by_section.map(s => `<div class="bar"><span>${esc(s.name)}</span><div class="track" title="مفتوحة ${s.open} • مكتملة ${s.completed} • متأخرة ${s.overdue}">
           <div class="fill late" style="width:${s.overdue / max * 100}%"></div><div class="fill" style="width:${(s.open - s.overdue) / max * 100}%"></div><div class="fill done" style="width:${s.completed / max * 100}%"></div></div><b>${s.open + s.completed}</b></div>`).join('')}</div></div>
+      <div class="card"><div class="card-h">${I('users')}<h2>عبء العمل حسب المسؤول</h2></div>
+        ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th></tr></thead><tbody>
+          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
       <div class="card"><div class="card-h"><h2>المهام المكتملة في الفترة</h2></div>${listOrEmpty(r.completed_items, i => itemRow(i), 'لا توجد مهام مكتملة في هذه الفترة')}</div>`;
     $$('[data-p]', main).forEach(b => b.onclick = () => { period = b.dataset.p; load(); });
     $('#pdf', main).onclick = () => window.print();
@@ -1305,17 +1613,19 @@ async function viewSettings(main) {
     <label class="check"><input type="checkbox" name="push_urgent_only" ${p.push.urgent_only ? 'checked' : ''}> العاجلة فقط</label>
     <label class="check"><input type="checkbox" name="private_lock_screen" ${p.private_lock_screen ? 'checked' : ''}> إخفاء التفاصيل في إشعارات شاشة القفل (يظهر «لديك إشعار جديد» فقط)</label>
     <details><summary class="small" style="cursor:pointer">أنواع إشعارات Push</summary><div class="grid2">${Object.entries(T).map(([k, v]) => `<label class="check"><input type="checkbox" data-group="push" value="${k}" ${p.push.types.includes(k) ? 'checked' : ''}> ${v}</label>`).join('')}</div></details>
-    <h3 class="section-gap">3) البريد الإلكتروني</h3>
+    ${isMember() && !em.configured ? '' : `<h3 class="section-gap">3) البريد الإلكتروني</h3>
     ${em.configured ? `<div class="info-box">مزود البريد مُعد (${esc(em.mode)}).</div>` : '<div class="warn-box">لم يُعد مزود البريد بعد على الخادم — لن تُرسل رسائل فعلية حتى يُضبط SMTP (انظر دليل التشغيل). يمكنك حفظ تفضيلاتك الآن.</div>'}
     ${field('بريدك الإلكتروني', `<input type="email" name="email_address" dir="ltr" value="${esc(p.email_address || '')}">`)}
     <label class="check"><input type="checkbox" name="email_enabled" ${p.email.enabled ? 'checked' : ''}> أوافق على استلام إشعارات بالبريد الإلكتروني</label>
     <div class="grid2">${['new_assignment', 'approval_request', 'new_message', 'overdue', 'digest', 'decision'].map(k => `<label class="check"><input type="checkbox" data-group="email" value="${k}" ${p.email.types.includes(k) ? 'checked' : ''}> ${T[k]}</label>`).join('')}</div>
-    <h3 class="section-gap">واتساب (مستقبلًا)</h3>
+`}
+    ${!isManager() && !state.meta.whatsapp.configured ? '' : `    <h3 class="section-gap">واتساب (مستقبلًا)</h3>
     <div class="warn-box">${state.meta.whatsapp.configured ? 'تكامل واتساب الرسمي مُعد على الخادم.' : 'غير مفعّل. يتطلب ربطًا رسميًا عبر WhatsApp Business Platform (حساب أعمال موثّق وقوالب معتمدة وتكلفة لكل محادثة). المنصة تعمل بالكامل دونه.'}</div>
     <div class="grid2">${field('رقم واتساب (بالصيغة الدولية)', `<input type="tel" name="whatsapp_phone" dir="ltr" value="${esc(p.whatsapp_phone)}" placeholder="9665xxxxxxxx">`)}<label class="check" style="margin-top:24px"><input type="checkbox" name="whatsapp_enabled" ${p.whatsapp_enabled ? 'checked' : ''}> استلام التنبيهات عبر واتساب عند تفعيله</label></div>
+`}
     <div class="btn-row section-gap"><button class="btn primary">حفظ التفضيلات</button><button type="button" class="btn" id="test">إرسال إشعار تجريبي</button></div>
   </form>
-  <div class="card"><div class="card-h"><h2>سجل الإرسال خارج المنصة</h2></div>
+  <div class="card ${isMember() ? 'hidden' : ''}"><div class="card-h"><h2>سجل الإرسال خارج المنصة</h2></div>
     ${deliveries.length ? deliveries.map(d => `<div class="log-row">${fmtTs(d.created_at)} — ${esc({ push: 'Push', email: 'بريد', whatsapp: 'واتساب' }[d.channel] || d.channel)}: ${esc({ sent: 'أُرسل', failed: 'فشل', skipped: 'تُخطي', not_configured: 'غير مُعد' }[d.status] || d.status)} ${d.detail ? `<span class="muted ltr">${esc(d.detail)}</span>` : ''}</div>`).join('') : '<div class="muted small">لا يوجد</div>'}</div>
   ${can('users.manage') ? '<div class="card" id="usersAdmin"></div>' : ''}
   <form class="card" id="pw"><div class="card-h"><h2>تغيير كلمة المرور</h2></div>
@@ -1343,38 +1653,76 @@ async function viewSettings(main) {
 }
 
 // ===== إدارة المستخدمين وربطهم بالمشاريع =====
+// ملخص صلاحيات الموظف بكلمات واضحة
+function grantsSummary(g) {
+  const m = state.meta;
+  return `<span class="chip kind">${esc(m.scopes[g.scope])}${g.scope === 'sections' ? `: ${g.sections.map(sectionName).join('، ')}` : ''}</span>`
+    + (g.perms.length ? g.perms.map(p => `<span class="chip">${esc(m.grantable[p].split(' (')[0])}</span>`).join('') : '<span class="txt">تحديث الحالة والتحديثات والمرفقات فقط</span>');
+}
+// محرر الصلاحيات: قوالب جاهزة + نطاق الرؤية + صلاحيات إضافية
+function grantsEditorHtml(g = { scope: 'own', sections: [], perms: [] }) {
+  const m = state.meta;
+  return `<fieldset class="grants"><legend>الصلاحيات</legend>
+    <div class="small muted">قالب جاهز:</div>
+    <div class="btn-row" style="margin:4px 0 10px">${Object.entries(m.grant_presets).map(([k, p]) => `<button type="button" class="btn sm" data-preset="${k}">${esc(p.label)}</button>`).join('')}</div>
+    ${field('ماذا يرى؟', `<div class="radios">${Object.entries(m.scopes).map(([k, v]) => `<label class="check"><input type="radio" name="g_scope" value="${k}" ${g.scope === k ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`)}
+    <div data-secs class="${g.scope === 'sections' ? '' : 'hidden'}">${field('الأقسام', `<div class="grid2">${m.sections.map(s => `<label class="check"><input type="checkbox" name="g_sections" data-multi="1" value="${s.key}" ${g.sections.includes(s.key) ? 'checked' : ''}> ${esc(s.name)}</label>`).join('')}</div>`)}</div>
+    ${field('ماذا يستطيع أن يفعل؟', `<div class="radios">
+      <label class="check"><input type="checkbox" checked disabled> تحديث حالة مهامه وإضافة التحديثات والمرفقات (دائمًا)</label>
+      ${Object.entries(m.grantable).map(([k, v]) => `<label class="check"><input type="checkbox" name="g_perms" data-multi="1" value="${k}" ${g.perms.includes(k) ? 'checked' : ''}> ${esc(v)}</label>`).join('')}</div>`)}
+    <p class="small muted">لا يملك الموظف أبدًا: الاعتماد والقرارات، إغلاق المهام نهائيًا، الوارد من رجل الأعمال، إدارة المستخدمين.</p></fieldset>`;
+}
+function bindGrantsEditor(form) {
+  const m = state.meta;
+  const sync = () => { const sc = (form.elements.g_scope || {}).value; const d = $('[data-secs]', form); if (d) d.classList.toggle('hidden', sc !== 'sections'); };
+  form.addEventListener('change', sync);
+  $$('[data-preset]', form).forEach(b => b.onclick = () => {
+    const p = m.grant_presets[b.dataset.preset];
+    for (const r of form.querySelectorAll('[name=g_scope]')) r.checked = r.value === p.scope;
+    for (const c of form.querySelectorAll('[name=g_perms]')) c.checked = p.perms.includes(c.value);
+    sync();
+  });
+}
+const grantsFromForm = (d) => { const g = { scope: d.g_scope || 'own', sections: d.g_sections || [], perms: d.g_perms || [] }; delete d.g_scope; delete d.g_sections; delete d.g_perms; return g; };
+
 async function renderUsersAdmin(el) {
   const [users, projects] = await Promise.all([GET('/api/admin/users'), GET('/api/projects')]);
   const pname = (id) => (projects.find(p => p.id === id) || {}).name || `#${id}`;
-  el.innerHTML = `<div class="card-h">${I('users')}<h2>المستخدمون والفريق</h2><span class="spacer"></span><button type="button" class="btn primary sm" id="addUser">${I('plus')} إضافة مستخدم</button></div>
-    <p class="small muted">أعضاء الفريق يرون فقط المهام المسندة إليهم والمهام داخل المشاريع المرتبطين بها، ويمكنهم تحديث حالتها وإضافة التحديثات والمرفقات. لا يرون بقية المكتب ولا الاعتمادات ولا التقارير.</p>
+  el.innerHTML = `<div class="card-h">${I('users')}<h2>المستخدمون والفريق</h2><span class="spacer"></span><button type="button" class="btn primary sm" id="addUser">${I('plus')} إضافة موظف</button></div>
+    <p class="small muted">لكل موظف حساب دخول خاص وصلاحيات تحددها: ماذا يرى (مهامه فقط، أو أقسامًا محددة، أو كل المكتب) وماذا يستطيع أن يفعل. تُفحص الصلاحيات في الخادم لكل عملية.</p>
     <div class="list">${users.map(u => `<div class="row ${u.active ? '' : 'done'}"><div class="main"><span class="title">${esc(u.name)} <span class="small muted ltr">@${esc(u.username)}</span></span>
-      <div class="meta"><span class="chip kind">${esc(u.role_label)}</span>${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
-      ${u.role === 'member' ? (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '<span class="txt">غير مرتبط بمشاريع</span>') : '<span class="txt">يرى كل المهام</span>'}</div></div>
+      <div class="meta"><span class="chip kind">${esc(u.title || u.role_label)}</span>${u.must_change_password ? '<span class="chip">لم يغيّر كلمة المرور بعد</span>' : ''}${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
+      ${u.role === 'member' ? grantsSummary(u.grants) + (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '') : '<span class="txt">يرى كل المهام</span>'}</div></div>
       <div class="side"><button type="button" class="btn sm" data-edit-user="${u.id}">تعديل</button></div></div>`).join('')}</div>`;
   const projChecks = (sel = []) => projects.length
     ? `<div class="grid2">${projects.map(p => `<label class="check"><input type="checkbox" name="project_ids" data-multi="1" value="${p.id}" ${sel.includes(p.id) ? 'checked' : ''}> ${esc(p.name)} <span class="small muted">(${esc(sectionName(p.section))})</span></label>`).join('')}</div>`
     : '<p class="small muted">لا توجد مشاريع بعد. أنشئها من صفحة القسم أو داخل مجلد.</p>';
   const reload = () => renderUsersAdmin(el);
   $('#addUser', el).onclick = () => openModal({
-    title: 'إضافة مستخدم (عضو فريق)', submit: 'إضافة',
+    title: 'إضافة موظف', submit: 'إضافة', wide: true, init: bindGrantsEditor,
     body: `<div class="grid2">${field('الاسم *', '<input type="text" name="name" required>')}${field('اسم الدخول * (لاتيني)', '<input type="text" name="username" dir="ltr" required autocomplete="off" placeholder="saad">')}
-      ${field('كلمة المرور الأولية * (8 أحرف على الأقل)', '<input type="password" name="password" dir="ltr" autocomplete="new-password" required>')}${field('البريد (اختياري)', '<input type="email" name="email" dir="ltr">')}</div>
+      ${field('كلمة المرور الأولية * (8 أحرف على الأقل)', '<input type="password" name="password" dir="ltr" autocomplete="new-password" required>')}${field('البريد (اختياري)', '<input type="email" name="email" dir="ltr">')}
+      ${field('المسمى الوظيفي (اختياري)', '<input type="text" name="title" maxlength="60" placeholder="مثل: منسّق الجمعية، سكرتير">')}</div>
+      <label class="check"><input type="checkbox" name="must_change_password" checked> يغيّر كلمة المرور بنفسه عند أول دخول (موصى به)</label>
+      ${grantsEditorHtml()}
       ${field('المشاريع التي يشارك فيها', projChecks())}
-      <p class="small muted">أبلغ المستخدم باسم الدخول وكلمة المرور بطريقة آمنة، ويمكنه تغيير كلمة المرور من الإعدادات.</p>`,
-    onSubmit: async (d) => { d.project_ids = (d.project_ids || []).map(Number); await POST('/api/admin/users', d); toast('أُضيف المستخدم', 'ok'); reload(); },
+      <p class="small muted">أبلغ الموظف باسم الدخول وكلمة المرور بطريقة آمنة، ويمكنه تغيير كلمة المرور من الإعدادات.</p>`,
+    onSubmit: async (d) => { d.grants = grantsFromForm(d); d.project_ids = (d.project_ids || []).map(Number); await POST('/api/admin/users', d); toast('أُضيف الموظف', 'ok'); reload(); },
   });
   $$('[data-edit-user]', el).forEach(b => b.onclick = () => {
     const u = users.find(x => x.id == b.dataset.editUser);
     openModal({
-      title: `تعديل: ${u.name}`,
+      title: `تعديل: ${u.name}`, wide: u.role === 'member', init: u.role === 'member' ? bindGrantsEditor : undefined,
       body: `<div class="grid2">${field('الاسم', `<input type="text" name="name" value="${esc(u.name)}" required>`)}${field('البريد', `<input type="email" name="email" dir="ltr" value="${esc(u.email || '')}">`)}
-        ${field('كلمة مرور جديدة (اتركها فارغة للإبقاء)', '<input type="password" name="password" dir="ltr" autocomplete="new-password">')}</div>
-        ${u.role === 'member' ? `${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
+        ${field(u.id === state.me.id || u.role === 'member' ? 'كلمة مرور جديدة (اتركها فارغة للإبقاء)' + (u.role === 'member' ? ' — سيُطلب منه تغييرها عند دخوله' : '') : 'كلمة المرور', u.id === state.me.id || u.role === 'member' ? '<input type="password" name="password" dir="ltr" autocomplete="new-password">' : '<p class="small muted">يغيّرها صاحب الحساب من إعداداته.</p>')}
+        ${u.role === 'member' ? field('المسمى الوظيفي', `<input type="text" name="title" maxlength="60" value="${esc(u.title || '')}">`) : ''}</div>
+        ${u.role === 'member' ? `${grantsEditorHtml(u.grants)}${field('المشاريع التي يشارك فيها', projChecks(u.projects))}<label class="check"><input type="checkbox" name="active" ${u.active ? 'checked' : ''}> الحساب مفعّل (إيقافه يسجّل خروجه فورًا)</label>` : '<p class="small muted">رجل الأعمال ومدير المكتب يريان كل المهام، ولا يمكن إيقاف حسابيهما.</p>'}`,
       onSubmit: async (d) => {
+        if (u.id !== state.me.id && u.role !== 'member') { toast('حسابا رجل الأعمال ومدير المكتب يعدّلهما صاحباهما من الإعدادات', 'err'); return; }
         const body = { name: d.name, email: d.email };
+        if (u.role === 'member') body.title = d.title;
         if (d.password) body.password = d.password;
-        if (u.role === 'member') { body.project_ids = (d.project_ids || []).map(Number); body.active = d.active; }
+        if (u.role === 'member') { body.grants = grantsFromForm(d); body.project_ids = (d.project_ids || []).map(Number); body.active = d.active; }
         await api('PATCH', `/api/admin/users/${u.id}`, body); toast('حُفظت التعديلات', 'ok'); reload();
       },
     });
@@ -1385,7 +1733,7 @@ async function viewMore(main) {
   main.innerHTML = `<div class="page-h"><h1>المزيد</h1></div><div class="list">
     ${navItems().map(n => `<a class="row" href="${n.h}"><div class="main"><span class="title">${I(n.i)} ${n.t}</span></div>${n.n ? `<span class="chip p-urgent">${n.n}</span>` : ''}</a>`).join('')}
     ${can('folders.view') ? `<div class="lbl small muted" style="margin-top:8px">الأقسام</div>
-    ${state.meta.sections.map(s => `<a class="row" href="#/section/${s.key}"><div class="main"><span class="title">${I(s.icon)} ${s.name}</span></div></a>`).join('')}` : ''}
+    ${mySections().map(s => `<a class="row" href="#/section/${s.key}"><div class="main"><span class="title">${I(s.icon)} ${s.name}</span></div></a>`).join('')}` : ''}
     <a class="row" href="#/settings"><div class="main"><span class="title">${I('settings')} الإعدادات والإشعارات</span></div></a>
     <a class="row" href="#" id="lo"><div class="main"><span class="title">${I('logout')} تسجيل الخروج</span></div></a></div>`;
   $('#lo', main).onclick = (e) => { e.preventDefault(); logout(); };
@@ -1396,6 +1744,7 @@ async function boot() {
   try {
     const me = await GET('/api/me');
     state.me = me; state.counts = { unread: me.unread, inbox_pending: me.inbox_pending, pending_decisions: me.pending_decisions };
+    if (me.must_change_password) { renderForcePassword(); return; }
     state.meta = await GET('/api/meta');
     renderShell(); openEvents(); await route();
     resyncPush();

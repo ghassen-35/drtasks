@@ -40,7 +40,7 @@ function createApp(P) {
     if (!tok) return null;
     const s = get('SELECT * FROM sessions WHERE token_hash=?', await auth.sha256hex(tok));
     if (!s || s.expires_at < new Date().toISOString()) return null;
-    return get(`SELECT id,username,name,${D.roleSql()} AS role,email,prefs FROM users WHERE id=? AND active=1`, s.user_id) || null;
+    return get(`SELECT id,username,name,${D.roleSql()} AS role,email,prefs,grants,title,must_change_password FROM users WHERE id=? AND active=1`, s.user_id) || null;
   }
 
   app.use('/api/*', async (c, next) => {
@@ -51,6 +51,7 @@ function createApp(P) {
     c.set('user', user);
     const p = new URL(c.req.url).pathname;
     if (!user && !['/api/login', '/api/health'].includes(p)) return c.json({ error: 'يلزم تسجيل الدخول' }, 401);
+    if (user && user.must_change_password && !['/api/me', '/api/password', '/api/logout', '/api/meta'].includes(p)) return c.json({ error: 'غيّر كلمة المرور أولًا', must_change_password: true }, 403);
     await next();
   });
 
@@ -68,7 +69,8 @@ function createApp(P) {
     try { return JSON.parse(txt || '{}'); } catch { throw new S.AppError(400, 'بيانات غير صالحة'); }
   }
   const wrap = (fn) => async (c) => {
-    const req = { user: c.get('user'), params: c.req.param(), query: c.req.query(), body: await readBody(c), ip: P.clientIp(c), secure: secure(c), header: (n) => c.req.header(n) };
+    const body = await readBody(c); if (body && typeof body === 'object') delete body.is_demo; // علامة البيانات التجريبية لا تُقبل من الطلبات
+    const req = { user: c.get('user'), params: c.req.param(), query: c.req.query(), body, ip: P.clientIp(c), secure: secure(c), header: (n) => c.req.header(n) };
     const res = { setHeader: (k, v) => c.header(k, v, { append: true }) };
     const r = await fn(req, res);
     if (r instanceof Response) return r;
@@ -109,8 +111,9 @@ function createApp(P) {
 
   app.get('/api/me', wrap(req => {
     const u = { ...req.user }; delete u.prefs;
-    u.perms = [...D.PERMS[u.role]];
-    u.role_label = D.ROLE_LABELS[u.role];
+    u.perms = [...D.effectivePerms(req.user)];
+    if (u.role === 'member') u.grants = D.parseGrants(u.grants); else delete u.grants;
+    u.role_label = (u.role === 'member' && u.title) || D.ROLE_LABELS[u.role];
     u.unread = get('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL', u.id).c;
     if (D.can(u, 'item.view')) { // أعداد عامة للمالك والمدير فقط
       u.pending_decisions = get("SELECT COUNT(*) c FROM approvals WHERE status='pending'").c;
@@ -120,28 +123,34 @@ function createApp(P) {
   }));
   app.post('/api/password', wrap(async req => {
     const u = get('SELECT * FROM users WHERE id=?', req.user.id);
-    if (!(await auth.verifyPassword(String(req.body.current || ''), u.password_hash))) throw S.bad('كلمة المرور الحالية غير صحيحة');
+    const key = `pw:${u.id}`;
+    if (hit(key) >= LIMITS.ip) throw new S.AppError(429, 'محاولات كثيرة، حاول بعد ربع ساعة');
+    if (!(await auth.verifyPassword(String(req.body.current || ''), u.password_hash))) { fail1(key); throw S.bad('كلمة المرور الحالية غير صحيحة'); }
+    attempts.delete(key);
     const pw = String(req.body.next || '');
     if (pw.length < 8) throw S.bad('كلمة المرور الجديدة يجب ألا تقل عن 8 أحرف');
-    run('UPDATE users SET password_hash=? WHERE id=?', await auth.hashPassword(pw), u.id);
+    if (pw === String(req.body.current || '')) throw S.bad('اختر كلمة مرور جديدة مختلفة عن الحالية');
+    run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', await auth.hashPassword(pw), u.id);
+    run('DELETE FROM sessions WHERE user_id=? AND token_hash!=?', u.id, await auth.sha256hex(parseCookies(req.header('cookie'))[COOKIE] || '')); // تسجيل الخروج من الأجهزة الأخرى
     return { ok: true };
   }));
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    approval_kinds: D.APPROVAL_KINDS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
-    users: all(`SELECT id,name,${D.roleSql()} AS role FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
+    users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
 
   // ===== الصفحة الرئيسية: الأشرطة والمربعات والملخصات =====
   app.get('/api/home', wrap(req => {
     const t = D.todayStr();
-    if (!D.can(req.user, 'item.view')) { // عضو فريق: ما يخصه فقط (لا مربعات أقسام ولا أرقام عامة)
+    if (!D.can(req.user, 'item.view') || req.user.role === 'member') { // موظف: ما يخصه فقط، ومربعات الأقسام الممنوحة له
       const sc = S.scopeFor(req.user);
       const pids = S.memberProjects(req.user.id);
+      const secs = D.can(req.user, 'folders.view') ? (S.allowedSections(req.user) || D.SECTION_KEYS) : [];
       return {
-        member: true, today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
+        member: true, tiles: secs.map(k => { const t = D.sectionStats(k); delete t.unacknowledged; return t; }), today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
         my_items: listItems({ kind: 'tasks', scope: 'open' }, req.user),
         projects: pids.length ? all(`SELECT p.*, (SELECT name FROM folders f WHERE f.id=p.folder_id) AS folder_name FROM projects p WHERE p.id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name`, ...pids).map(p => ({ ...p, section_name: D.sectionName(p.section) })) : [],
       };
@@ -185,8 +194,10 @@ function createApp(P) {
     // instr بدل LIKE: في Durable Object يُرفض نمط LIKE الطويل (حد صغير بالبايت، والحرف العربي بايتان)
     if (q.q) { where.push('(' + ['i.title', 'i.description', 'i.ref', 'i.assignee'].map(c => `instr(lower(${c}), lower(?)) > 0`).join(' OR ') + ')'); const s = String(q.q).slice(0, 100); p.push(s, s, s, s); }
     return all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE ${where.join(' AND ')}
-      ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, CASE i.priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(i.due_date,'9999'), i.id DESC LIMIT 500`, ...p)
-      .map(i => D.decorate(i, t));
+      ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, CASE i.priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(i.due_date,'9999'), i.id DESC LIMIT ${Math.min(Number(q.limit) || 500, 5000)}`, ...p)
+      .map(i => D.decorate(i, t))
+      // المهام الفرعية تظهر تحت أمها (مع عداد التقدم) لا كبنود مستقلة — إلا في البحث ومهام اليوم والمتأخرة، أو إن كانت الأم لا تُرى
+      .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
   }
   app.get('/api/items', wrap(req => listItems(req.query, req.user)));
 
@@ -209,8 +220,12 @@ function createApp(P) {
     if (it.sop_id) extra.sop = get('SELECT id,name FROM sops WHERE id=?', it.sop_id);
     if (it.partner_id && D.can(req.user, 'partners.view')) extra.partner = get('SELECT id,name FROM partners WHERE id=?', it.partner_id);
     if (it.meeting_id && !D.can(req.user, 'meetings.view')) delete extra.meeting;
+    if (req.user.role === 'member') { th.notes = []; delete extra.parent; it.original_text = null; } // ملاحظات رجل الأعمال ونصه الأصلي لمدير المكتب فقط
+    extra.subtasks = S.subtasksOf(it.id).filter(x => S.canSee(req.user, x));
+    if (it.parent_task_id) { const pt = get('SELECT id,ref,title FROM items WHERE id=?', it.parent_task_id); if (pt && S.canSee(req.user, pt)) extra.parent_task = pt; }
     return { item: it, ...th, ...extra };
   }));
+  app.post('/api/items/:id/subtasks', wrap(req => S.createSubtask(req.user, Number(req.params.id), req.body)));
   app.post('/api/items/:id/ack', wrap(req => S.acknowledge(req.user, Number(req.params.id))));
   app.post('/api/items/:id/convert', wrap(req => S.convertToTask(req.user, Number(req.params.id), req.body)));
   app.patch('/api/items/:id', wrap(req => S.updateItem(req.user, Number(req.params.id), req.body)));
@@ -220,7 +235,7 @@ function createApp(P) {
   app.post('/api/approvals/:id/decide', wrap(req => S.decide(req.user, Number(req.params.id), req.body)));
   app.post('/api/approvals/:id/withdraw', wrap(req => S.withdrawApproval(req.user, Number(req.params.id))));
   app.get('/api/approvals', wrap(req => {
-    S.require_(req.user, 'item.view');
+    if (!D.can(req.user, 'approval.decide') && !D.can(req.user, 'approval.request')) throw S.forbidden();
     const status = req.query.status || 'pending';
     return all(`SELECT a.*, i.ref, i.title AS item_title, i.section, i.priority, i.due_date, ru.name AS requested_by_name, du.name AS decided_by_name
       FROM approvals a JOIN items i ON i.id=a.item_id LEFT JOIN users ru ON ru.id=a.requested_by LEFT JOIN users du ON du.id=a.decided_by
@@ -286,13 +301,18 @@ function createApp(P) {
   // ===== المشاريع =====
   app.get('/api/projects', wrap(req => {
     let rows;
-    if (D.can(req.user, 'item.view')) {
+    if (D.can(req.user, 'item.view') || (req.user.role === 'member' && S.allowedSections(req.user) === null)) {
       const w = []; const p = [];
       if (req.query.section) { w.push('section=?'); p.push(req.query.section); }
       if (req.query.folder_id) { w.push('folder_id=?'); p.push(Number(req.query.folder_id)); }
       rows = all(`SELECT * FROM projects ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY section, status, name`, ...p);
     } else if (D.can(req.user, 'item.view_scoped')) {
-      rows = all('SELECT p.* FROM projects p JOIN project_members m ON m.project_id=p.id WHERE m.user_id=? ORDER BY p.name', req.user.id);
+      // مشاريعه + مشاريع الأقسام الممنوحة له
+      const secs = S.allowedSections(req.user) || [];
+      const extra = []; const ep = [];
+      if (req.query.section) { extra.push('p.section=?'); ep.push(req.query.section); }
+      if (req.query.folder_id) { extra.push('p.folder_id=?'); ep.push(Number(req.query.folder_id)); }
+      rows = all(`SELECT p.* FROM projects p WHERE (p.id IN (SELECT project_id FROM project_members WHERE user_id=?)${secs.length ? ` OR p.section IN (${secs.map(() => '?').join(',')})` : ''})${extra.length ? ' AND ' + extra.join(' AND ') : ''} ORDER BY p.name`, req.user.id, ...secs, ...ep);
     } else throw S.forbidden();
     return rows.map(p => ({ ...p, open_tasks: get(`SELECT COUNT(*) c FROM items WHERE project_id=? AND kind IN ${D.TASK_KINDS} AND ${D.OPEN}`, p.id).c,
       folder_name: p.folder_id ? (get('SELECT name FROM folders WHERE id=?', p.folder_id) || {}).name : null,
@@ -306,16 +326,20 @@ function createApp(P) {
   }
   app.post('/api/projects', wrap(req => {
     S.require_(req.user, 'projects.manage');
-    const name = S.str(req.body.name, 200); if (!name) throw S.bad('اسم المشروع مطلوب');
+    const name = S.str(req.body.name, 200); if (!name) throw S.bad(req.body.kind === 'initiative' ? 'اسم المبادرة مطلوب' : 'اسم المشروع مطلوب');
     const section = S.validSection(req.body.section); if (!section) throw S.bad('اختر القسم');
-    const { id } = run('INSERT INTO projects(section,name,description,folder_id) VALUES(?,?,?,?)', section, name, S.str(req.body.description), validFolder(req.body.folder_id, section));
+    S.assertSectionAllowed(req.user, section);
+    const kind = D.PROJECT_KINDS[req.body.kind] ? req.body.kind : 'project';
+    const { id } = run('INSERT INTO projects(section,name,description,folder_id,kind) VALUES(?,?,?,?,?)', section, name, S.str(req.body.description), validFolder(req.body.folder_id, section), kind);
     S.audit('project', id, req.user.id, 'created'); events.broadcastChange({ project: id });
     return get('SELECT * FROM projects WHERE id=?', id);
   }));
   app.patch('/api/projects/:id', wrap(req => {
     S.require_(req.user, 'projects.manage');
     const p = get('SELECT * FROM projects WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound();
+    S.assertSectionAllowed(req.user, p.section);
     const b = req.body;
+    if (D.PROJECT_KINDS[b.kind] && b.kind !== p.kind) run('UPDATE projects SET kind=? WHERE id=?', b.kind, p.id);
     run('UPDATE projects SET name=?, description=?, status=?, folder_id=? WHERE id=?', S.str(b.name, 200) || p.name, b.description !== undefined ? S.str(b.description) : p.description, ['active', 'paused', 'done'].includes(b.status) ? b.status : p.status,
       b.folder_id !== undefined ? validFolder(b.folder_id, p.section) : p.folder_id, p.id);
     S.audit('project', p.id, req.user.id, 'updated'); events.broadcastChange({ project: p.id });
@@ -323,7 +347,9 @@ function createApp(P) {
   }));
 
   // ===== الاجتماعات والقرارات =====
-  function decisionRow(d, t = D.todayStr()) {
+  function decisionRow(d, t = D.todayStr(), user = null) {
+    // من لا يرى المهمة المرتبطة لا يرى رقمها ولا حالتها
+    if (user && d.task_id && !S.canSee(user, { id: d.task_id })) { d = { ...d, task_ref: null, task_status: null, task_hidden: 1 }; }
     const st = d.task_status || d.status;
     return { ...d, effective_status: st, status_label: D.STATUSES[st] || ({ pending: 'لم يبدأ' })[st] || st, is_overdue: !['done', 'cancelled'].includes(st) && d.due_date && d.due_date < t };
   }
@@ -334,12 +360,12 @@ function createApp(P) {
   }));
   app.get('/api/decisions', wrap(req => {
     S.require_(req.user, 'meetings.view');
-    return all(`SELECT d.*, m.title AS meeting_title, m.section AS meeting_section, m.starts_at, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id ORDER BY COALESCE(d.due_date,'9999')`).map(d => decisionRow(d));
+    return all(`SELECT d.*, m.title AS meeting_title, m.section AS meeting_section, m.starts_at, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id ORDER BY COALESCE(d.due_date,'9999')`).map(d => decisionRow(d, undefined, req.user));
   }));
   app.get('/api/meetings/:id', wrap(req => {
     S.require_(req.user, 'meetings.view');
     const m = get('SELECT * FROM meetings WHERE id=?', Number(req.params.id)); if (!m) throw S.notFound();
-    m.decisions = all('SELECT d.*, m.section AS meeting_section, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id WHERE d.meeting_id=? ORDER BY d.id', m.id).map(d => decisionRow(d));
+    m.decisions = all('SELECT d.*, m.section AS meeting_section, i.status AS task_status, i.ref AS task_ref FROM decisions d JOIN meetings m ON m.id=d.meeting_id LEFT JOIN items i ON i.id=d.task_id WHERE d.meeting_id=? ORDER BY d.id', m.id).map(d => decisionRow(d, undefined, req.user));
     m.files = all('SELECT id,original_name,mime,size FROM files WHERE meeting_id=?', m.id);
     m.section_name = m.section ? D.sectionName(m.section) : null;
     return m;
@@ -349,7 +375,8 @@ function createApp(P) {
     const starts = b.starts_at !== undefined ? String(b.starts_at) : m.starts_at; if (!starts || !/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?/.test(starts)) throw S.bad('موعد الاجتماع مطلوب');
     return [title, b.section !== undefined ? S.validSection(b.section) : m.section, starts, b.location !== undefined ? S.str(b.location, 300) : m.location,
       b.participants !== undefined ? S.str(b.participants, 2000) : m.participants, b.topics !== undefined ? S.str(b.topics) : m.topics,
-      b.minutes !== undefined ? S.str(b.minutes, 20000) : m.minutes, ['scheduled', 'held', 'cancelled'].includes(b.status) ? b.status : (m.status || 'scheduled')];
+      b.minutes !== undefined ? S.str(b.minutes, 20000) : m.minutes, ['scheduled', 'held', 'cancelled'].includes(b.status) ? b.status : (m.status || 'scheduled')]
+      .map(v => (v === undefined ? null : v)); // حقل غير مُرسل = فارغ (SQLite يرفض undefined)
   }
   app.post('/api/meetings', wrap(req => {
     S.require_(req.user, 'meetings.manage');
@@ -423,7 +450,8 @@ function createApp(P) {
     S.require_(req.user, 'partners.view');
     const p = get('SELECT * FROM partners WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound();
     const out = partnerOut(p, req.user);
-    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE partner_id=? ORDER BY id DESC`, p.id).map(i => D.decorate(i));
+    const sc = S.scopeFor(req.user);
+    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE partner_id=?${sc.sql} ORDER BY id DESC`, p.id, ...sc.params).map(i => D.decorate(i));
     return out;
   }));
   function partnerSave(req, ex) {
@@ -441,32 +469,51 @@ function createApp(P) {
   app.patch('/api/partners/:id', wrap(req => { const p = get('SELECT * FROM partners WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound(); return partnerSave(req, p); }));
 
   // ===== المجلدات: القسم ← المجلد ← المشاريع والمهام =====
+  // مسار المجلد من الأعلى إلى الأسفل (للتنقل والقوائم)
+  function folderPath(id) {
+    const path = [];
+    for (let f = get('SELECT id,name,parent_id FROM folders WHERE id=?', id), n = 0; f && n < 20; f = f.parent_id ? get('SELECT id,name,parent_id FROM folders WHERE id=?', f.parent_id) : null, n++) path.unshift({ id: f.id, name: f.name });
+    return path;
+  }
   const folderCounts = (f) => ({
     ...f, section_name: D.sectionName(f.section),
+    subfolders: get('SELECT COUNT(*) c FROM folders WHERE parent_id=?', f.id).c,
     projects: get('SELECT COUNT(*) c FROM projects WHERE folder_id=?', f.id).c,
     open_tasks: get(`SELECT COUNT(*) c FROM items i WHERE i.kind IN ${D.TASK_KINDS} AND i.${D.OPEN} AND (i.folder_id=? OR i.project_id IN (SELECT id FROM projects WHERE folder_id=?))`, f.id, f.id).c,
   });
   app.get('/api/folders', wrap(req => {
     S.require_(req.user, 'folders.view');
     const rows = req.query.section ? all('SELECT * FROM folders WHERE section=? ORDER BY name', req.query.section) : all('SELECT * FROM folders ORDER BY section, name');
-    return rows.map(folderCounts);
+    const secs = S.allowedSections(req.user);
+    return rows.filter(f => !secs || secs.includes(f.section)).map(folderCounts);
   }));
   app.get('/api/folders/:id', wrap(req => {
     S.require_(req.user, 'folders.view');
     const f = get('SELECT * FROM folders WHERE id=?', Number(req.params.id)); if (!f) throw S.notFound('المجلد غير موجود');
-    return folderCounts(f);
+    const secs = S.allowedSections(req.user); if (secs && !secs.includes(f.section)) throw S.notFound('المجلد غير موجود');
+    return { ...folderCounts(f), path: folderPath(f.id), children: all('SELECT * FROM folders WHERE parent_id=? ORDER BY name', f.id).map(folderCounts) };
   }));
   app.post('/api/folders', wrap(req => {
     S.require_(req.user, 'projects.manage');
     const name = S.str(req.body.name, 200); if (!name) throw S.bad('اسم المجلد مطلوب');
-    const section = S.validSection(req.body.section); if (!section) throw S.bad('اختر القسم');
-    const { id } = run('INSERT INTO folders(section,name,description) VALUES(?,?,?)', section, name, S.str(req.body.description, 1000));
+    let section = S.validSection(req.body.section); let parentId = null;
+    if (req.body.parent_id) { // مجلد فرعي: يرث قسم المجلد الأب
+      const parent = get('SELECT * FROM folders WHERE id=?', Number(req.body.parent_id)); if (!parent) throw S.bad('المجلد الأب غير موجود');
+      if (section && section !== parent.section) throw S.bad('المجلد الأب يتبع قسمًا آخر');
+      if (folderPath(parent.id).length >= 8) throw S.bad('لا يمكن إنشاء أكثر من 8 مستويات من المجلدات');
+      section = parent.section; parentId = parent.id;
+    }
+    if (!section) throw S.bad('اختر القسم');
+    S.assertSectionAllowed(req.user, section);
+    if (get('SELECT id FROM folders WHERE section=? AND parent_id IS ? AND name=?', section, parentId, name)) throw S.bad('يوجد مجلد بالاسم نفسه في هذا المكان');
+    const { id } = run('INSERT INTO folders(section,name,description,parent_id) VALUES(?,?,?,?)', section, name, S.str(req.body.description, 1000), parentId);
     S.audit('folder', id, req.user.id, 'created'); events.broadcastChange({ folder: id });
     return folderCounts(get('SELECT * FROM folders WHERE id=?', id));
   }));
   app.patch('/api/folders/:id', wrap(req => {
     S.require_(req.user, 'projects.manage');
     const f = get('SELECT * FROM folders WHERE id=?', Number(req.params.id)); if (!f) throw S.notFound('المجلد غير موجود');
+    S.assertSectionAllowed(req.user, f.section);
     run('UPDATE folders SET name=?, description=? WHERE id=?', S.str(req.body.name, 200) || f.name, req.body.description !== undefined ? S.str(req.body.description, 1000) : f.description, f.id);
     S.audit('folder', f.id, req.user.id, 'updated'); events.broadcastChange({ folder: f.id });
     return folderCounts(get('SELECT * FROM folders WHERE id=?', f.id));
@@ -529,18 +576,30 @@ function createApp(P) {
   });
 
   // ===== التقارير: تصدير CSV =====
+  // تصدير قائمة المهام كما تظهر للمستخدم (نفس الفلاتر ونفس نطاق الصلاحيات) — يفتح في Excel
+  const localTs = (iso) => { if (!iso) return ''; const d = new Date(iso); return new Intl.DateTimeFormat('en-CA', { timeZone: D.TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d).replace(',', ''); };
+  app.get('/api/items-export.csv', (c) => {
+    const user = c.get('user');
+    if (!D.can(user, 'item.view') && !D.can(user, 'item.view_scoped')) return c.body(null, 403);
+    const rows = listItems({ kind: 'tasks', ...c.req.query(), subtasks: '1', limit: 5000 }, user);
+    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; }; // منع حقن الصيغ في Excel
+    const head = ['الرقم المرجعي', 'العنوان', 'النوع', 'القسم', 'المجلد', 'المشروع/المبادرة', 'المسؤول', 'الحالة', 'الأولوية', 'الموعد النهائي', 'الوقت', 'متأخرة', 'مهمة فرعية من', 'تكرار', 'آخر تحديث', 'تاريخ الإنجاز'];
+    const lines = [head, ...rows.map(i => [i.ref, i.title, i.kind === 'assignment' ? 'تكليف' : 'مهمة', i.section_name, i.folder_name, i.project_name, i.assignee, D.STATUSES[i.status], D.PRIORITIES[i.priority],
+      i.due_date, i.due_time, i.is_overdue ? 'نعم' : '', i.parent_task_title, i.recurrence ? D.RECURRENCES[i.recurrence] : '', localTs(i.updated_at), localTs(i.completed_at)])].map(r => r.map(q).join(',')).join('\r\n');
+    return c.body('\uFEFF' + lines, 200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="tasks-${D.todayStr()}.csv"` });
+  });
   app.get('/api/reports/export.csv', (c) => {
     if (!D.can(c.get('user'), 'reports.view')) return c.body(null, 403);
     const period = ['day', 'week', 'month'].includes(c.req.query('period')) ? c.req.query('period') : 'week';
     const r = D.report(period);
-    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const q = (v) => { let x = String(v ?? ''); if (/^[=+\-@\t\r]/.test(x)) x = "'" + x; return `"${x.replace(/"/g, '""')}"`; };
     const lines = [
       ['التقرير', `من ${r.from} إلى ${r.to}`], [],
       ['المؤشر', 'القيمة'], ['التكليفات المستلمة', r.received], ['الملاحظات والطلبات', r.notes_received], ['المهام المكتملة', r.completed], ['المهام المتأخرة حاليًا', r.overdue_now],
       ['المهام المفتوحة حاليًا', r.open_now], ['قرارات/اعتمادات صدرت', r.decisions_made], ['قرارات اجتماعات منفذة', r.meeting_decisions_done], ['قرارات اجتماعات تنتظر التنفيذ', r.meeting_decisions_pending],
       ['متوسط مدة الإنجاز (يوم)', r.avg_completion_days ?? 'بيانات غير كافية'], [],
       ['القسم', 'مفتوحة', 'مكتملة في الفترة', 'متأخرة'], ...r.by_section.map(s => [s.name, s.open, s.completed, s.overdue]), [],
-      ['المهام المكتملة', 'الرقم المرجعي', 'القسم', 'تاريخ الإكمال'], ...r.completed_items.map(i => [i.title, i.ref, i.section_name, i.completed_at]),
+      ['المهام المكتملة', 'الرقم المرجعي', 'القسم', 'تاريخ الإكمال'], ...r.completed_items.map(i => [i.title, i.ref, i.section_name, localTs(i.completed_at)]),
     ].map(row => row.map(q).join(',')).join('\r\n');
     return c.body('\uFEFF' + lines, 200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="report-${period}-${r.to}.csv"` });
   });

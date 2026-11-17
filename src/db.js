@@ -5,9 +5,11 @@ let B = null;
 function setBackend(b) { B = b; }
 
 function nowIso() { return new Date().toISOString(); }
-const get = (sql, ...p) => B.all(sql, p)[0];
-const all = (sql, ...p) => B.all(sql, p);
-const run = (sql, ...p) => B.run(sql, p);
+// قيمة غير مُرسلة (undefined) تُخزَّن فارغة (NULL) بدل أن يرفضها محرك SQLite
+const clean = (p) => p.map(v => (v === undefined ? null : v));
+const get = (sql, ...p) => B.all(sql, clean(p))[0];
+const all = (sql, ...p) => B.all(sql, clean(p));
+const run = (sql, ...p) => B.run(sql, clean(p));
 
 let txDepth = 0;
 function tx(fn) {

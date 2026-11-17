@@ -39,6 +39,8 @@ const MSG_TYPES = {
 const CATEGORIES = {
   general: 'مهمة', commitment: 'التزام', opportunity: 'فرصة', appointment: 'موعد', academic: 'مهمة أكاديمية',
 };
+const RECURRENCES = { daily: 'يومية', weekly: 'أسبوعية', monthly: 'شهرية', yearly: 'سنوية' };
+const PROJECT_KINDS = { project: 'مشروع', initiative: 'مبادرة' };
 const APPROVAL_KINDS = {
   report: 'تقرير للاعتماد', proposal: 'عرض أو مقترح', commercial: 'قرار تجاري', approval: 'طلب موافقة',
   guidance: 'مسألة تحتاج توجيه', inquiry: 'استفسار يعطل التنفيذ', final: 'اعتماد النتيجة النهائية',
@@ -50,7 +52,7 @@ const PERMS = {
   owner: new Set([
     'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
     'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
-    'folders.view', 'users.manage',
+    'folders.view', 'users.manage', 'projects.manage', 'item.edit',
   ]),
   manager: new Set([
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
@@ -59,13 +61,76 @@ const PERMS = {
   ]),
   member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
-const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'عضو فريق' };
+// صلاحيات يمنحها مدير المكتب لكل موظف (فوق صلاحياته الأساسية). أي صلاحية خارج هذه القائمة تُتجاهل
+const GRANTABLE = {
+  'task.create': 'إنشاء مهام جديدة (تُسند إليه إن لم يُحدَّد مسؤول)',
+  'subtask.create': 'إضافة مهام فرعية تحت المهام التي يراها',
+  'item.edit': 'تعديل تفاصيل المهام التي يراها (الموعد، الأولوية، التصنيف، المجلد…)',
+  'projects.manage': 'إنشاء المشاريع والمبادرات والمجلدات وتعديلها',
+  'meetings.view': 'الاطلاع على الاجتماعات والقرارات',
+  'partners.view': 'الاطلاع على العلاقات والشراكات وبيانات التواصل',
+  'reports.view': 'الاطلاع على التقارير والإنجازات (لكل المكتب)',
+};
+const SCOPES = {
+  own: 'المسندة إليه ومهام مشاريعه فقط',
+  sections: 'كل مهام أقسام محددة + المسندة إليه ومشاريعه',
+  all: 'كل مهام المكتب',
+};
+// قوالب جاهزة تسهّل الاختيار
+const GRANT_PRESETS = {
+  executor: { label: 'منفّذ', scope: 'own', perms: [] },
+  coordinator: { label: 'منسّق قسم', scope: 'sections', perms: ['task.create', 'subtask.create', 'item.edit', 'projects.manage'] },
+  assistant: { label: 'مساعد إداري', scope: 'all', perms: ['task.create', 'subtask.create', 'item.edit', 'meetings.view', 'partners.view'] },
+};
+function parseGrants(raw) {
+  let g = {}; try { g = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { }
+  if (!g || typeof g !== 'object' || Array.isArray(g)) g = {};
+  const scope = SCOPES[g.scope] ? g.scope : 'own';
+  const arr = (x) => (Array.isArray(x) ? [...new Set(x.slice(0, 50).map(String))] : []);
+  return { scope, sections: scope === 'sections' ? arr(g.sections).filter(s => SECTION_KEYS.includes(s)) : [], perms: arr(g.perms).filter(p => GRANTABLE[p]) };
+}
+// تحقق صارم عند الحفظ: رسالة واضحة بدل التجاهل الصامت
+function validateGrants(raw) {
+  const errs = [];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) errs.push('صيغة الصلاحيات غير صالحة');
+  else {
+    if (raw.scope !== undefined && !SCOPES[raw.scope]) errs.push('نطاق رؤية غير معروف');
+    for (const k of ['sections', 'perms']) if (raw[k] !== undefined && !Array.isArray(raw[k])) errs.push(`الحقل ${k} يجب أن يكون قائمة`);
+    if (Array.isArray(raw.perms) && raw.perms.some(p => !GRANTABLE[p])) errs.push('صلاحية غير معروفة');
+    if (Array.isArray(raw.sections) && raw.sections.some(s => !SECTION_KEYS.includes(s))) errs.push('قسم غير معروف');
+  }
+  const g = parseGrants(raw);
+  if (g.scope === 'sections' && !g.sections.length) errs.push('اختر قسمًا واحدًا على الأقل لنطاق «أقسام محددة»');
+  if (g.scope === 'own' && g.perms.includes('projects.manage')) errs.push('إدارة المشاريع والمجلدات تتطلب نطاق «أقسام محددة» أو «كل المكتب»');
+  return { g, errs };
+}
+const permCache = new WeakMap();
+// الصلاحيات الفعلية: أساس الدور + ما مُنح للموظف (الرؤية الكاملة تمنح item.view، ورؤية الأقسام تمنح تصفح الأقسام والمجلدات)
+function effectivePerms(user) {
+  if (!user || !PERMS[user.role]) return new Set();
+  if (user.role !== 'member') return PERMS[user.role];
+  if (permCache.has(user)) return permCache.get(user);
+  const g = parseGrants(user.grants);
+  const set = new Set([...PERMS.member, ...g.perms]);
+  // ملاحظة: «كل المكتب» لا يمنح item.view — رؤية الموظف تمر دائمًا عبر النطاق (لا ملاحظات رجل الأعمال الخاصة)
+  if (g.scope !== 'own') set.add('folders.view');
+  if (set.has('partners.view')) set.add('contacts.view');
+  permCache.set(user, set);
+  return set;
+}
+
+const ROLE_LABELS = { owner: 'رجل الأعمال', manager: 'مدير المكتب', member: 'موظف' };
 // الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
 const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
-const can = (user, perm) => !!(user && PERMS[user.role] && PERMS[user.role].has(perm));
+const can = (user, perm) => effectivePerms(user).has(perm);
 
 function todayStr(d = new Date()) {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz(), year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+}
+// تاريخ عربي قصير للنصوص (الإشعارات): «الأحد 15 نوفمبر»
+function fmtDateAr(d) {
+  if (!d) return '';
+  try { return new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'UTC' }).format(new Date(d.slice(0, 10) + 'T12:00:00Z')); } catch { return d; }
 }
 function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
@@ -77,6 +142,11 @@ const OPEN = "status NOT IN ('done','cancelled')";
 const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
   i.status,i.assignee,i.next_step,i.requires_approval,i.acknowledged_at,i.converted_at,i.created_at,i.updated_at,i.closed_at,i.completed_at,i.is_demo,
   i.created_by,(SELECT name FROM users u WHERE u.id=i.created_by) AS created_by_name, i.folder_id, i.assignee_id,
+  i.parent_task_id, i.recurrence, i.next_occurrence_id,
+  (SELECT pt.title FROM items pt WHERE pt.id=i.parent_task_id) AS parent_task_title,
+  (SELECT p.kind FROM projects p WHERE p.id=i.project_id) AS project_kind,
+  (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled') AS subtasks_total,
+  (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status='done') AS subtasks_done,
   (SELECT f.name FROM folders f WHERE f.id=i.folder_id) AS folder_name,
   (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending') AS pending_approvals,
   (SELECT p.name FROM projects p WHERE p.id=i.project_id) AS project_name,
@@ -201,11 +271,21 @@ function report(period = 'week') {
   r.avg_completion_days = done.length >= 3
     ? Math.round(done.reduce((s, x) => s + (new Date(x.completed_at) - new Date(x.created_at)), 0) / done.length / 86400000 * 10) / 10
     : null; // بيانات غير كافية
+  // عبء العمل حسب المسؤول: المفتوحة، المتأخرة، المستحقة خلال أسبوع، والمنجزة في الفترة
+  const week = addDays(t, 7);
+  r.by_person = all(`SELECT COALESCE(u.name, NULLIF(i.assignee,''), 'غير محدد') AS name, COALESCE(i.assignee_id, (SELECT x.id FROM users x WHERE x.name=i.assignee LIMIT 1)) AS user_id,
+      SUM(CASE WHEN i.${OPEN} THEN 1 ELSE 0 END) AS open,
+      SUM(CASE WHEN i.${OPEN} AND i.due_date<? THEN 1 ELSE 0 END) AS overdue,
+      SUM(CASE WHEN i.${OPEN} AND i.due_date BETWEEN ? AND ? THEN 1 ELSE 0 END) AS due_week,
+      SUM(CASE WHEN i.status='done' AND i.completed_at>=? THEN 1 ELSE 0 END) AS completed
+    FROM items i LEFT JOIN users u ON u.id=i.assignee_id WHERE i.kind IN ${TASK_KINDS}
+    GROUP BY COALESCE(CAST(i.assignee_id AS TEXT), (SELECT 'u' || x.id FROM users x WHERE x.name=i.assignee LIMIT 1), 'n:' || COALESCE(NULLIF(i.assignee,''), 'غير محدد'))
+    HAVING open > 0 OR completed > 0 ORDER BY overdue DESC, open DESC LIMIT 50`, t, t, week, fromIso);
   r.completed_items = all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND status='done' AND completed_at>=? ORDER BY completed_at DESC LIMIT 50`, fromIso).map(i => decorate(i, t));
   return r;
 }
 
 module.exports = {
-  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS,
-  PERMS, ROLE_LABELS, roleSql, can, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS,
+  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };
