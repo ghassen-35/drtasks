@@ -63,8 +63,28 @@ const canAddAny = () => can('task.create') || can('assignment.create') || can('p
 const canEditItem = (i) => can('item.manage') || (can('item.edit') && (!isMember() || !i || i.kind === 'task'));
 const canAddSub = () => ['task.create', 'item.edit', 'subtask.create'].some(can);
 
+// ألوان المهام: أحمر = عاجلة، أزرق = مستحقة (لها موعد)، رمادي = معلقة (تنتظر طرفًا آخر).
+// قواعد الأحمر هي نفسها قواعد شريط المهام العاجلة: عاجلة، أو متعثرة، أو متأخرة وأولويتها مهم/عاجل.
+const WAITING = ['waiting_info', 'waiting_reply', 'waiting_approval'];
+function taskTone(i) {
+  if (!i || ['done', 'cancelled'].includes(i.status)) return '';
+  if (i.priority === 'urgent' || i.status === 'stalled' || (i.is_overdue && i.priority !== 'normal')) return 'red';
+  if (WAITING.includes(i.status) || i.pending_approvals) return 'gray';
+  if (i.due_date) return 'blue';
+  return '';
+}
+const TONE_META = {
+  red: { icon: 'alert', name: 'الأحمر: المهام العاجلة', text: 'أمور تتطلب تدخلاً فورياً أو إنجازاً عاجلاً، أو ترتبط بموعد وشيك.' },
+  blue: { icon: 'clock', name: 'الأزرق: المهام المستحقة', text: 'مهام لها موعد إنجاز محدد، وتحتاج إلى متابعة والتزام بالجدول الزمني.' },
+  gray: { icon: 'bell', name: 'الرمادي: المهام المعلقة', text: 'أمور تنتظر إجراءً أو رداً أو اعتماداً أو استكمالاً من طرف آخر.' },
+};
+const toneLegend = () => `<details class="tone-legend"><summary>${I('flag')} دليل ألوان المهام</summary>${Object.entries(TONE_META).map(([k, m]) =>
+  `<div class="tl-row"><span class="tone-ic ${k}">${I(m.icon)}</span><div><b>${m.name}</b><div class="small muted">${m.text}</div></div></div>`).join('')}</details>`;
+
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
-  return `<div class="row p-${i.priority} ${i.status === 'done' ? 'done' : ''}">
+  const tone = taskTone(i);
+  return `<div class="row p-${i.priority} ${tone ? 'tone-' + tone : ''} ${i.status === 'done' ? 'done' : ''}">
+    ${tone ? `<span class="tone-ic ${tone}" title="${TONE_META[tone].name}" aria-label="${TONE_META[tone].name}">${I(TONE_META[tone].icon)}</span>` : ''}
     <div class="main">
       <a class="title" href="#/item/${i.id}">${esc(i.title)}</a>
       <div class="meta">
@@ -847,6 +867,7 @@ async function viewTasks(main, query) {
   const ctxLabel = from.get('label');
   main.innerHTML = `${ctxLabel ? `<div class="btn-row crumbs"><a class="btn sm ghost" href="#/command">${I('back')} لوحة القيادة</a><b>${esc(ctxLabel)}</b></div>` : ''}<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
+  const hd = $('.page-h', main); if (hd) hd.insertAdjacentHTML('afterend', toneLegend());
   async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${countTxt(items.length, 'نتيجة', 'نتيجتان', 'نتائج')}</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
 }
