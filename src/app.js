@@ -137,7 +137,7 @@ function createApp(P) {
 
   app.get('/api/meta', wrap(async req => ({
     sections: D.SECTIONS, statuses: D.STATUSES, priorities: D.PRIORITIES, msg_types: D.MSG_TYPES, categories: D.CATEGORIES,
-    owner_title: D.ownerTitle(), channels: D.CHANNELS, importance: D.IMPORTANCE, approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
+    owner_title: D.ownerTitle(), colors: D.COLORS, channels: D.CHANNELS, importance: D.IMPORTANCE, approval_kinds: D.APPROVAL_KINDS, recurrences: D.RECURRENCES, project_kinds: D.PROJECT_KINDS, grantable: D.GRANTABLE, scopes: D.SCOPES, grant_presets: D.GRANT_PRESETS, notif_types: N.TYPES, vapid: await push.vapidPublicKey(), realtime: P.realtime, file_backup: !!P.backup, today: D.todayStr(), tz: D.TZ,
     email: N.emailStatus(), whatsapp: { enabled: whatsapp.enabled(), configured: whatsapp.configured() },
     users: all(`SELECT id,name,${D.roleSql()} AS role,title FROM users WHERE active=1 ORDER BY member, id`), app_name: cfg.get('APP_NAME', 'مكتب عبدالله عبدالعزيز التويجري'),
   })));
@@ -150,12 +150,12 @@ function createApp(P) {
       const pids = S.memberProjects(req.user.id);
       const secs = D.can(req.user, 'folders.view') ? (S.allowedSections(req.user) || D.SECTION_KEYS) : [];
       return {
-        member: true, tiles: secs.map(k => { const t = D.sectionStats(k); delete t.unacknowledged; return t; }), today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc),
+        member: true, tiles: secs.map(k => { const t = D.sectionStats(k); delete t.unacknowledged; return t; }), today: t, today_ribbon: D.todayRibbon(sc), urgent_ribbon: D.urgentRibbon(sc), follow_ribbon: D.followRibbon(sc),
         my_items: listItems({ kind: 'tasks', scope: 'open' }, req.user),
         projects: pids.length ? all(`SELECT p.*, (SELECT name FROM folders f WHERE f.id=p.folder_id) AS folder_name FROM projects p WHERE p.id IN (${pids.map(() => '?').join(',')}) ORDER BY p.name`, ...pids).map(p => ({ ...p, section_name: D.sectionName(p.section) })) : [],
       };
     }
-    const out = { today: t, today_ribbon: D.todayRibbon(), urgent_ribbon: D.urgentRibbon(), tiles: D.SECTION_KEYS.map(D.sectionStats) };
+    const out = { today: t, today_ribbon: D.todayRibbon(), urgent_ribbon: D.urgentRibbon(), follow_ribbon: D.followRibbon(), tiles: D.SECTION_KEYS.map(D.sectionStats) };
     const c = (sql, ...p) => get(sql, ...p).c;
     out.summary = {
       open: c(`SELECT COUNT(*) c FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN}`),
@@ -201,6 +201,7 @@ function createApp(P) {
       ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, CASE i.priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(i.due_date,'9999'), i.id DESC LIMIT ${Math.min(Number(q.limit) || 500, 5000)}`, ...p)
       .map(i => D.decorate(i, t))
       // المهام الفرعية تظهر تحت أمها (مع عداد التقدم) لا كبنود مستقلة — إلا في البحث ومهام اليوم والمتأخرة، أو إن كانت الأم لا تُرى
+      .filter(i => !q.color || i.color === q.color)
       .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
   }
   app.get('/api/items', wrap(req => listItems(req.query, req.user)));

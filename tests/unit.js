@@ -373,6 +373,19 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('إعادة التطبيق لا تكرر شيئًا', again.folders === 0 && again.tasks === 0 && again.skipped === 39);
 }
 
+// ---- ألوان المهام المعتمدة: أحمر عاجلة، أزرق مستحقة، رمادي معلقة
+{
+  const c = (b, st) => { const x = S.createTask(mgr, { section: 'family', ...b }); if (st) S.updateItem(mgr, x.id, { status: st, status_note: 'سبب' }); return S.getItem(x.id).color; };
+  t('أحمر «عاجلة»: أولوية عاجلة، متعثرة، أو تجاوزت موعدها', c({ title: 'ع1', priority: 'urgent' }) === 'red' && c({ title: 'ع2' }, 'stalled') === 'red'
+    && c({ title: 'ع3', due_date: D.addDays(today, -1) }) === 'red');
+  t('أزرق «مهام اليوم»: موعدها اليوم', c({ title: 'س1', due_date: today }) === 'blue');
+  t('رمادي «قيد المتابعة»: تنتظر ردًا أو اعتمادًا أو إجراءً حتى لو موعدها اليوم', c({ title: 'م1', due_date: today }, 'waiting_reply') === 'gray' && c({ title: 'م1ب' }, 'waiting_info') === 'gray');
+  t('بلا لون: موعدها غدًا أو بعده أو بلا موعد', c({ title: 'ب1', due_date: D.addDays(today, 1) }) === null && c({ title: 'ب2' }) === null);
+  t('المتأخر المنتظر أحمر (التأخر يستدعي تدخلًا)', c({ title: 'م2', due_date: D.addDays(today, -2) }, 'waiting_reply') === 'red');
+  const fr = D.followRibbon(); const order = fr.map(i => ({ red: 0, blue: 1, gray: 2 })[i.color]);
+  t('الشريط العلوي مرتب: العاجلة ← مهام اليوم ← قيد المتابعة', fr.length > 0 && order.every((v, k) => k === 0 || order[k - 1] <= v) && new Set(fr.map(i => i.color)).size === 3);
+}
+
 // ---- قطع الاتصال الفوري عند إيقاف الحساب أو تغيير كلمة المرور
 {
   const events = require('../src/events');

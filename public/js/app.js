@@ -63,13 +63,19 @@ const canAddAny = () => can('task.create') || can('assignment.create') || can('p
 const canEditItem = (i) => can('item.manage') || (can('item.edit') && (!isMember() || !i || i.kind === 'task'));
 const canAddSub = () => ['task.create', 'item.edit', 'subtask.create'].some(can);
 
+// ألوان المهام المعتمدة: أحمر عاجلة، أزرق مستحقة، رمادي معلقة
+const COLOR_ICON = { red: 'alert', blue: 'clock', gray: 'bell' };
+const COLOR_TITLE = { red: 'الأحمر: عاجلة', blue: 'الأزرق: مهام اليوم', gray: 'الرمادي: قيد المتابعة' };
+const colorChip = (i) => i.color ? `<span class="chip col-${i.color}" title="${esc(state.meta.colors[i.color].hint)}">${I(COLOR_ICON[i.color])}${esc(state.meta.colors[i.color].label)}</span>` : '';
+const colorLegendHtml = (counts) => `<div class="r-legend small color-legend">${['red', 'blue', 'gray'].map(c => `<span title="${esc(state.meta.colors[c].hint)}"><i class="lg c-${c}"></i>${esc(state.meta.colors[c].label)}${counts ? ` (${counts[c] || 0})` : ''}</span>`).join('')}
+  <details><summary>ما معنى الألوان؟</summary>${['red', 'blue', 'gray'].map(c => `<div class="color-explain"><span class="cbox c-${c}">${I(COLOR_ICON[c])}</span><div><b>${COLOR_TITLE[c]}</b><div class="small muted">${esc(state.meta.colors[c].hint)}</div></div></div>`).join('')}</details></div>`;
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
-  return `<div class="row p-${i.priority} ${i.status === 'done' ? 'done' : ''}">
+  return `<div class="row c-${i.color || 'none'} ${i.status === 'done' ? 'done' : ''}">
     <div class="main">
       <a class="title" href="#/item/${i.id}">${esc(i.title)}</a>
       <div class="meta">
         ${i.kind !== 'task' ? `<span class="chip kind">${esc(kindLabel(i))}</span>` : ''}
-        ${statusChip(i.status)} ${prioChip(i.priority)} ${dueChip(i)}
+        ${colorChip(i)}${statusChip(i.status)} ${i.color === 'red' && i.priority === 'urgent' ? '' : prioChip(i.priority)} ${dueChip(i)}
         ${i.recurrence ? `<span class="chip rec">${I('repeat')}${esc(state.meta.recurrences[i.recurrence] || '')}</span>` : ''}
         ${i.subtasks_total ? `<span class="chip">${I('list')}${i.subtasks_done}/${i.subtasks_total}</span>` : ''}
         ${i.parent_task_id ? `<span class="chip">فرعية من: ${esc(i.parent_task_title || '')}</span>` : ''}
@@ -526,27 +532,23 @@ function closeEvents() {
 }
 
 // ===== شريطا مهام اليوم والمهام العاجلة =====
-// شريط «المتابعة» الموحد: العاجلة (أحمر) ثم مهام اليوم المهمة (برتقالي) ثم بقية مهام اليوم (رمادي)
-function followRibbonHtml(urgent, today) {
-  const seen = new Set(urgent.map(i => i.id));
-  const items = [
-    ...urgent.map(i => ({ i, tone: 'red', why: i.urgent_reasons.join('، ') })),
-    ...today.filter(i => !seen.has(i.id)).map(i => ({ i, tone: i.priority === 'normal' ? 'slate' : 'orange', why: 'مستحقة اليوم' })),
-  ];
+// شريط «المتابعة» الموحد بالترتيب المعتمد: العاجلة (أحمر) ← مهام اليوم (أزرق) ← قيد المتابعة (رمادي)
+function followRibbonHtml(follow) {
+  const items = (follow || []).map(i => ({ i, tone: 'c-' + i.color, why: `${i.color_label}: ${i.follow_reason || ''}` }));
   const paused = localStorage.getItem('ribbons-paused') === '1';
   const due = (i) => (i.due_date ? fmtDate(i.due_date) + (i.due_time ? ' ' + i.due_time : '') : '');
   const one = ({ i, tone, why }) => `<button type="button" class="r-item r-pill ${tone}" data-id="${i.id}" title="${esc(why)}">
       ${i.section ? `<span class="r-sec">${esc(i.section_name)}</span>` : ''}<b>${esc(i.title)}</b>${due(i) ? `<small>· ${esc(due(i))}</small>` : ''}</button>`;
   const content = items.map(one).join('');
   const dur = Math.max(25, items.length * 8);
-  return `<section class="ribbon follow ${paused ? 'paused' : ''} ${items.length < 2 ? 'static' : ''}" aria-label="المتابعة: المهام العاجلة ومهام اليوم">
+  return `<section class="ribbon follow ${paused ? 'paused' : ''} ${items.length < 2 ? 'static' : ''}" aria-label="المتابعة: العاجلة ثم مهام اليوم ثم قيد المتابعة">
     <div class="r-title"><span class="dot"></span>المتابعة <span class="n">${items.length}</span></div>
     <div class="r-view">${items.length
       ? `<div class="r-track" style="--dur:${dur}s">${content}${items.length >= 2 ? `<span class="dup" aria-hidden="true" style="display:contents">${content.replace(/<button /g, '<button tabindex="-1" ')}</span>` : ''}</div>`
-      : '<div class="r-empty">لا توجد مهام عاجلة ولا مستحقة اليوم</div>'}</div>
+      : '<div class="r-empty">لا توجد مهام عاجلة ولا مهام لليوم ولا مهام قيد المتابعة</div>'}</div>
     ${items.length >= 2 ? `<button type="button" class="r-ctl" data-toggle aria-label="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}" title="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}">${I(paused ? 'play' : 'pause')}</button>` : ''}
   </section>
-  <div class="r-legend small"><span><i class="lg red"></i>عاجلة (${urgent.length})</span><span><i class="lg orange"></i>أولوية «مهم» ومستحقة اليوم</span><span><i class="lg slate"></i>مستحقة اليوم (${today.length})</span></div>`;
+  ${colorLegendHtml(items.reduce((a, x) => { const c = x.tone.slice(2); a[c] = (a[c] || 0) + 1; return a; }, {}))}`;
 }
 function bindRibbons(root) {
   $$('.ribbon .r-item', root).forEach(b => b.onclick = () => location.hash = `#/item/${b.dataset.id}`);
@@ -586,7 +588,7 @@ async function viewHome(main) {
       main.innerHTML = `
         <div class="hello"><h1>مرحبًا، ${esc(state.me.name)}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
         ${notifBannerHtml()}
-        ${followRibbonHtml(h.urgent_ribbon, h.today_ribbon)}
+        ${followRibbonHtml(h.follow_ribbon)}
         <div class="card section-gap"><div class="card-h">${I('list')}<h2>مهامي المفتوحة</h2><span class="chip">${h.my_items.length}</span><span class="spacer"></span><a class="btn sm" href="#/tasks">كل مهامي</a></div>
           ${listOrEmpty(h.my_items, i => itemRow(i, { showUpdated: true }), 'لا توجد مهام مسندة إليك أو في مشاريعك حاليًا')}</div>
         <div class="card"><div class="card-h">${I('folder')}<h2>مشاريعي</h2></div>
@@ -643,7 +645,7 @@ async function viewHome(main) {
     main.innerHTML = `
       <div class="hello"><h1>مرحبًا، ${esc(state.me.name)}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
       ${notifBannerHtml()}
-      ${followRibbonHtml(h.urgent_ribbon, h.today_ribbon)}
+      ${followRibbonHtml(h.follow_ribbon)}
       <div class="tiles">${h.tiles.map(tileHtml).join('')}</div>
       ${roleHtml}`;
     bindRibbons(main); bindInboxActions(main); bindTileAdd(main); bindNotifBanner(main);
@@ -819,6 +821,7 @@ function filtersHtml(f, { section = true } = {}) {
   return `<form class="filters" id="flt">
     <div class="filters-top"><input type="search" name="q" placeholder="بحث بالعنوان أو الرقم المرجعي أو المسؤول" value="${esc(f.q || '')}" aria-label="بحث">
       <a class="btn sm" data-export href="#" download title="تصدير القائمة كما تظهر (Excel)">${I('download')}<span class="desk-only"> تصدير</span></a></div>
+    <div class="seg quick colors" role="group" aria-label="اللون">${['', 'red', 'blue', 'gray'].map(c => `<label><input type="radio" name="color" value="${c}" ${String(f.color || '') === c ? 'checked' : ''}><span class="${c ? 'c-' + c : ''}">${c ? `${I(COLOR_ICON[c])}${esc(state.meta.colors[c].label)}` : 'كل الألوان'}</span></label>`).join('')}</div>
     <div class="seg quick" role="group" aria-label="عرض">${chip('open', 'المفتوحة')}${chip('today', 'اليوم')}${chip('overdue', 'المتأخرة')}${chip('closed', 'المنجزة')}${chip('', 'الكل')}</div>
     <details class="adv" ${adv ? 'open' : ''}><summary>تصفية متقدمة${adv ? ` (${adv})` : ''}</summary><div class="adv-grid">
       ${section ? `<select name="section" aria-label="القسم">${opt('', 'كل الأقسام', f.section)}${mySections().map(s => opt(s.key, s.name, f.section)).join('')}</select>` : ''}
@@ -843,7 +846,7 @@ async function viewTasks(main, query) {
   const f = { scope: 'open' };
   // فلاتر قادمة من لوحة القيادة (مثل #/tasks?scope=overdue&priority=urgent)
   const from = new URLSearchParams(query || '');
-  for (const k of ['scope', 'status', 'priority', 'section', 'assignee_id', 'assignee', 'done_since', 'q', 'category']) if (from.has(k)) f[k] = from.get(k);
+  for (const k of ['scope', 'status', 'priority', 'section', 'assignee_id', 'assignee', 'done_since', 'q', 'category', 'color']) if (from.has(k)) f[k] = from.get(k);
   const ctxLabel = from.get('label');
   main.innerHTML = `${ctxLabel ? `<div class="btn-row crumbs"><a class="btn sm ghost" href="#/command">${I('back')} لوحة القيادة</a><b>${esc(ctxLabel)}</b></div>` : ''}<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
@@ -1181,7 +1184,7 @@ async function viewItem(main, id) {
       <div class="btn-row" style="margin-bottom:6px"><a class="btn sm ghost" href="javascript:history.back()">${I('back')} رجوع</a><span class="ref">${esc(i.ref)}</span>${demoChip(i)}
         ${canEditItem(i) && !i.closed_at && i.kind !== 'note' ? `<span class="spacer" style="flex:1"></span><button class="btn sm" id="editTop">${I('edit')} تعديل التفاصيل</button>` : ''}</div>
       <h1>${esc(i.title)}</h1>
-      <div class="meta btn-row" style="margin-top:8px"><span class="chip kind">${esc(kindLabel(i))}</span>${statusChip(i.status)}${prioChip(i.priority)}${dueChip(i)}
+      <div class="meta btn-row" style="margin-top:8px">${colorChip(i)}<span class="chip kind">${esc(kindLabel(i))}</span>${statusChip(i.status)}${prioChip(i.priority)}${dueChip(i)}
         ${i.acknowledged_at ? `<span class="chip st-acknowledged">${I('check')}تم تأكيد الاستلام ${fmtTs(i.acknowledged_at)}</span>` : (i.kind !== 'task' && i.status !== 'cancelled' ? '<span class="chip st-new">لم يُؤكد الاستلام بعد</span>' : '')}
         ${i.requires_approval ? '<span class="chip st-waiting_approval">يتطلب اعتماد النتيجة</span>' : ''}${i.closed_at ? '<span class="chip st-done">مغلقة نهائيًا</span>' : ''}
         ${pendingCount ? `<span class="chip overdue">${I('gavel')}${pendingCount} طلب ينتظر القرار</span>` : ''}</div>
@@ -1412,10 +1415,10 @@ async function modalToday() {
   const [today, overdue] = await Promise.all([GET('/api/items?' + qs({ kind: 'tasks', scope: 'today' })), GET('/api/items?' + qs({ kind: 'tasks', scope: 'overdue' }))]);
   const dateTxt = new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
   const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
-  const row = (i) => `<a class="today-row" href="#/item/${i.id}"><span class="pdot p-${i.priority}" aria-hidden="true"></span>
+  const row = (i) => `<a class="today-row" href="#/item/${i.id}"><span class="pdot c-${i.color || 'none'}" aria-hidden="true" title="${esc(i.color_label || '')}"></span>
     <span class="tt">${i.section ? `<b>${esc(i.section_name)}:</b> ` : ''}${esc(i.title)}</span>
     <span class="small muted">${esc(i.is_overdue ? fmtDate(i.due_date) : (i.due_time || (i.assignee !== state.me.name ? i.assignee : '') || ''))}</span></a>`;
-  const mark = (i) => i.priority === 'urgent' ? '🔴 ' : i.priority === 'important' ? '🟠 ' : '';
+  const mark = (i) => ({ red: '🔴 ', blue: '🔵 ', gray: '⚪ ' })[i.color] || '';
   const who = (i) => i.assignee && i.assignee !== state.me.name ? ` (${i.assignee})` : '';
   const line = (i, n, late) => `${n + 1}. ${mark(i)}${i.section ? `[${i.section_name}] ` : ''}${i.title}${late ? ` — منذ ${fmtDate(i.due_date)}` : i.due_time ? ` — ${i.due_time}` : ''}${who(i)}`;
   const text = [`📋 مهام اليوم — ${dateTxt}`, '',
@@ -1427,7 +1430,7 @@ async function modalToday() {
       <h3 class="today-h">${I('calendarCheck')} مستحقة اليوم (${today.length})</h3>
       ${today.length ? `<div class="today-list">${today.map(row).join('')}</div>` : '<div class="small muted">لا توجد مهام مستحقة اليوم</div>'}
       ${overdue.length ? `<h3 class="today-h red">${I('alert')} متأخرة لم تُنجز (${overdue.length})</h3><div class="today-list">${overdue.map(row).join('')}</div>` : ''}
-      <div class="r-legend small" style="margin-top:12px"><span><i class="lg red"></i>عاجل</span><span><i class="lg orange"></i>مهم</span><span><i class="lg slate"></i>عادي</span></div>`,
+      <div style="margin-top:12px">${colorLegendHtml()}</div>`,
     init: (form) => {
       $('#copyToday', form).onclick = async () => { await copyText(text); toast('نُسخت القائمة — الصقها في واتساب أو أي رسالة', 'ok'); };
       $$('.today-row', form).forEach(a => a.addEventListener('click', () => m.close()));
