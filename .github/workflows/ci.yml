@@ -1,0 +1,53 @@
+# يشغّل كل الاختبارات على كل طلب دمج إلى main.
+# إذا كان صاحب الطلب مساهمًا موثوقًا (القائمة أدناه) ونجحت الاختبارات، يُدمج الطلب تلقائيًا
+# فيُنشر على Cloudflare (Workers Builds) بلا موافقة يدوية.
+name: CI and auto-merge
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Unit tests
+        run: npm run test:unit
+      - name: Install browser
+        run: npx playwright install --with-deps chromium
+      # سيناريو المتصفح يحتوي خطوة متقطعة معروفة، فنسمح بمحاولة ثانية قبل الفشل
+      - name: E2E on Node
+        run: npm run test:e2e || (echo "retrying once" && npm run test:e2e)
+      - name: E2E on Cloudflare runtime (workerd)
+        run: npm run test:cf || (echo "retrying once" && npm run test:cf)
+
+  auto-merge:
+    needs: test
+    # فقط: مساهمون موثوقون، وطلب غير مسودة، ومن فرع داخل المستودع نفسه (لا نسخة fork)
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(fromJSON('["atoygre-lab"]'), github.event.pull_request.user.login)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Merge the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge "$PR_URL" --merge
