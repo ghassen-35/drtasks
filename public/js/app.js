@@ -69,6 +69,10 @@ const COLOR_TITLE = { red: 'الأحمر: عاجلة', blue: 'الأزرق: مه
 const colorChip = (i) => i.color ? `<span class="chip col-${i.color}" title="${esc(state.meta.colors[i.color].hint)}">${I(COLOR_ICON[i.color])}${esc(state.meta.colors[i.color].label)}</span>` : '';
 const colorLegendHtml = (counts) => `<div class="r-legend small color-legend">${['red', 'blue', 'gray'].map(c => `<span title="${esc(state.meta.colors[c].hint)}"><i class="lg c-${c}"></i>${esc(state.meta.colors[c].label)}${counts ? ` (${counts[c] || 0})` : ''}</span>`).join('')}
   <details><summary>ما معنى الألوان؟</summary>${['red', 'blue', 'gray'].map(c => `<div class="color-explain"><span class="cbox c-${c}">${I(COLOR_ICON[c])}</span><div><b>${COLOR_TITLE[c]}</b><div class="small muted">${esc(state.meta.colors[c].hint)}</div></div></div>`).join('')}</details></div>`;
+// مفتاح الألوان الظاهر تحت الشريط: اللون ومسماه وعدده وتفسيره، بالترتيب المعتمد
+const colorKeyHtml = (counts) => `<div class="color-key" aria-label="تفسير الألوان">${['red', 'blue', 'gray'].map(c => `<a class="ck c-${c}" href="#/tasks?scope=open&color=${c}">
+    <span class="cbox c-${c}">${I(COLOR_ICON[c])}</span>
+    <span class="ck-t"><b>${esc(state.meta.colors[c].label)} <span class="n">${counts[c] || 0}</span></b><small>${esc(state.meta.colors[c].hint)}</small></span></a>`).join('')}</div>`;
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
   return `<div class="row c-${i.color || 'none'} ${i.status === 'done' ? 'done' : ''}">
     <div class="main">
@@ -538,7 +542,7 @@ function followRibbonHtml(follow) {
   const paused = localStorage.getItem('ribbons-paused') === '1';
   const due = (i) => (i.due_date ? fmtDate(i.due_date) + (i.due_time ? ' ' + i.due_time : '') : '');
   const one = ({ i, tone, why }) => `<button type="button" class="r-item r-pill ${tone}" data-id="${i.id}" title="${esc(why)}">
-      ${i.section ? `<span class="r-sec">${esc(i.section_name)}</span>` : ''}<b>${esc(i.title)}</b>${due(i) ? `<small>· ${esc(due(i))}</small>` : ''}</button>`;
+      <span class="r-tag">${I(COLOR_ICON[i.color])}${esc(i.color_label)}</span>${i.section ? `<span class="r-sec">${esc(i.section_name)}</span>` : ''}<b>${esc(i.title)}</b>${due(i) ? `<small>· ${esc(due(i))}</small>` : ''}</button>`;
   const content = items.map(one).join('');
   const dur = Math.max(25, items.length * 8);
   return `<section class="ribbon follow ${paused ? 'paused' : ''} ${items.length < 2 ? 'static' : ''}" aria-label="المتابعة: العاجلة ثم مهام اليوم ثم قيد المتابعة">
@@ -548,7 +552,7 @@ function followRibbonHtml(follow) {
       : '<div class="r-empty">لا توجد مهام عاجلة ولا مهام لليوم ولا مهام قيد المتابعة</div>'}</div>
     ${items.length >= 2 ? `<button type="button" class="r-ctl" data-toggle aria-label="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}" title="${paused ? 'تشغيل الحركة' : 'إيقاف الحركة'}">${I(paused ? 'play' : 'pause')}</button>` : ''}
   </section>
-  ${colorLegendHtml(items.reduce((a, x) => { const c = x.tone.slice(2); a[c] = (a[c] || 0) + 1; return a; }, {}))}`;
+  ${colorKeyHtml(items.reduce((a, x) => { const c = x.tone.slice(2); a[c] = (a[c] || 0) + 1; return a; }, {}))}`;
 }
 function bindRibbons(root) {
   $$('.ribbon .r-item', root).forEach(b => b.onclick = () => location.hash = `#/item/${b.dataset.id}`);
