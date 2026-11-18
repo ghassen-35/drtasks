@@ -381,6 +381,7 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('أزرق «مهام اليوم»: موعدها اليوم', c({ title: 'س1', due_date: today }) === 'blue');
   t('رمادي «قيد المتابعة»: تنتظر ردًا أو اعتمادًا أو إجراءً حتى لو موعدها اليوم', c({ title: 'م1', due_date: today }, 'waiting_reply') === 'gray' && c({ title: 'م1ب' }, 'waiting_info') === 'gray');
   t('بلا لون: موعدها غدًا أو بعده أو بلا موعد', c({ title: 'ب1', due_date: D.addDays(today, 1) }) === null && c({ title: 'ب2' }) === null);
+  t('المتأخرة بأولوية عادية حمراء', c({ title: 'ع5', priority: 'normal', due_date: D.addDays(today, -3) }) === 'red');
   t('المتأخر المنتظر أحمر (التأخر يستدعي تدخلًا)', c({ title: 'م2', due_date: D.addDays(today, -2) }, 'waiting_reply') === 'red');
   const fr = D.followRibbon(); const order = fr.map(i => ({ red: 0, blue: 1, gray: 2 })[i.color]);
   t('الشريط العلوي مرتب: العاجلة ← مهام اليوم ← قيد المتابعة', fr.length > 0 && order.every((v, k) => k === 0 || order[k - 1] <= v) && new Set(fr.map(i => i.color)).size === 3);

@@ -43,7 +43,7 @@ const CHANNELS = { platform: 'عبر المنصة', whatsapp: 'واتساب', em
 const IMPORTANCE = { normal: 'عادي', important: 'مهم', urgent: 'عاجل' };
 const WAITING_STATUSES = ['waiting_reply', 'waiting_info', 'waiting_approval'];
 const COLORS = {
-  red: { label: 'عاجلة', hint: 'تتطلب تدخلًا فوريًا' },
+  red: { label: 'عاجلة', hint: 'عاجلة أو متأخرة، وتتطلب تدخلًا فوريًا' },
   blue: { label: 'مهام اليوم', hint: 'مطلوب إنجازها خلال اليوم' },
   gray: { label: 'قيد المتابعة', hint: 'تنتظر ردًا أو اعتمادًا أو إجراءً' },
 };
@@ -194,7 +194,7 @@ function decorate(item, today = todayStr()) {
   item.priority_label = PRIORITIES[item.priority];
   if (item.msg_type) item.msg_type_label = MSG_TYPES[item.msg_type];
   // ألوان المهام المعتمدة في المكتب (بهذا الترتيب):
-  // أحمر «عاجلة» = تتطلب تدخلًا فوريًا: أولوية عاجل، أو متعثرة، أو تجاوزت موعدها
+  // أحمر «عاجلة» = عاجلة أو متأخرة (أيًّا كانت أولويتها أو حالتها، ولو كانت تنتظر طرفًا آخر)، والمتعثرة كذلك
   // رمادي «قيد المتابعة» = تنتظر ردًا أو اعتمادًا أو إجراءً (حالة انتظار أو طلب اعتماد معلق)
   // أزرق «مهام اليوم» = مطلوب إنجازها خلال اليوم
   // وما سوى ذلك بلا لون
@@ -226,7 +226,7 @@ function followRibbon(scope = NO_SCOPE) {
   const prio = { urgent: 0, important: 1, normal: 2 };
   for (const i of rows) {
     i.follow_reason = i.color === 'red'
-      ? [i.priority === 'urgent' && 'أولوية عاجلة', i.status === 'stalled' && 'متعثرة', i.is_overdue && 'تجاوزت موعدها'].filter(Boolean).join('، ')
+      ? [i.priority === 'urgent' && 'أولوية عاجلة', i.status === 'stalled' && 'متعثرة', i.is_overdue && 'متأخرة'].filter(Boolean).join('، ')
       : i.color === 'blue' ? 'مطلوب إنجازها اليوم'
         : (WAITING_STATUSES.includes(i.status) ? i.status_label : 'بانتظار اعتماد');
   }
