@@ -15,6 +15,8 @@
   --red-soft: #fdecec;
   --green: #2e7d32;
   --green-soft: #e8f5e9;
+  --blue: #2563eb;
+  --blue-soft: #e8efff;
   --gray: #6b7785;
   --gray-soft: #eef1f4;
   --amber: #b26a00;
@@ -216,7 +218,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--brand-2); box-sh
 .row:hover { border-color: #c9d6df; }
 .row.p-urgent { border-inline-start-color: var(--red); }
 .row.p-important { border-inline-start-color: var(--orange); }
+.row.tone-red { border-inline-start-color: var(--red); }
+.row.tone-blue { border-inline-start-color: var(--blue); }
+.row.tone-gray { border-inline-start-color: var(--gray); }
 .row.done { border-inline-start-color: var(--green); }
+.row.tone-red, .row.tone-blue, .row.tone-gray { padding-inline-start: 56px; }
+.row > .tone-ic { position: absolute; top: 12px; inset-inline-start: 12px; }
+.tone-ic { flex: none; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: #fff; }
+.tone-ic svg.i { width: 18px; height: 18px; }
+.tone-ic.red { background: var(--red); } .tone-ic.blue { background: var(--blue); } .tone-ic.gray { background: var(--gray); }
+.tone-legend { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px 14px; margin: 0 0 12px; }
+.tone-legend summary { cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 6px; min-height: 36px; }
+.tone-legend .tl-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); }
 .row .main { flex: 1; min-width: 0; }
 .row .title { font-weight: 600; display: block; color: var(--ink); overflow-wrap: anywhere; }
 .row .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; align-items: center; }
