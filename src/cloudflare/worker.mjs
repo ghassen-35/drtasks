@@ -7,6 +7,7 @@ import events from '../events.js';
 import auth from '../auth.js';
 import { createApp } from '../app.js';
 import { runScheduler } from '../scheduler.js';
+import seeds from '../seeds.js';
 
 const CHUNK = 512 * 1024; // حد صف SQLite في Durable Object هو 2MB
 
@@ -50,7 +51,7 @@ export class OfficeDO extends DurableObject {
   }
 
   async setup() {
-    try { await auth.ensureUsers({ requirePasswords: true }); this.setupError = null; }
+    try { await auth.ensureUsers({ requirePasswords: true }); this.setupError = null; seeds.applySeeds(cfg); }
     catch (e) { if (!(e instanceof auth.SetupError)) throw e; this.setupError = e.message; }
   }
 

@@ -54,7 +54,7 @@ const mailSrv = http.createServer((req, res) => {
 let server;
 function startServer() {
   const cfg = {
-    OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test',
+    OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', SEED_DATA: '0', OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test',
     EMAIL_MODE: 'resend', RESEND_API_KEY: 'test-key', RESEND_API_URL: `http://127.0.0.1:${mailSrv.address().port}/emails`, EMAIL_FROM: 'office@example.test',
   };
   return new Promise((resolve, reject) => {
@@ -584,6 +584,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await apiAs(mgr, 'POST', '/api/tasks', { title: 'حجز قاعات الاختبار', section: 'personal', directive_id: d.id });
       // 3) المساعد ينفذ ويرفع المخرج
       const ctx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' }); const as = await ctx.newPage(); as.on('pageerror', e => consoleErrors.push(e.message));
+      global.pages.asst = as;
       await as.goto(BASE); await as.fill('input[name=username]', 'qa.asst'); await as.fill('input[name=password]', 'Staff#2026x'); await as.click('button:has-text("دخول")'); await as.waitForSelector('.bottomnav');
       await as.goto(`${BASE}/#/item/${t1.id}`); await as.waitForSelector('#acts [data-s=done]');
       await as.click('#acts [data-s=done]'); await as.waitForSelector('.modal .info-box:has-text("جدول اختبارات معتمد")');
@@ -612,7 +613,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(done.some(x => x.id === t1.id) && done.some(x => x.id === t2.id), 'المهام لا تظهر في المنجزة');
       const cmd = (await apiAs(owner, 'GET', '/api/command')).body;
       assert(cmd.kpis.done_week >= 2, 'لوحة القيادة لا تحسب الإنجاز');
-      await ctx.close();
+      delete global.pages.asst; await ctx.close();
     });
 
     await check('حالات واقعية: تأخر، تعثر يحتاج المدير، اجتماع بخمسة قرارات، أعمال متعددة لشخص، تكليف عاجل، تغيير الأولوية والموعد، إلغاء مع حفظ السجل', async () => {
@@ -624,7 +625,8 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(await mgr.isVisible('.modal span:has-text("سبب التأخير *")'), 'التأجيل لا يطلب سبب التأخير');
       await mgr.click('.modal [data-pp]:has-text("غدًا")'); await mgr.waitForSelector('.toast.err:has-text("سبب التأخير")');
       await mgr.fill('.modal input[name=reason]', 'تأخر وصول البيانات من المدارس');
-      assert(await mgr.$eval('.modal input[name=reason]', i => i.value) === 'تأخر وصول البيانات من المدارس', 'لم يُكتب السبب في النافذة');
+      { const st = await mgr.evaluate(() => [...document.querySelectorAll('.modal-bg')].map(m => (m.querySelector('h2') || {}).textContent + '=' + ((m.querySelector('[name=reason]') || {}).value || '')));
+        assert(st.length === 1 && st[0].endsWith('تأخر وصول البيانات من المدارس'), 'لم يُكتب السبب في النافذة: ' + JSON.stringify(st)); }
       await mgr.click('.modal [data-pp]:has-text("غدًا")'); await mgr.waitForSelector('.modal-bg', { state: 'detached' });
       assert((await apiAs(mgr, 'GET', `/api/items/${late.id}`)).body.messages.some(m => m.body.includes('سبب التأخير')), 'سبب التأخير لم يُحفظ');
       // تعثر مشروع يحتاج تدخل المدير: يظهر في «تحتاج تدخلك»

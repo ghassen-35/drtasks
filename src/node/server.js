@@ -88,6 +88,8 @@ async function main() {
     console.log('\n' + created.text);
     if (created.generated) fs.writeFileSync(path.join(DATA_DIR, 'initial-credentials.txt'), created.text, { mode: 0o600 });
   }
+  // بيانات المكتب الأولية (مرة واحدة، دون تكرار)
+  for (const r of require('../seeds').applySeeds(cfg)) console.log(`أُضيفت بيانات ${r.key}: ${r.folders} مجلدًا و${r.tasks} مهمة (تُخطي ${r.skipped} موجود)`);
   const port = Number(cfg.get('PORT', '3000'));
   serve({ fetch: app.fetch, port, hostname: cfg.get('HOST', '0.0.0.0') }, () => console.log(`المنصة تعمل على http://localhost:${port}`));
   setTimeout(tick, 3000);
