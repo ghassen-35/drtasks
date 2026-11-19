@@ -72,7 +72,7 @@ const P = {
 const app = createApp(P);
 const publicDir = path.relative(process.cwd(), path.join(__dirname, '..', '..', 'public')) || '.';
 app.use('/_headers', (c) => c.notFound()); // خاص بـ Cloudflare
-app.use('*', serveStatic({ root: publicDir, onFound: (p, c) => { if (/\.html$|sw\.js$/.test(p)) c.header('Cache-Control', 'no-cache'); } }));
+app.use('*', serveStatic({ root: publicDir, onFound: (p, c) => { if (/\.(html|js|css|webmanifest)$/.test(p)) c.header('Cache-Control', 'no-cache'); } }));
 app.get('*', serveStatic({ path: path.join(publicDir, 'index.html') }));
 
 function dailyBackup() {

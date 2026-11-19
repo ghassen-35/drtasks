@@ -9,5 +9,11 @@
   Cache-Control: no-cache
 /sw.js
   Cache-Control: no-cache
+/js/*
+  Cache-Control: no-cache
+/css/*
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
 /fonts/*
   Cache-Control: public, max-age=2592000, immutable

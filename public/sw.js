@@ -1,5 +1,5 @@
 // Service Worker: تثبيت التطبيق (PWA)، تخزين الواجهة مؤقتًا، واستقبال إشعارات Push
-const CACHE = 'office-shell-v3';
+const CACHE = 'office-shell-v4';
 const SHELL = ['/', '/index.html', '/css/app.css', '/js/app.js', '/js/icons.js', '/img/logo.png', '/img/icon-192.png', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
@@ -12,8 +12,10 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
-  e.respondWith(fetch(e.request).then(res => {
-    if (res.ok && (SHELL.includes(url.pathname) || url.pathname.startsWith('/fonts/'))) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
+  // ملفات الواجهة تُطلب دائمًا بالتحقق من الخادم (لا نسخة قديمة من ذاكرة المتصفح) حتى تظهر التحديثات فورًا
+  const shell = SHELL.includes(url.pathname);
+  e.respondWith(fetch(shell ? new Request(e.request, { cache: 'no-cache' }) : e.request).then(res => {
+    if (res.ok && (shell || url.pathname.startsWith('/fonts/'))) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); }
     return res;
   }).catch(() => caches.match(e.request).then(r => r || caches.match('/index.html'))));
 });
