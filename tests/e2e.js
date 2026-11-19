@@ -54,7 +54,7 @@ const mailSrv = http.createServer((req, res) => {
 let server;
 function startServer() {
   const cfg = {
-    OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', SEED_DATA: '0', OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test',
+    OWNER_PASSWORD: 'Owner#2026x', MANAGER_PASSWORD: 'Manager#2026x', SEED_DATA: '0', ADMIN_RECOVERY_CODE: 'Recovery-Code-2026', OWNER_EMAIL: 'owner@example.test', MANAGER_EMAIL: 'manager@example.test',
     EMAIL_MODE: 'resend', RESEND_API_KEY: 'test-key', RESEND_API_URL: `http://127.0.0.1:${mailSrv.address().port}/emails`, EMAIL_FROM: 'office@example.test',
   };
   return new Promise((resolve, reject) => {
@@ -788,12 +788,64 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await mgr.waitForSelector('h1:has-text("مهمة اختبار الشريط 1")');
       assert(!consoleErrors.length, 'أخطاء JavaScript: ' + consoleErrors.join(' | '));
     });
+
+    await check('إعادة تعيين كلمة المرور من المنصة: مؤقتة من الشريك، رابط البريد، ورمز الاستعادة', async () => {
+      const users = (await apiAs(mgr, 'GET', '/api/admin/users')).body; const ownerId = users.find(u => u.username === 'owner').id;
+      // (1) مدير المكتب يُصدر كلمة مؤقتة للمدير: يُطلب تأكيد كلمة مروره هو أولًا
+      await mgr.goto(BASE + '/#/settings'); await mgr.waitForSelector(`[data-reset-pw="${ownerId}"]`);
+      await mgr.click(`[data-reset-pw="${ownerId}"]`); await mgr.waitForSelector('.modal input[name=my_password]');
+      await mgr.fill('.modal input[name=my_password]', 'wrong-password'); await mgr.click('.modal button[type=submit]');
+      await mgr.waitForSelector('.modal .err-box:not(.hidden)');
+      await mgr.fill('.modal input[name=my_password]', 'Manager#2026x'); await mgr.click('.modal button[type=submit]');
+      await mgr.waitForSelector('#tpw');
+      const temp = (await mgr.textContent('#tpw')).trim();
+      assert(/^[A-Za-z0-9]{5}-[A-Za-z0-9]{5}$/.test(temp), 'كلمة مؤقتة غير صالحة: ' + temp);
+      await mgr.click('.modal [data-close]');
+      // جلسة المدير على جواله تنتهي فورًا، ويدخل بالمؤقتة فتُطلب منه كلمة جديدة
+      // الجلسة القديمة لم تعد صالحة: أي فتح للمنصة يعيده لصفحة الدخول
+      await owner.reload(); await owner.waitForSelector('#lf', { timeout: 10000 });
+      assert((await apiAs(owner, 'GET', '/api/me')).status === 401, 'الجلسة القديمة ما زالت صالحة بعد إعادة التعيين');
+      await owner.fill('input[name=username]', 'owner'); await owner.fill('input[name=password]', temp); await owner.click('#lf button.primary');
+      await owner.waitForSelector('#fpw');
+      await owner.fill('#fpw input[name=current]', temp); await owner.fill('#fpw input[name=next]', 'Owner#2026y'); await owner.fill('#fpw input[name=again]', 'Owner#2026y');
+      await owner.click('#fpw button[type=submit]'); await owner.waitForSelector('#main .view');
+      const on = (await apiAs(owner, 'GET', '/api/notifications')).body;
+      assert(on.some(n => n.title.includes('أُعيد تعيين كلمة مرورك') && n.body.includes('مدير المكتب')), 'لم يُبلَّغ صاحب الحساب');
+      // (2) «نسيت كلمة المرور؟» برابط على البريد — لمرة واحدة
+      const c = await browser.newContext({ ...devices['iPhone 13'], locale: 'ar-SA' }); const pg = await c.newPage();
+      pg.on('pageerror', e => consoleErrors.push('[forgot] ' + e.message)); await pg.goto(BASE); await pg.waitForSelector('#forgot'); await pg.click('#forgot');
+      await pg.waitForSelector('.modal input[name=username]'); await pg.fill('.modal input[name=username]', 'manager');
+      const before = mails.length; await pg.click('.modal button[type=submit]'); await pg.waitForSelector('.modal-bg', { state: 'detached' });
+      await new Promise(r => setTimeout(r, 1500));
+      const mail = mails.slice(before).find(m => String(m.to).includes('manager@example.test') && m.subject.includes('إعادة تعيين'));
+      assert(mail, 'لم يصل رابط إعادة التعيين بالبريد');
+      const token = (String(mail.text).match(/#\/reset\/([\w-]+)/) || [])[1]; assert(token, 'لا رابط في الرسالة');
+      await pg.goto(BASE + '/#/reset/' + token); await pg.waitForSelector('#rf');
+      await pg.fill('#rf input[name=password]', 'Manager#2026y'); await pg.fill('#rf input[name=again]', 'Manager#2026y'); await pg.click('#rf button.primary');
+      await pg.waitForSelector('#lf');
+      await pg.fill('input[name=username]', 'manager'); await pg.fill('input[name=password]', 'Manager#2026y'); await pg.click('#lf button.primary');
+      await pg.waitForSelector('#main .view');
+      const reuse = await pg.evaluate(async (t) => (await fetch('/api/password/reset', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' }, body: JSON.stringify({ token: t, password: 'Another#2026' }) })).status, token);
+      assert(reuse === 400, 'الرابط يعمل مرة ثانية');
+      // الرد واحد لاسم غير موجود (لا يكشف وجود الحساب)
+      const ghost = await pg.evaluate(async () => (await fetch('/api/password/forgot', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' }, body: JSON.stringify({ username: 'no.such.user' }) })).status);
+      assert(ghost === 200, 'الرد يكشف أن الحساب غير موجود');
+      await c.close();
+      // (3) رمز الاستعادة (طوارئ): لحسابي المدير ومدير المكتب فقط
+      const post = (b) => fetch(BASE + '/api/password/reset', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' }, body: JSON.stringify(b) }).then(r => r.status);
+      assert(await post({ username: 'owner', recovery_code: 'wrong-code-0000', password: 'Owner#2026x' }) === 400, 'رمز خاطئ قُبل');
+      assert(await post({ username: 'qa.asst', recovery_code: 'Recovery-Code-2026', password: 'Hijack#2026x' }) === 400, 'رمز الاستعادة غيّر كلمة مرور موظف');
+      assert(await post({ username: 'owner', recovery_code: 'Recovery-Code-2026', password: 'Owner#2026x' }) === 200, 'رمز الاستعادة الصحيح لم يعمل');
+      const lr = await fetch(BASE + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'fetch' }, body: JSON.stringify({ username: 'owner', password: 'Owner#2026x' }) });
+      assert(lr.status === 200, 'الدخول بعد الاستعادة لم ينجح');
+      assert(!consoleErrors.length, 'أخطاء JavaScript: ' + consoleErrors.join(' | '));
+    });
   } catch (e) {
     if (global.serverLog) { await new Promise(r => setTimeout(r, 1500)); console.log('--- سجل الخادم (بدون أسطر الطلبات العادية) ---\n' + global.serverLog().split('\n').filter(l => !/wrangler:info\] (GET|POST|PUT|PATCH) .* (200|101|304)/.test(l) && !/Request.cf|undici|DOMException|processTicks|Request was cancelled/.test(l)).join('\n').slice(-3500)); }
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 34 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 35 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);

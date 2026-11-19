@@ -554,3 +554,6 @@ a.chip.link { text-decoration: none; cursor: pointer; } a.chip.link:hover { filt
 
 .kpis.compact { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
 @media (max-width: 640px) { .kpis.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .kpis.compact .kpi { padding: 10px 8px; } .kpis.compact .kpi b { font-size: 1.4rem; } .kpis.compact .kpi span { font-size: .78rem; } }
+
+/* كلمة المرور المؤقتة: كبيرة وواضحة للنسخ أو القراءة */
+.temp-pw { font-size: 1.6rem; font-weight: 700; letter-spacing: .08em; text-align: center; padding: 14px; border: 2px dashed var(--brand-2); border-radius: 12px; background: var(--gray-soft, #eef1f4); user-select: all; font-family: ui-monospace, Menlo, Consolas, monospace; }

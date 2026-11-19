@@ -50,7 +50,7 @@ function createApp(P) {
     const user = await userFromCookie(c.req.header('cookie'));
     c.set('user', user);
     const p = new URL(c.req.url).pathname;
-    if (!user && !['/api/login', '/api/health'].includes(p)) return c.json({ error: 'يلزم تسجيل الدخول' }, 401);
+    if (!user && !['/api/login', '/api/health', '/api/password/forgot', '/api/password/reset', '/api/password/forgot-available'].includes(p)) return c.json({ error: 'يلزم تسجيل الدخول' }, 401);
     if (user && user.must_change_password && !['/api/me', '/api/password', '/api/logout', '/api/meta'].includes(p)) return c.json({ error: 'غيّر كلمة المرور أولًا', must_change_password: true }, 403);
     await next();
   });
@@ -666,6 +666,89 @@ function createApp(P) {
   app.get('/api/admin/users', wrap(req => S.listUsers(req.user)));
   app.post('/api/admin/users', wrap(req => S.createUser(req.user, req.body)));
   app.patch('/api/admin/users/:id', wrap(req => S.updateUser(req.user, Number(req.params.id), req.body)));
+
+  // ===== إعادة تعيين كلمة المرور من داخل المنصة =====
+  // (1) المدير أو مدير المكتب يُصدر كلمة مرور مؤقتة لحساب آخر (الشريك الإداري أو موظف):
+  //     بعد تأكيد كلمة مروره هو، تُعرض المؤقتة مرة واحدة، وتُنهى جلسات الحساب، ويُجبر صاحبه على تغييرها عند الدخول،
+  //     ويُبلَّغ صاحب الحساب داخل المنصة وبالبريد (إن كان مفعّلًا)، ويُسجَّل الإجراء باسم من نفّذه.
+  const TEMP_ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789';
+  const tempPassword = () => { const r = crypto.getRandomValues(new Uint8Array(10)); return Array.from(r, x => TEMP_ALPHA[x % TEMP_ALPHA.length]).join('').replace(/^(.{5})/, '$1-'); };
+  app.post('/api/admin/users/:id/reset-password', wrap(async req => {
+    const actor = req.user; S.require_(actor, 'users.manage');
+    const id = Number(req.params.id);
+    if (id === actor.id) throw S.bad('لتغيير كلمة مرورك استخدم «تغيير كلمة المرور» في الإعدادات');
+    const key = `pw:${actor.id}`;
+    if (hit(key) >= LIMITS.ip) throw new S.AppError(429, 'محاولات كثيرة، حاول بعد ربع ساعة');
+    const me = get('SELECT password_hash FROM users WHERE id=?', actor.id);
+    if (!(await auth.verifyPassword(String(req.body.my_password || ''), me.password_hash))) { fail1(key); throw S.bad('كلمة مرورك غير صحيحة — نطلبها للتأكد من أنك من يُجري هذا الإجراء'); }
+    attempts.delete(key);
+    const u = get(`SELECT id,name,active,${D.roleSql()} AS role FROM users WHERE id=?`, id);
+    if (!u) throw new S.AppError(404, 'المستخدم غير موجود');
+    if (!u.active) throw S.bad('الحساب موقوف؛ أعد تفعيله أولًا');
+    const temp = tempPassword();
+    const hash = await auth.hashPassword(temp);
+    run('UPDATE users SET password_hash=?, must_change_password=1 WHERE id=?', hash, id);
+    run('DELETE FROM sessions WHERE user_id=?', id);
+    S.audit('user', id, actor.id, 'password_reset');
+    const n = N.notify(id, { type: 'status_change', title: 'أُعيد تعيين كلمة مرورك', body: `أصدر ${actor.name} كلمة مرور مؤقتة لحسابك، وستُطلب منك كلمة جديدة عند الدخول. إن لم تطلب ذلك فتواصل معه فورًا.`, urgent: true });
+    if (n) { const full = get('SELECT * FROM users WHERE id=?', id); N.sendEmail(full, { id: n, type: 'status_change', title: 'أُعيد تعيين كلمة مرور حسابك في المنصة', body: `أصدر ${actor.name} كلمة مرور مؤقتة لحسابك. إن لم تطلب ذلك فتواصل معه فورًا.`, urgent: true }, { force: true }).catch(() => { }); }
+    events.disconnect(id);
+    return { temp_password: temp, name: u.name };
+  }));
+
+  // (2) «نسيت كلمة المرور؟» من صفحة الدخول: رابط لمرة واحدة صالح 30 دقيقة يصل إلى البريد المسجّل في الحساب.
+  //     يعمل فقط إن كان البريد مفعّلًا في المنصة وللحساب بريد. الرد واحد دائمًا (لا يكشف وجود الحساب من عدمه).
+  const RESET_MIN = 30;
+  // (3) طوارئ: إن نسي المدير ومدير المكتب كلمتي المرور معًا ولا بريد مفعّل — رمز استعادة يضعه صاحب المنصة في إعدادات الخادم
+  //     (سر ADMIN_RECOVERY_CODE، 12 حرفًا على الأقل) ثم يحذفه بعد الاستخدام. لا يعمل إن لم يُضبط.
+  const recoveryCode = () => { const v = cfg.get('ADMIN_RECOVERY_CODE'); return v && v.length >= 12 ? v : null; };
+  app.get('/api/password/forgot-available', wrap(() => ({ email: N.emailStatus().configured, recovery: !!recoveryCode() })));
+  app.post('/api/password/forgot', wrap(async req => {
+    const username = String(req.body.username || '').trim().toLowerCase().slice(0, 100);
+    const ipKey = `forgot:${req.ip}`; const uKey = `forgot-u:${username}`;
+    if (hit(ipKey) >= 5 || hit(uKey) >= 3) throw new S.AppError(429, 'طلبات كثيرة، حاول بعد ربع ساعة');
+    fail1(ipKey); fail1(uKey);
+    const u = username ? get('SELECT * FROM users WHERE username=? AND active=1', username) : null;
+    if (u && u.email && N.emailStatus().configured) {
+      const tok = auth.randomToken(32);
+      run('INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)', 'pwreset:' + await auth.sha256hex(tok), JSON.stringify({ uid: u.id, exp: Date.now() + RESET_MIN * 60000 }));
+      await N.sendEmail(u, { id: null, type: 'status_change', title: 'إعادة تعيين كلمة المرور', link: `#/reset/${tok}`,
+        body: `طلبتَ إعادة تعيين كلمة مرور حسابك (${u.username}). افتح الرابط أدناه واختر كلمة جديدة. الرابط صالح ${RESET_MIN} دقيقة ولمرة واحدة. إن لم تطلب ذلك فتجاهل هذه الرسالة.` }, { force: true });
+      S.audit('user', u.id, null, 'password_reset_requested');
+    }
+    return { ok: true };
+  }));
+  app.post('/api/password/reset', wrap(async req => {
+    const ipKey = `reset:${req.ip}`;
+    if (hit(ipKey) >= LIMITS.ip) throw new S.AppError(429, 'محاولات كثيرة، حاول بعد ربع ساعة');
+    if (req.body.recovery_code !== undefined) {
+      const code = recoveryCode();
+      const username = String(req.body.username || '').trim().toLowerCase().slice(0, 100);
+      const ok = code && (await auth.sha256hex(String(req.body.recovery_code))) === (await auth.sha256hex(code));
+      const u = ok ? get(`SELECT id,${D.roleSql()} AS role FROM users WHERE username=? AND active=1`, username) : null;
+      if (!ok || !u || u.role === 'member') { fail1(ipKey); throw S.bad('رمز الاستعادة أو اسم المستخدم غير صحيح (رمز الاستعادة لحسابي المدير ومدير المكتب فقط)'); }
+      const pw = String(req.body.password || '');
+      if (pw.length < 8) throw S.bad('كلمة المرور يجب ألا تقل عن 8 أحرف');
+      run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', await auth.hashPassword(pw), u.id);
+      run('DELETE FROM sessions WHERE user_id=?', u.id);
+      S.audit('user', u.id, u.id, 'password_recovered');
+      for (const a of all(`SELECT id FROM users WHERE active=1 AND member=0 AND id!=?`, u.id)) N.notify(a.id, { type: 'status_change', title: 'استُخدم رمز الاستعادة', body: `أُعيد تعيين كلمة مرور حساب «${username}» برمز الاستعادة. احذف السر ADMIN_RECOVERY_CODE من إعدادات الخادم بعد الانتهاء.`, urgent: true });
+      events.disconnect(u.id);
+      return { ok: true };
+    }
+    const k = 'pwreset:' + await auth.sha256hex(String(req.body.token || ''));
+    const row = get('SELECT value FROM kv WHERE key=?', k);
+    let v = null; try { v = row && JSON.parse(row.value); } catch { v = null; }
+    if (!v || v.exp < Date.now()) { fail1(ipKey); if (row) run('DELETE FROM kv WHERE key=?', k); throw S.bad('الرابط غير صالح أو انتهت مدته. اطلب رابطًا جديدًا من «نسيت كلمة المرور؟»'); }
+    const pw = String(req.body.password || '');
+    if (pw.length < 8) throw S.bad('كلمة المرور يجب ألا تقل عن 8 أحرف');
+    run('UPDATE users SET password_hash=?, must_change_password=0 WHERE id=?', await auth.hashPassword(pw), v.uid);
+    run('DELETE FROM sessions WHERE user_id=?', v.uid);
+    run('DELETE FROM kv WHERE key=?', k);
+    S.audit('user', v.uid, v.uid, 'password_reset_done');
+    events.disconnect(v.uid);
+    return { ok: true };
+  }));
 
   // ===== التقارير =====
   app.get('/api/reports', wrap(req => { S.require_(req.user, 'reports.view'); return D.report(['day', 'week', 'month'].includes(req.query.period) ? req.query.period : 'week'); }));
