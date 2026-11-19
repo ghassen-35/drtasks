@@ -644,8 +644,11 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(mt.length === 5 && mt.every(x => x.task_id), 'القرارات الخمسة لم تتحول إلى مهام');
       // أعمال متعددة لشخص واحد: تظهر في توزيع العمل، والرابط يفتح قائمته
       await openFresh(owner, '#/command'); await owner.waitForSelector('.tbl');
+      // اسم الشخص يفتح صفحته، ورقم «مفتوحة» يفتح قائمة مهامه
       const href = await owner.$eval('.tbl a:has-text("مساعد الاختبار")', a => a.getAttribute('href')); // الجدول يتحدث فوريًا فنفتح الرابط مباشرة
-      await owner.goto(BASE + '/' + href); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
+      assert(href === `#/person/${staff.asst}`, 'اسم الموظف لا يفتح صفحته: ' + href);
+      const openHref = await owner.$eval('.tbl tr:has(a:has-text("مساعد الاختبار")) td:nth-child(2) a', a => a.getAttribute('href'));
+      await owner.goto(BASE + '/' + openHref); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
       const mine = (await apiAs(owner, 'GET', `/api/items?kind=tasks&scope=open&assignee_id=${staff.asst}`)).body;
       assert(mine.length >= 6, 'توزيع العمل لا يعكس المهام المتعددة: ' + mine.length);
       // تكليف عاجل يحتاج تنفيذًا فوريًا
@@ -660,6 +663,97 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await apiAs(owner, 'PATCH', `/api/items/${urg.id}`, { status: 'cancelled' });
       const c = (await apiAs(owner, 'GET', `/api/items/${urg.id}`)).body;
       assert(c.item.status === 'cancelled' && c.audit.some(a => a.new_value === 'cancelled') && c.messages.length > 0, 'الإلغاء لم يحفظ السجل');
+    });
+
+    await check('البحث الشامل: من أي صفحة، بالاسم أو الرقم، ونتائج تُفتح مباشرة، و«فتحتها مؤخرًا»', async () => {
+      await mgr.goto(BASE + '/#/meetings'); await mgr.waitForSelector('main h1');
+      await mgr.click('#btnSearch'); await mgr.waitForSelector('#sq');
+      // «فتحتها مؤخرًا» يتذكر المهمة التي فُتحت سابقًا في هذا الجهاز
+      assert(await mgr.isVisible('.sr-group:has-text("فتحتها مؤخرًا")'), 'لا تظهر العناصر المفتوحة مؤخرًا');
+      await mgr.fill('#sq', 'التقرير السنوي');
+      await mgr.waitForSelector(`.sr-group:has-text("المهام") .sr-row:has-text("${TITLE}")`, { timeout: 8000 });
+      await mgr.fill('#sq', 'الجمعية');
+      await mgr.waitForSelector('.sr-group:has-text("الأقسام") .sr-row:has-text("الجمعية")');
+      await mgr.fill('#sq', 'مساعد');
+      await mgr.waitForSelector('.sr-group:has-text("الأشخاص") .sr-row:has-text("مساعد الاختبار")');
+      await mgr.click('.sr-group:has-text("الأشخاص") .sr-row:has-text("مساعد الاختبار")');
+      await mgr.waitForSelector('h1:has-text("مساعد الاختبار")');
+      assert(!(await mgr.$('.modal-bg')), 'نافذة البحث بقيت مفتوحة بعد فتح النتيجة');
+      // اختصار لوحة المفاتيح «/»
+      await mgr.keyboard.press('/'); await mgr.waitForSelector('#sq'); await mgr.keyboard.press('Escape');
+      // صلاحيات البحث: الموظف لا يرى أشخاصًا ولا مهامًا خارج نطاقه
+      const memSearch = await (async () => { const c = await browser.newContext(); const pg = await c.newPage(); await pg.goto(BASE); await pg.fill('input[name=username]', 'qa.coord'); await pg.fill('input[name=password]', 'Staff#2026x'); await pg.click('button:has-text("دخول")'); await pg.waitForSelector('#main'); const r = await apiAs(pg, 'GET', '/api/search?q=' + encodeURIComponent('التقرير السنوي')); const r2 = await apiAs(pg, 'GET', '/api/search?q=' + encodeURIComponent('مساعد')); const r3 = await apiAs(pg, 'GET', '/api/people/' + staff.asst); await c.close(); return [r.body, r2.body, r3.status]; })();
+      assert(!memSearch[0].groups.some(g => g.key === 'items'), 'الموظفة (قسم الدعوي) ترى مهمة من قسم الجمعية في البحث');
+      assert(!memSearch[1].groups.some(g => g.key === 'people') && memSearch[2] === 403, 'الموظف يرى بيانات زملائه');
+    });
+
+    await check('السيناريو الرابع: من الرئيسية إلى القائمة والقسم والمهمة والموظف عبر الأرقام والروابط', async () => {
+      await owner.goto(BASE + '/#/'); await owner.waitForSelector('.tiles');
+      // رقم «مفتوحة» في مربع الجمعية يفتح مهامها المفتوحة مباشرة
+      await owner.click('.tile-wrap:has(h3:has-text("الجمعية")) .st[data-go*="scope=open"]');
+      await owner.waitForSelector('.crumbs:has-text("الجمعية — المفتوحة")');
+      assert(owner.url().includes('section=association') && owner.url().includes('scope=open'), 'الرقم لم يفتح القائمة الصحيحة: ' + owner.url());
+      await owner.waitForSelector('#res p.small'); // انتظار اكتمال تحميل القائمة (سطر عدد النتائج)
+      const rows = await owner.$$eval('#res .row', r => r.length);
+      const api = (await apiAs(owner, 'GET', '/api/items?kind=tasks&section=association&scope=open')).body.length;
+      assert(rows === api && rows > 0, `عدد القائمة (${rows}) لا يطابق الرقم (${api})`);
+      // اسم القسم في البطاقة يفتح صفحة القسم
+      const sec = await owner.$('#res .row a.chip.link[href^="#/section/"]'); assert(sec, 'اسم القسم ليس رابطًا');
+      // اسم المسؤول يفتح صفحة الموظف، وأرقامها تفتح قوائمها
+      const t2 = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'مراجعة كشوف الحضور', section: 'association', assignee_id: staff.asst, due_date: (await apiAs(mgr, 'GET', '/api/meta')).body.today })).body;
+      await owner.goto(`${BASE}/#/item/${t2.id}`); await owner.waitForSelector('.facts');
+      await owner.click(`.facts a[href="#/person/${staff.asst}"]`); await owner.waitForSelector('h1:has-text("مساعد الاختبار")');
+      await owner.click('.kpi:has-text("اليوم")'); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
+      await owner.waitForSelector('#res .row a.title:has-text("مراجعة كشوف الحضور")');
+      // من الرئيسية: بطاقة «تنتظر القرار» وبطاقات اللون تفتح وجهاتها
+      await owner.goto(BASE + '/#/'); await owner.waitForSelector('.color-key');
+      await owner.click('.color-key .ck.c-blue'); await owner.waitForSelector('#res');
+      assert(owner.url().includes('color=blue'), 'بطاقة «مهام اليوم» لم تفتح القائمة المصفاة');
+    });
+
+    await check('فاحص الروابط: كل رابط داخلي في الصفحات الأساسية يفتح صفحة سليمة لكل دور (المدير، مدير المكتب، موظف)', async () => {
+      const memCtx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' }); const mem = await memCtx.newPage();
+      mem.on('pageerror', e => consoleErrors.push('[member] ' + e.message));
+      await mem.goto(BASE); await mem.fill('input[name=username]', 'qa.asst'); await mem.fill('input[name=password]', 'Staff#2026x'); await mem.click('button:has-text("دخول")'); await mem.waitForSelector('#main');
+      const seeds = { owner: ['#/', '#/tasks', '#/approvals', '#/command', '#/dashboard', '#/directives', '#/meetings', '#/partners', '#/reports', '#/files', '#/more', `#/item/${itemId}`],
+        mgr: ['#/', '#/tasks?scope=open', '#/command', '#/dashboard', '#/sops', '#/settings', '#/section/association', `#/person/${staff.asst}`],
+        mem: ['#/', '#/tasks', '#/files', '#/more'] };
+      const bad = []; let visited = 0;
+      for (const [who, pg] of [['owner', owner], ['mgr', mgr], ['mem', mem]]) {
+        const seen = new Set(); const queue = [...seeds[who]];
+        // نمط واحد لكل نوع صفحة يكفي (item/5 و item/9 نفس الصفحة) مع حد أعلى للزيارات
+        const pattern = (h) => h.replace(/\d+/g, 'N').replace(/label=[^&]*/, '');
+        const patterns = new Map();
+        while (queue.length && seen.size < 70) {
+          const h = queue.shift(); if (seen.has(h)) continue; seen.add(h);
+          await pg.goto(BASE + '/' + h);
+          await pg.waitForFunction(() => { const m = document.querySelector('#main .view'); return m && !m.textContent.includes('جارٍ التحميل…'); }, null, { timeout: 10000 }).catch(() => bad.push(`${who} ${h}: لم تكتمل`));
+          visited++;
+          const state = await pg.evaluate(() => ({ text: (document.querySelector('#main') || {}).textContent || '', err: [...document.querySelectorAll('#main .err-box:not(.hidden)')].map(e => e.textContent.trim()).filter(Boolean), h1: !!document.querySelector('#main h1') }));
+          if (state.text.includes('الصفحة غير موجودة')) bad.push(`${who} ${h}: صفحة غير موجودة`);
+          if (state.err.length) bad.push(`${who} ${h}: ${state.err.join(' / ')}`);
+          const links = await pg.$$eval('#main a[href^="#/"], .sidenav a[href^="#/"], .bottomnav a[href^="#/"]', a => a.map(x => x.getAttribute('href')));
+          for (const l of links) { const k = pattern(l); if (!patterns.has(k) && !seen.has(l)) { patterns.set(k, l); queue.push(l); } }
+        }
+      }
+      await memCtx.close();
+      assert(!bad.length, 'روابط معطلة: ' + bad.join(' | '));
+      assert(visited > 40, 'عدد الصفحات المفحوصة قليل: ' + visited);
+      console.log(`   (فُحصت ${visited} صفحة عبر الأدوار الثلاثة)`);
+    });
+
+    await check('السيناريو الخامس: تحديث حالة مهمة من الجوال بخطوة واحدة دون خلل في التصميم', async () => {
+      const t3 = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'متابعة خطاب الوزارة', section: 'personal' })).body;
+      await owner.goto(`${BASE}/#/item/${t3.id}`); await owner.waitForSelector('.item-qs select');
+      assert(await noHScroll(owner), 'تمرير أفقي في صفحة المهمة على الجوال');
+      await owner.selectOption('.item-qs select', 'waiting_reply');
+      await owner.waitForSelector('.modal textarea, .item-head .chip.st-waiting_reply', { timeout: 8000 });
+      if (await owner.$('.modal textarea')) { await owner.fill('.modal textarea', 'بانتظار رد الوزارة'); await owner.click('.modal button[type=submit]'); }
+      await owner.waitForSelector('.item-head .chip.st-waiting_reply');
+      await owner.waitForSelector('.ribbon-note.c-gray');
+      // يظهر لمدير المكتب على جهازه رماديًا «قيد المتابعة»
+      const it = (await apiAs(mgr, 'GET', `/api/items/${t3.id}`)).body.item;
+      assert(it.color === 'gray' && it.updated_by_name === 'مدير الشؤون التعليمية', 'الحالة أو «آخر تحديث بواسطة» غير صحيحة');
     });
 
     await check('الواجهة على الجوال والكمبيوتر: لا تمرير أفقي، والصفحات الأساسية تعمل', async () => {
@@ -699,7 +793,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 32 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 34 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);

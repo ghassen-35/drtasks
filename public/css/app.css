@@ -536,3 +536,18 @@ details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size:
 /* صفحة المهمة: تحديث الحالة بخطوة واحدة */
 .item-qs { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-weight: 600; font-size: .9rem; color: var(--ink-2, #334); }
 .item-qs select { width: auto; min-height: 40px; }
+
+/* البحث الشامل */
+#sq { width: 100%; font-size: 1.05rem; min-height: 48px; }
+.sr-quick { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.sr-group { margin-top: 14px; }
+.sr-group h4 { margin: 0 0 6px; font-size: .85rem; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+.sr-group h4 .n { background: var(--gray-soft, #eef1f4); border-radius: 999px; padding: 0 8px; font-weight: 600; }
+.sr-row { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-inline-start: 4px solid var(--line); border-radius: 10px; margin-bottom: 6px; color: inherit; text-decoration: none; min-height: 44px; }
+.sr-row:hover, .sr-row:focus { border-color: var(--brand-2); outline: none; }
+.sr-row.c-red { border-inline-start-color: var(--c-red); } .sr-row.c-blue { border-inline-start-color: var(--c-blue); } .sr-row.c-gray { border-inline-start-color: var(--c-gray); }
+.sr-t { font-weight: 600; overflow-wrap: anywhere; } .sr-s { font-size: .8rem; color: var(--ink-3); }
+a.chip.link { text-decoration: none; cursor: pointer; } a.chip.link:hover { filter: brightness(.95); text-decoration: underline; }
+.kpi.gray b { color: var(--c-gray); } .kpi.green b { color: var(--green); }
+
+.tile .st[data-go] { cursor: pointer; } .tile .st[data-go]:hover { outline: 2px solid var(--brand-2); outline-offset: -2px; }
