@@ -131,7 +131,7 @@ function effectivePerms(user) {
 // مسمى الحساب الأعلى قابل للضبط (OWNER_TITLE) دون تغيير البيانات
 const ownerTitle = () => cfg.get('OWNER_TITLE', 'مدير الشؤون التعليمية');
 // تحية الحساب الأعلى في الصفحة الرئيسية (OWNER_GREETING): عبارات يفصل بينها «|» وتُعرض في سطر واحد بفاصل
-const ownerGreeting = () => cfg.get('OWNER_GREETING', 'استعن بالله أبا صالح | توكلنا على الله | بسم الله');
+const ownerGreeting = () => cfg.get('OWNER_GREETING', 'بسم الله | توكلنا على الله | استعن بالله أبا صالح');
 const ROLE_LABELS = { get owner() { return ownerTitle(); }, manager: 'مدير المكتب', member: 'موظف' };
 // الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
 const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
