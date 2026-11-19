@@ -308,7 +308,9 @@ function renderLogin(msg) {
     ${field('اسم المستخدم', '<input type="text" name="username" autocomplete="username" required dir="ltr">')}
     ${field('كلمة المرور', '<input type="password" name="password" autocomplete="current-password" required dir="ltr">')}
     <button class="btn primary" style="width:100%">دخول</button>
+    <button type="button" class="btn ghost" id="forgot" style="width:100%;margin-top:8px">نسيت كلمة المرور؟</button>
   </form></div>`;
+  $('#forgot').onclick = () => modalForgot();
   fetch('/api/health').then(r => r.json()).then(h => { if (h.app_name) { state.appName = h.app_name; const n = $('#loginName'); if (n) n.textContent = h.app_name; document.title = h.app_name; } }).catch(() => { });
   $('#lf').onsubmit = async (e) => {
     e.preventDefault();
@@ -446,7 +448,12 @@ async function route() {
   }
   main.innerHTML = '<div class="empty">الصفحة غير موجودة</div>';
 }
-window.addEventListener('hashchange', route);
+window.addEventListener('hashchange', () => {
+  // رابط إعادة تعيين كلمة المرور قد يُفتح في تبويب المنصة المفتوح أصلًا
+  const rm = (location.hash || '').match(/^#\/reset\/([\w-]{20,})$/);
+  if (rm) { renderResetPage(rm[1]); return; }
+  route();
+});
 
 // تحديث العرض الحالي عند تغيّر البيانات من الطرف الآخر (دون فقدان ما يُكتب)
 let refreshTimer = null;
@@ -1967,7 +1974,7 @@ async function renderUsersAdmin(el) {
     <div class="list">${users.map(u => `<div class="row ${u.active ? '' : 'done'}"><div class="main"><span class="title">${u.role === 'member' ? `<a href="#/person/${u.id}">${esc(u.name)}</a>` : esc(u.name)} <span class="small muted ltr">@${esc(u.username)}</span></span>
       <div class="meta"><span class="chip kind">${esc(u.title || u.role_label)}</span>${u.must_change_password ? '<span class="chip">لم يغيّر كلمة المرور بعد</span>' : ''}${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
       ${u.role === 'member' ? grantsSummary(u.grants) + (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '') : '<span class="txt">يرى كل المهام</span>'}</div></div>
-      <div class="side"><button type="button" class="btn sm" data-edit-user="${u.id}">تعديل</button></div></div>`).join('')}</div>`;
+      <div class="side"><button type="button" class="btn sm" data-edit-user="${u.id}">تعديل</button>${u.id !== state.me.id && u.active ? `<button type="button" class="btn sm ghost" data-reset-pw="${u.id}" data-name="${esc(u.name)}">${I('settings')} إعادة تعيين كلمة المرور</button>` : ''}</div></div>`).join('')}</div>`;
   const projChecks = (sel = []) => projects.length
     ? `<div class="grid2">${projects.map(p => `<label class="check"><input type="checkbox" name="project_ids" data-multi="1" value="${p.id}" ${sel.includes(p.id) ? 'checked' : ''}> ${esc(p.name)} <span class="small muted">(${esc(sectionName(p.section))})</span></label>`).join('')}</div>`
     : '<p class="small muted">لا توجد مشاريع بعد. أنشئها من صفحة القسم أو داخل مجلد.</p>';
@@ -2015,6 +2022,8 @@ async function viewMore(main) {
 
 // ===== الإقلاع =====
 async function boot() {
+  const rm = (location.hash || '').match(/^#\/reset\/([\w-]{20,})$/);
+  if (rm) { renderResetPage(rm[1]); return; }
   try {
     const me = await GET('/api/me');
     state.me = me; state.counts = { unread: me.unread, inbox_pending: me.inbox_pending, pending_decisions: me.pending_decisions };
@@ -2098,4 +2107,88 @@ async function viewPerson(main, id) {
   }
   await load();
   return { refresh: load };
+}
+
+
+// ===== إعادة تعيين كلمة المرور =====
+// من الإعدادات: المدير أو مدير المكتب يُصدر كلمة مرور مؤقتة لحساب آخر بعد تأكيد كلمة مروره هو
+function modalResetPassword(id, name) {
+  openModal({
+    title: `إعادة تعيين كلمة مرور: ${name}`, submit: 'إصدار كلمة مرور مؤقتة', submitClass: 'primary', confirmClose: false,
+    body: `<div class="info-box" style="margin-bottom:12px">ستظهر لك كلمة مرور مؤقتة <b>مرة واحدة</b> لتعطيها له شفهيًا أو برسالة خاصة. عند دخوله بها ستُطلب منه كلمة جديدة خاصة به.
+        تُنهى جلساته المفتوحة الآن، ويصله تنبيه بأنك أعدت تعيينها، ويُسجَّل الإجراء باسمك.</div>
+      ${field('كلمة مرورك أنت (للتأكيد) *', '<input type="password" name="my_password" autocomplete="current-password" dir="ltr" required>')}`,
+    onSubmit: async (d) => {
+      if (!d.my_password) throw new Error('اكتب كلمة مرورك للتأكيد');
+      const r = await POST(`/api/admin/users/${id}/reset-password`, { my_password: d.my_password });
+      setTimeout(() => showTempPassword(r.name, r.temp_password), 0);
+    },
+  });
+}
+function showTempPassword(name, pw) {
+  const m = openModal({
+    title: 'كلمة المرور المؤقتة', confirmClose: false,
+    body: `<p>كلمة المرور المؤقتة لحساب <b>${esc(name)}</b>:</p>
+      <div class="temp-pw ltr" id="tpw">${esc(pw)}</div>
+      <div class="btn-row" style="justify-content:center;margin:10px 0"><button type="button" class="btn" id="cpw">${I('copy')} نسخ</button></div>
+      <p class="small muted">لن تظهر مرة أخرى. أعطها له شفهيًا أو برسالة خاصة، وسيختار كلمة جديدة عند أول دخول.</p>`,
+  });
+  $('#cpw', m.form).onclick = async () => { try { await navigator.clipboard.writeText(pw); toast('نُسخت', 'ok'); } catch { toast('انسخها يدويًا'); } };
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest && e.target.closest('[data-reset-pw]');
+  if (b) modalResetPassword(Number(b.dataset.resetPw), b.dataset.name);
+});
+
+// من صفحة الدخول: «نسيت كلمة المرور؟»
+async function modalForgot() {
+  let av = { email: false, recovery: false };
+  try { av = await (await fetch('/api/password/forgot-available')).json(); } catch { /* نعرض الطريق الأساسي فقط */ }
+  openModal({
+    title: 'نسيت كلمة المرور؟', submit: av.email || av.recovery ? 'متابعة' : 'حسنًا', confirmClose: false,
+    body: `<div class="info-box" style="margin-bottom:12px"><b>الأسرع:</b> اطلب من ${esc(OT())} أو مدير المكتب أن يُصدر لك كلمة مرور مؤقتة:
+        «المزيد» ← «الإعدادات» ← اسمك ← «إعادة تعيين كلمة المرور». ثم ادخل بها واختر كلمة جديدة.</div>
+      ${av.email ? `<h3 style="margin:14px 0 6px;font-size:1rem">أو رابط على بريدك</h3>
+        <p class="small muted">يصل الرابط إلى البريد المسجّل في حسابك، صالح 30 دقيقة ولمرة واحدة.</p>
+        ${field('اسم المستخدم', '<input type="text" name="username" autocomplete="username" dir="ltr">')}` : ''}
+      ${av.recovery ? `<details style="margin-top:12px"><summary class="small" style="cursor:pointer">لديّ رمز استعادة (حالة طوارئ لحسابي ${esc(OT())} ومدير المكتب)</summary>
+        ${field('اسم المستخدم', '<input type="text" name="r_username" autocomplete="username" dir="ltr">')}
+        ${field('رمز الاستعادة', '<input type="password" name="recovery_code" dir="ltr" autocomplete="off">')}
+        ${field('كلمة المرور الجديدة (8 أحرف على الأقل)', '<input type="password" name="r_password" autocomplete="new-password" dir="ltr" minlength="8">')}</details>` : ''}`,
+    onSubmit: async (d) => {
+      if (d.recovery_code) {
+        if ((d.r_password || '').length < 8) throw new Error('كلمة المرور يجب ألا تقل عن 8 أحرف');
+        await POST('/api/password/reset', { username: d.r_username, recovery_code: d.recovery_code, password: d.r_password });
+        toast('تم تعيين كلمة المرور الجديدة. ادخل بها الآن', 'ok'); return;
+      }
+      if (av.email && (d.username || '').trim()) {
+        await POST('/api/password/forgot', { username: d.username });
+        toast('إن كان للحساب بريد مسجّل فستصلك رسالة خلال دقائق', 'ok');
+      }
+    },
+  });
+}
+
+// صفحة رابط إعادة التعيين (من البريد)
+function renderResetPage(token) {
+  closeEvents();
+  app.innerHTML = `<div class="login"><form class="card" id="rf">
+    <img src="/img/logo.png" alt="الشعار"><h1>كلمة مرور جديدة</h1>
+    <div class="err-box hidden"></div>
+    ${field('كلمة المرور الجديدة (8 أحرف على الأقل)', '<input type="password" name="password" autocomplete="new-password" dir="ltr" minlength="8" required>')}
+    ${field('تأكيد كلمة المرور', '<input type="password" name="again" autocomplete="new-password" dir="ltr" required>')}
+    <button class="btn primary" style="width:100%">حفظ</button>
+    <a class="btn ghost" href="#/" style="width:100%;margin-top:8px">العودة لتسجيل الدخول</a></form></div>`;
+  const f = $('#rf'); const err = $('.err-box', f);
+  f.onsubmit = async (e) => {
+    e.preventDefault(); err.classList.add('hidden');
+    const d = formData(f);
+    try {
+      if (d.password.length < 8) throw new Error('كلمة المرور يجب ألا تقل عن 8 أحرف');
+      if (d.password !== d.again) throw new Error('كلمتا المرور غير متطابقتين');
+      await POST('/api/password/reset', { token, password: d.password });
+      history.replaceState(null, '', '#/'); renderLogin(); toast('حُفظت كلمة المرور الجديدة. ادخل بها الآن', 'ok');
+    } catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); }
+  };
+  f.querySelector('a').onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/'); renderLogin(); };
 }
