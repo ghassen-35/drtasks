@@ -81,7 +81,7 @@ const colorKeyHtml = (counts) => `<div class="color-key" aria-label="تفسير 
 function ribbonNote(i) {
   if (!i.is_open || i.kind === 'note') return '';
   const canWait = (isManager() || (isMember() && i.kind === 'task')) && !i.closed_at;
-  const howGray = canWait ? `لتصبح «قيد المتابعة» (رمادي) اضغط في الأسفل «بانتظار رد طرف خارجي»${isManager() ? ' أو «طلب اعتماد / قرار»' : ''}.` : '';
+  const howGray = canWait ? `لتصبح «قيد المتابعة» (رمادي) اضغط في شريط الإجراءات أسفل الصفحة «بانتظار رد طرف خارجي»${isManager() ? ' أو «طلب اعتماد / قرار»' : ''} (على الجوال تجدهما بعد الضغط على «كل الإجراءات»).` : '';
   const waitWhy = ['waiting_reply', 'waiting_info', 'waiting_approval'].includes(i.status) ? `حالتها «${esc(i.status_label)}»` : 'عليها طلب اعتماد لم يُبتّ فيه';
   let txt;
   if (i.color === 'red') {
@@ -1298,8 +1298,12 @@ async function viewItem(main, id) {
     if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
     if (i.sop_id && i.is_open && !i.parent_task_id && canAddSub() && (!isMember() || i.kind === 'task')) a.push(`<button class="btn" data-a="applySop">${I('book')} خطوات الإجراء كقائمة تحقق</button>`);
     if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
-    bar.innerHTML = a.join('');
+    // على الجوال يظهر أول إجراءين فقط، وزر «كل الإجراءات» يفتح البقية (مثل «بانتظار رد» و«طلب اعتماد»)
+    bar.innerHTML = a.join('') + (a.length > 2 ? `<button type="button" class="btn more-acts" data-more aria-expanded="false">${I('more')} كل الإجراءات (${a.length})</button>` : '');
     bar.classList.toggle('hidden', !a.length);
+    bar.classList.remove('open');
+    const more = $('[data-more]', bar);
+    if (more) more.onclick = () => { const o = bar.classList.toggle('open'); more.setAttribute('aria-expanded', String(o)); more.innerHTML = o ? `${I('x')} إخفاء الإجراءات` : `${I('more')} كل الإجراءات (${a.length})`; };
     $$('[data-s]', bar).forEach(b => b.onclick = () => changeStatus(data.item, b.dataset.s, load));
     $$('[data-a]', bar).forEach(b => b.onclick = async () => {
       const act = b.dataset.a;
