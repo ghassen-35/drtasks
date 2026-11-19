@@ -41,6 +41,12 @@ const CATEGORIES = {
 };
 const CHANNELS = { platform: 'عبر المنصة', whatsapp: 'واتساب', email: 'بريد إلكتروني', verbal: 'شفهي', meeting: 'اجتماع', letter: 'خطاب رسمي' };
 const IMPORTANCE = { normal: 'عادي', important: 'مهم', urgent: 'عاجل' };
+const WAITING_STATUSES = ['waiting_reply', 'waiting_info', 'waiting_approval'];
+const COLORS = {
+  red: { label: 'عاجلة', hint: 'عاجلة أو متأخرة، وتتطلب تدخلًا فوريًا' },
+  blue: { label: 'مهام اليوم', hint: 'مطلوب إنجازها خلال اليوم' },
+  gray: { label: 'قيد المتابعة', hint: 'تنتظر ردًا أو اعتمادًا أو إجراءً' },
+};
 const RECURRENCES = { daily: 'يومية', weekly: 'أسبوعية', monthly: 'شهرية', yearly: 'سنوية' };
 const PROJECT_KINDS = { project: 'مشروع', initiative: 'مبادرة' };
 const APPROVAL_KINDS = {
@@ -187,6 +193,17 @@ function decorate(item, today = todayStr()) {
   item.status_label = STATUSES[item.status] || item.status;
   item.priority_label = PRIORITIES[item.priority];
   if (item.msg_type) item.msg_type_label = MSG_TYPES[item.msg_type];
+  // ألوان المهام المعتمدة في المكتب (بهذا الترتيب):
+  // أحمر «عاجلة» = عاجلة أو متأخرة (أيًّا كانت أولويتها أو حالتها، ولو كانت تنتظر طرفًا آخر)، والمتعثرة كذلك
+  // رمادي «قيد المتابعة» = تنتظر ردًا أو اعتمادًا أو إجراءً (حالة انتظار أو طلب اعتماد معلق)
+  // أزرق «مهام اليوم» = مطلوب إنجازها خلال اليوم
+  // وما سوى ذلك بلا لون
+  const waiting = WAITING_STATUSES.includes(item.status) || item.pending_approvals > 0;
+  item.color = !open ? null
+    : (item.priority === 'urgent' || item.status === 'stalled' || item.is_overdue) ? 'red'
+      : waiting ? 'gray'
+        : item.due_date === today ? 'blue' : null;
+  item.color_label = item.color ? COLORS[item.color].label : null;
   return item;
 }
 
@@ -196,6 +213,25 @@ function todayRibbon(scope = NO_SCOPE) {
   const t = todayStr();
   return all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND ${OPEN} AND due_date=?${scope.sql}
     ORDER BY CASE priority WHEN 'urgent' THEN 0 WHEN 'important' THEN 1 ELSE 2 END, COALESCE(due_time,'99:99')`, t, ...scope.params).map(i => decorate(i, t));
+}
+
+// ===== شريط المتابعة العلوي: العاجلة ← مهام اليوم ← قيد المتابعة =====
+const COLOR_ORDER = { red: 0, blue: 1, gray: 2 };
+function followRibbon(scope = NO_SCOPE) {
+  const t = todayStr();
+  const rows = all(`SELECT ${ITEM_LIST_COLS} FROM items i WHERE kind IN ${TASK_KINDS} AND ${OPEN} AND (
+      priority='urgent' OR status IN ('stalled','waiting_reply','waiting_info','waiting_approval') OR due_date <= ?
+      OR EXISTS (SELECT 1 FROM approvals a WHERE a.item_id=i.id AND a.status='pending')
+    )${scope.sql}`, t, ...scope.params).map(i => decorate(i, t)).filter(i => i.color);
+  const prio = { urgent: 0, important: 1, normal: 2 };
+  for (const i of rows) {
+    i.follow_reason = i.color === 'red'
+      ? [i.priority === 'urgent' && 'أولوية عاجلة', i.status === 'stalled' && 'متعثرة', i.is_overdue && 'متأخرة'].filter(Boolean).join('، ')
+      : i.color === 'blue' ? 'مطلوب إنجازها اليوم'
+        : (WAITING_STATUSES.includes(i.status) ? i.status_label : 'بانتظار اعتماد');
+  }
+  return rows.sort((a, b) => COLOR_ORDER[a.color] - COLOR_ORDER[b.color] || prio[a.priority] - prio[b.priority]
+    || String(a.due_date || '9').localeCompare(String(b.due_date || '9')) || String(a.due_time || '99').localeCompare(String(b.due_time || '99')));
 }
 
 // ===== شريط المهام العاجلة: قواعد صريحة منفصلة عن تاريخ الاستحقاق =====
@@ -315,6 +351,6 @@ function report(period = 'week') {
 }
 
 module.exports = {
-  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS, CHANNELS, IMPORTANCE,
-  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, localDate, onTimeStats, needsAttention, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS, CHANNELS, IMPORTANCE, COLORS,
+  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, localDate, onTimeStats, needsAttention, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, followRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };
