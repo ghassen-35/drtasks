@@ -606,7 +606,7 @@ async function viewHome(main) {
     }
     const s = h.summary;
     const cmdLink = `<a class="cmd-link section-gap" href="#/command">${I('chart')}<span><b>لوحة القيادة</b><small>المؤشرات، ما يحتاج تدخلك، توزيع العمل، والتوجيهات</small></span>${I('back', 'chev')}</a>`;
-    let roleHtml = cmdLink;
+    let roleHtml = '';
     if (isOwner()) {
       roleHtml += `
       <div class="card section-gap"><div class="card-h"><h2>ملخص المكتب</h2></div>
@@ -654,6 +654,7 @@ async function viewHome(main) {
       <div class="hello"><h1>${hello()}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
       ${notifBannerHtml()}
       ${followRibbonHtml(h.follow_ribbon)}
+      ${cmdLink}
       <div class="tiles">${h.tiles.map(tileHtml).join('')}</div>
       ${roleHtml}`;
     bindRibbons(main); bindInboxActions(main); bindTileAdd(main); bindNotifBanner(main);
