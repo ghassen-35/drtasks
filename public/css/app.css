@@ -514,3 +514,8 @@ details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size:
 .ribbon .r-tag { display: inline-flex; align-items: center; gap: 4px; background: rgba(255, 255, 255, .95); border-radius: 999px; padding: 1px 9px 1px 8px; font-size: .76rem; font-weight: 700; }
 .ribbon .r-pill.c-red .r-tag { color: var(--c-red); } .ribbon .r-pill.c-blue .r-tag { color: var(--c-blue); } .ribbon .r-pill.c-gray .r-tag { color: var(--c-gray); }
 .ribbon .r-tag svg.i { width: 13px; height: 13px; }
+
+/* تحية الحساب الأعلى: عبارات بينها فاصل، تلتف عند الفاصل لا داخل العبارة */
+.hello h1 .g-part { display: inline-block; }
+.hello h1 .g-sep { color: var(--brand-2); margin: 0 .35em; font-weight: 400; }
+@media (max-width: 640px) { .hello h1:has(.g-part) { font-size: clamp(.95rem, 4.3vw, 1.6rem); } }
