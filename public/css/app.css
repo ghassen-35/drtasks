@@ -431,7 +431,12 @@ fieldset.grants legend { font-weight: 700; padding: 0 6px; }
   .actions-bar { position: sticky; bottom: calc(58px + env(safe-area-inset-bottom)); z-index: 30; background: var(--surface); flex-wrap: nowrap; overflow-x: auto;
     margin-inline: -16px; padding: 10px 16px 8px; box-shadow: 0 -6px 16px rgba(16, 36, 51, .08); scrollbar-width: thin; }
   .actions-bar .btn { flex: none; }
+  .actions-bar:not(.open) > .btn:nth-child(n+3):not(.more-acts) { display: none; }
+  .actions-bar.open { flex-wrap: wrap; overflow: visible; max-height: 60vh; overflow-y: auto; }
+  .actions-bar.open > .btn { flex: 1 1 calc(50% - 8px); justify-content: center; }
+  .actions-bar .more-acts { order: 99; }
 }
+@media (min-width: 901px) { .actions-bar .more-acts { display: none; } }
 /* لوحة المتابعة: مجموعات قابلة للطي */
 details.dgroup > summary { list-style: none; cursor: pointer; }
 details.dgroup > summary::-webkit-details-marker { display: none; }

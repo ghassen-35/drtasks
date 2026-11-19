@@ -79,6 +79,12 @@ async function apiAs(page, method, url, body) {
     return { status: r.status, body: await r.json().catch(() => null) };
   }, [method, url, body]);
 }
+// زر في شريط الإجراءات: على الجوال قد يكون خلف «كل الإجراءات» فنفتحها أولًا كما يفعل المستخدم
+async function act(page, sel) {
+  const el = page.locator(sel).first(); await el.waitFor({ state: 'attached' });
+  if (!(await el.isVisible())) { const more = page.locator('#acts [data-more]'); if (await more.isVisible() && (await more.getAttribute('aria-expanded')) !== 'true') await more.click(); }
+  await el.click();
+}
 async function login(page, user, pass) {
   await page.goto(BASE);
   await page.fill('input[name=username]', user);
@@ -171,8 +177,8 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     });
 
     await check('يحوّل مدير المكتب التكليف إلى مهمة في قسم الجمعية دون تكرار', async () => {
-      await mgr.goto(`${BASE}/#/item/${itemId}`); await mgr.waitForSelector('#acts button:has-text("تحويل إلى مهمة")');
-      await mgr.click('#acts button:has-text("تحويل إلى مهمة")');
+      await mgr.goto(`${BASE}/#/item/${itemId}`); await mgr.waitForSelector('#acts button:has-text("تحويل إلى مهمة")', { state: 'attached' });
+      await act(mgr, '#acts button:has-text("تحويل إلى مهمة")');
       await mgr.waitForSelector('.modal select[name=section]');
       await mgr.fill('.modal input[name=next_step]', 'جمع بيانات البرامج من المشرفين');
       await mgr.fill('.modal input[name=due_date]', new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10));
@@ -186,7 +192,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     });
 
     await check('يبدأ التنفيذ ويضيف تحديثًا', async () => {
-      await mgr.click('#acts button:has-text("بدء/استئناف التنفيذ")');
+      await act(mgr, '#acts button:has-text("بدء/استئناف التنفيذ")');
       await mgr.waitForSelector('.item-head .chip.st-in_progress');
       await mgr.fill('#cmp textarea[name=body]', 'تم جمع بيانات 4 برامج من أصل 6، والعمل جارٍ على البقية.');
       await mgr.click('#cmp button:has-text("إرسال")');
@@ -213,7 +219,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     });
 
     await check('يرفع مدير المكتب تقريرًا ويطلب اعتماده (مع مرفق)', async () => {
-      await mgr.click('#acts button:has-text("طلب اعتماد")');
+      await act(mgr, '#acts button:has-text("طلب اعتماد")');
       await mgr.selectOption('.modal select[name=kind]', 'report');
       await mgr.fill('.modal input[name=title]', 'مسودة التقرير السنوي للجمعية');
       await mgr.fill('.modal textarea[name=body]', 'مرفق المسودة الأولى مع المقارنة بالعام الماضي.');
@@ -253,7 +259,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     await check('يستكمل مدير المكتب العمل ويعيد الطلب فيعتمده مدير الشؤون التعليمية', async () => {
       await mgr.fill('#cmp textarea[name=body]', 'أُضيف قسم المستفيدين.'); await mgr.click('#cmp button:has-text("إرسال")');
       await mgr.waitForSelector('.msg:has-text("أُضيف قسم المستفيدين")');
-      await mgr.click('#acts button:has-text("طلب اعتماد")');
+      await act(mgr, '#acts button:has-text("طلب اعتماد")');
       await mgr.fill('.modal input[name=title]', 'التقرير السنوي — النسخة المعدلة');
       await mgr.click('.modal button:has-text("إرسال الطلب")');
       await owner.waitForSelector('form.decide', { timeout: 8000 });
@@ -285,7 +291,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     });
 
     await check('يرفع مدير المكتب النتيجة النهائية ويعتمدها مدير الشؤون التعليمية ثم تُغلق', async () => {
-      await mgr.click('#acts button:has-text("رفع النتيجة النهائية")');
+      await act(mgr, '#acts button:has-text("رفع النتيجة النهائية")');
       await mgr.fill('.modal textarea[name=body]', 'التقرير السنوي النهائي جاهز ومرفق.');
       await mgr.click('.modal button:has-text("رفع النتيجة وطلب الاعتماد")');
       await mgr.waitForSelector('.approval:has-text("اعتماد النتيجة النهائية")');
@@ -293,7 +299,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await owner.click('form.decide button:has-text("اعتماد")');
       await owner.waitForSelector('.item-head .chip.st-done', { timeout: 8000 });
       await mgr.waitForSelector('.item-head .chip.st-done', { timeout: 8000 });
-      await mgr.click('#acts button:has-text("إغلاق نهائي")');
+      await act(mgr, '#acts button:has-text("إغلاق نهائي")');
       await mgr.waitForSelector('.chip:has-text("مغلقة نهائيًا")');
       await owner.screenshot({ path: path.join(SHOTS, '04-owner-item-mobile.png'), fullPage: true });
       await mgr.screenshot({ path: path.join(SHOTS, '05-manager-item-desktop.png'), fullPage: true });
@@ -451,7 +457,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       const withSubs = (await apiAs(mem, 'GET', '/api/items?kind=all&subtasks=1')).body;
       assert(withSubs.length === 2 && withSubs.every(x => x.project_id === projectId) && withSubs.some(x => x.title === 'حجز القاعة'), 'المهمة الفرعية غير متاحة للعضو');
       await mem.click('.row a.title:has-text("تجهيز جدول حلقات الفصل")');
-      await mem.click('#acts button:has-text("بدء التنفيذ")'); await mem.waitForSelector('.item-head .chip.st-in_progress');
+      await act(mem, '#acts button:has-text("بدء التنفيذ")'); await mem.waitForSelector('.item-head .chip.st-in_progress');
       await mem.fill('#cmp textarea[name=body]', 'جهزت مسودة الجدول وأرسلتها للمعلمين.'); await mem.click('#cmp button:has-text("إرسال")');
       await mem.waitForSelector('.msg:has-text("جهزت مسودة الجدول")');
       const n = (await apiAs(mgr, 'GET', '/api/notifications')).body;
@@ -480,11 +486,11 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await ex.goto(`${BASE}/#/item/${t.id}`); await ex.waitForSelector('#acts');
       assert(!(await ex.isVisible('#editTop')), 'زر تعديل التفاصيل ظاهر للمنفّذ');
       // متعثرة: نافذة بأسباب جاهزة
-      await ex.click('#acts [data-s=stalled]'); await ex.waitForSelector('.modal input[name=reason]');
+      await act(ex, '#acts [data-s=stalled]'); await ex.waitForSelector('.modal input[name=reason]');
       await ex.click('.modal label:has-text("نقص معلومات") input'); await ex.click('.modal button:has-text("حفظ")');
       await ex.waitForSelector('.item-head .chip.st-stalled'); await ex.waitForSelector('.sys:has-text("نقص معلومات")');
       // أنجزت: تنبيه الفرعيات المفتوحة و«إنجازها معها»
-      await ex.click('#acts [data-s=done]'); await ex.waitForSelector('.modal .warn-box:has-text("2 مهام فرعية")');
+      await act(ex, '#acts [data-s=done]'); await ex.waitForSelector('.modal .warn-box:has-text("2 مهام فرعية")');
       await ex.fill('.modal textarea[name=body]', 'القاعة جاهزة بالكامل.'); await ex.click('.modal button:has-text("تم الإنجاز")');
       await ex.waitForSelector('.item-head .chip.st-done');
       const subs = (await apiAs(mgr, 'GET', `/api/items/${t.id}`)).body.subtasks;
@@ -526,7 +532,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       const it = (await apiAs(co, 'GET', '/api/items?q=' + encodeURIComponent('إعداد جدول الدورة'))).body[0];
       assert(it.folder_name === 'الدورات العلمية' && it.assignee_id === staff.coord, 'المهمة لم تُحفظ في المجلد/للمنسقة');
       // تأجيل بنقرة
-      await co.click('#acts [data-a=postpone]'); await co.waitForSelector('.modal [data-pp]');
+      await act(co, '#acts [data-a=postpone]'); await co.waitForSelector('.modal [data-pp]');
       await co.click('.modal [data-pp]:has-text("بعد أسبوع")'); await co.waitForSelector('.modal-bg', { state: 'detached' });
       const due = (await apiAs(co, 'GET', `/api/items/${it.id}`)).body.item.due_date;
       const today = (await apiAs(co, 'GET', '/api/meta')).body.today;
@@ -586,12 +592,12 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       const ctx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' }); const as = await ctx.newPage(); as.on('pageerror', e => consoleErrors.push(e.message));
       global.pages.asst = as;
       await as.goto(BASE); await as.fill('input[name=username]', 'qa.asst'); await as.fill('input[name=password]', 'Staff#2026x'); await as.click('button:has-text("دخول")'); await as.waitForSelector('.bottomnav');
-      await as.goto(`${BASE}/#/item/${t1.id}`); await as.waitForSelector('#acts [data-s=done]');
-      await as.click('#acts [data-s=done]'); await as.waitForSelector('.modal .info-box:has-text("جدول اختبارات معتمد")');
+      await as.goto(`${BASE}/#/item/${t1.id}`); await as.waitForSelector('#acts [data-s=done]', { state: 'attached' });
+      await act(as, '#acts [data-s=done]'); await as.waitForSelector('.modal .info-box:has-text("جدول اختبارات معتمد")');
       await as.fill('.modal textarea[name=body]', 'أُعد الجدول وأرسلته للمدارس للمراجعة.'); await as.click('.modal button:has-text("تم الإنجاز")'); await as.waitForSelector('.item-head .chip.st-done');
       // 4) مدير المكتب يراجع ويعيده للتعديل بسبب، ثم يُنجز مجددًا
-      await openFresh(mgr, `#/item/${t1.id}`); await mgr.waitForSelector('.item-head .chip.st-done'); await mgr.waitForSelector('#acts [data-s=in_progress]');
-      await mgr.click('#acts [data-s=in_progress]'); await mgr.waitForSelector('.modal textarea[name=note]');
+      await openFresh(mgr, `#/item/${t1.id}`); await mgr.waitForSelector('.item-head .chip.st-done'); await mgr.waitForSelector('#acts [data-s=in_progress]', { state: 'attached' });
+      await act(mgr, '#acts [data-s=in_progress]'); await mgr.waitForSelector('.modal textarea[name=note]');
       await mgr.fill('.modal textarea[name=note]', 'أضف مواعيد اختبارات الإعادة.'); await mgr.click('.modal button:has-text("إعادة فتح")'); await mgr.waitForSelector('.item-head .chip.st-in_progress');
       assert((await apiAs(as, 'GET', '/api/notifications')).body.some(n => n.title.includes('إعداد جدول الاختبارات')), 'لم يُبلَّغ المساعد بإعادة المهمة');
       await apiAs(as, 'PATCH', `/api/items/${t1.id}`, { status: 'done' });
@@ -621,7 +627,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       const minus = (n) => new Date(Date.parse(today + 'T12:00:00Z') - n * 864e5).toISOString().slice(0, 10);
       // تأخر مهمة: تظهر في المتأخرة، والتأجيل يطلب سبب التأخير
       const late = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'تسليم تقرير الحضور', section: 'personal', due_date: minus(2), assignee_id: staff.asst })).body;
-      await mgr.goto(`${BASE}/#/item/${late.id}`); await mgr.click('#acts [data-a=postpone]'); await mgr.waitForSelector('.modal [data-pp]');
+      await mgr.goto(`${BASE}/#/item/${late.id}`); await act(mgr, '#acts [data-a=postpone]'); await mgr.waitForSelector('.modal [data-pp]');
       assert(await mgr.isVisible('.modal span:has-text("سبب التأخير *")'), 'التأجيل لا يطلب سبب التأخير');
       await mgr.click('.modal [data-pp]:has-text("غدًا")'); await mgr.waitForSelector('.toast.err:has-text("سبب التأخير")');
       await mgr.fill('.modal input[name=reason]', 'تأخر وصول البيانات من المدارس');
