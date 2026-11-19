@@ -392,6 +392,26 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('تعديل حقل آخر من النسخة نفسها يُحفظ ويُبقي تعديل الزميل', y.priority === 'urgent' && y.title === 'تعارض — عدّله مدير المكتب');
 }
 
+// ---- مهمة بالصوت: تحويل الكلام إلى مهمة بتفاصيلها
+{
+  const { parseVoiceTask } = require('../public/js/voice-parse.js');
+  const ctx = { today: '2026-11-19', people: [{ id: 3, name: 'أحمد العتيبي' }, { id: 4, name: 'سارة القحطاني' }],
+    sections: [{ key: 'association', name: 'الجمعية' }, { key: 'dawah', name: 'المشاريع الدعوية' }, { key: 'partnerships', name: 'الشراكات' }] };
+  const a = parseVoiceTask('عاجل، الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني يوم الأحد الساعة عشرة صباحا، أحمد العتيبي، والمطلوب خطاب رد معتمد', ctx);
+  t('الصوت: العنوان والأولوية والموعد والوقت والمسؤول والمخرج من جملة واحدة',
+    a.title === 'الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني' && a.priority === 'urgent' && a.due_date === '2026-11-22' && a.due_time === '10:00' && a.assignee_id === 3 && a.deliverable === 'خطاب رد معتمد');
+  const b = parseVoiceTask('سجل مهمة مهم: التقرير الشهري لسارة بعد ٣ أيام الساعة 2', ctx);
+  t('الصوت: الافتتاحية تُحذف، والأرقام العربية، و«لسارة»، والساعة 2 بعد الظهر', b.title === 'التقرير الشهري' && b.priority === 'important' && b.due_date === '2026-11-22' && b.due_time === '14:00' && b.assignee_id === 4);
+  const c = parseVoiceTask('في قسم الشراكات متابعة مذكرة التفاهم كل أسبوع', ctx);
+  t('الصوت: «في قسم …» يحدد القسم ويُحذف، و«كل أسبوع» تكرار أسبوعي', c.section === 'partnerships' && c.title === 'متابعة مذكرة التفاهم' && c.recurrence === 'weekly');
+  const d = parseVoiceTask('تجديد رخصة الجمعية قبل 25 ديسمبر', ctx);
+  t('الصوت: تاريخ بالشهر الميلادي، واسم القسم داخل الكلام يحدده دون حذفه من العنوان', d.due_date === '2026-12-25' && d.section === 'association' && d.title === 'تجديد رخصة الجمعية');
+  const e = parseVoiceTask('مراجعة الميزانية غدا', ctx); const g = parseVoiceTask('زيارة الحلقات بعد أسبوعين', ctx); const h = parseVoiceTask('اعتماد الخطة نهاية الشهر', ctx);
+  t('الصوت: غدًا، بعد أسبوعين، نهاية الشهر', e.due_date === '2026-11-20' && g.due_date === '2026-12-03' && h.due_date === '2026-11-30');
+  const k = parseVoiceTask('مهمة إعداد خطة المهمات الميدانية', ctx);
+  t('الصوت: كلمة «مهمة» داخل العنوان لا تُفهم أولوية «مهم»', k.priority === 'normal' && k.title === 'إعداد خطة المهمات الميدانية');
+}
+
 // ---- ألوان المهام المعتمدة: أحمر عاجلة، أزرق مستحقة، رمادي معلقة
 {
   const c = (b, st) => { const x = S.createTask(mgr, { section: 'family', ...b }); if (st) S.updateItem(mgr, x.id, { status: st, status_note: 'سبب' }); return S.getItem(x.id).color; };

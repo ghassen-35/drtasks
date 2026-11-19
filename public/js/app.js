@@ -360,6 +360,7 @@ function renderShell() {
     <span class="role-chip desk-only">${esc(me.role_label || '')}</span>
     <span class="spacer"></span>
     <div class="actions">
+      ${can('task.create') ? `<button class="btn voice-btn" id="btnVoice" title="مهمة بالصوت: تحدّث وتُنشأ المهمة بتفاصيلها" aria-label="مهمة بالصوت">${I('mic')} <span class="desk-only">بالصوت</span></button>` : ''}
       ${canAddAny() ? `<button class="btn primary" id="btnAdd" title="إضافة مهمة أو مشروع أو مبادرة">${I('plus')} <span>إضافة</span></button>` : ''}
       <button class="iconbtn" id="btnSearch" aria-label="بحث شامل" title="بحث شامل (/)">${I('search')}</button>
       <button class="iconbtn" id="btnToday" aria-label="مهام اليوم" title="مهام اليوم">${I('calendarCheck')}</button>
@@ -372,6 +373,7 @@ function renderShell() {
   </div>
   <nav class="bottomnav" id="bottomnav" aria-label="التنقل السريع"></nav>`;
   if (canAddAny()) $('#btnAdd').onclick = () => modalAdd();
+  if (can('task.create')) $('#btnVoice').onclick = () => modalVoice();
   $('#btnToday').onclick = () => modalToday();
   $('#btnSearch').onclick = () => modalSearch();
   document.title = appName();
@@ -2191,4 +2193,153 @@ function renderResetPage(token) {
     } catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); }
   };
   f.querySelector('a').onclick = (e) => { e.preventDefault(); history.replaceState(null, '', '#/'); renderLogin(); };
+}
+
+
+// ===== مهمة بالصوت: تحدّث ← نص ← مهمة بتفاصيلها (العنوان، الأولوية، الموعد، الوقت، المسؤول، القسم، التكرار، المخرج) =====
+// التحويل إلى نص من خدمة الكلام في الجهاز (Web Speech API). وإن لم تتوفر: تسجيل صوتي يُرفق بمهمة ليستكملها مدير المكتب.
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+function modalVoice() {
+  const people = state.meta.users.filter(u => u.role !== 'owner');
+  const secs = mySections();
+  const lastSec = (() => { try { return localStorage.getItem('voice-section'); } catch { return null; } })();
+  const defSec = (secs.find(x => x.key === lastSec) || secs[0] || {}).key;
+  const canSR = !!SpeechRec;
+  const canRec = !!(window.MediaRecorder && navigator.mediaDevices);
+  const FOUND = { priority: 'الأولوية', date: 'الموعد', time: 'الوقت', assignee: 'المسؤول', section: 'القسم', recurrence: 'التكرار', deliverable: 'المخرج المطلوب' };
+  const m = openModal({
+    title: 'مهمة بالصوت', submit: 'إنشاء المهمة', wide: true, confirmClose: false,
+    body: `<div class="voice-stage">
+        <button type="button" class="voice-mic" id="vmic" aria-label="${canSR ? 'ابدأ التحدث' : 'ابدأ التسجيل'}">${I('mic')}</button>
+        <div class="voice-status" id="vst" aria-live="polite">${canSR ? 'اضغط الميكروفون وتحدّث: ما المهمة؟ ومتى؟ ومن المسؤول؟' : (canRec ? 'اضغط لتسجيل المهمة صوتيًا' : 'اكتب المهمة أدناه، أو استخدم ميكروفون لوحة المفاتيح')}</div>
+        <div class="small muted voice-example">مثال: «عاجل، الرد على خطاب الإدارة العامة يوم الأحد الساعة عشرة، أحمد العتيبي، والمطلوب خطاب رد معتمد»</div>
+      </div>
+      <label class="f"><span>ما قلته (يمكنك تعديله)</span><textarea name="transcript" id="vtext" rows="3" placeholder="سيظهر كلامك هنا…"></textarea></label>
+      <div class="voice-files hidden" data-ids="[]"><div class="files"></div></div>
+      <div class="voice-found" id="vfound"></div>
+      <div class="voice-preview">
+        <div class="small muted" style="margin-bottom:6px">ستُنشأ المهمة هكذا — عدّل ما تشاء قبل الإنشاء:</div>
+        ${field('العنوان *', '<input type="text" name="title" id="vtitle" maxlength="300" required>')}
+        <div class="grid2">
+          ${field('القسم *', `<select name="section" id="vsec">${secs.map(x => opt(x.key, x.name, defSec)).join('')}</select>`)}
+          ${field('المسؤول', `<select name="assignee_id" id="vass">${opt('', '— يحدده مدير المكتب لاحقًا —')}${people.map(u => opt(u.id, u.name + (u.id === state.me.id ? ' (أنا)' : ''))).join('')}</select>`)}
+          ${field('الموعد', '<input type="date" name="due_date" id="vdate">')}
+          ${field('الوقت', '<input type="time" name="due_time" id="vtime">')}
+        </div>
+        ${field('الأولوية', prioSeg('normal'))}
+        <div class="grid2">
+          ${field('التكرار', `<select name="recurrence" id="vrec">${opt('', 'لا تتكرر')}${Object.entries(state.meta.recurrences).map(([k, v]) => opt(k, v)).join('')}</select>`)}
+          ${field('المخرج المطلوب', '<input type="text" name="deliverable" id="vdel" maxlength="1000" placeholder="ما الذي يُسلَّم عند الإنجاز؟">')}
+        </div>
+      </div>
+      <button type="button" class="btn ghost" id="vagain">${I('plus')} إنشاء وتسجيل مهمة أخرى</button>`,
+    onSubmit: async (d) => { await create(d); },
+  });
+  const f = m.form;
+  const box = $('#vtext', f), mic = $('#vmic', f), st = $('#vst', f), found = $('#vfound', f);
+  const el = { title: $('#vtitle', f), section: $('#vsec', f), assignee_id: $('#vass', f), due_date: $('#vdate', f), due_time: $('#vtime', f), recurrence: $('#vrec', f), deliverable: $('#vdel', f) };
+  const touched = new Set();
+  Object.entries(el).forEach(([k, x]) => x.addEventListener('input', () => touched.add(k)));
+  $$('input[name=priority]', f).forEach(x => x.addEventListener('change', () => touched.add('priority')));
+  // كل تغيير في النص يعيد تعبئة ما لم يعدّله المستخدم بيده
+  const apply = () => {
+    const r = VoiceTask.parseVoiceTask(box.value, { today: state.meta.today, people, sections: secs });
+    const set = (k, v) => { if (!touched.has(k) && v != null) el[k].value = v; };
+    set('title', r.title); set('due_date', r.due_date || ''); set('due_time', r.due_time || ''); set('deliverable', r.deliverable || ''); set('recurrence', r.recurrence || '');
+    if (r.assignee_id) set('assignee_id', String(r.assignee_id)); else if (!touched.has('assignee_id')) el.assignee_id.value = '';
+    if (r.section) set('section', r.section);
+    if (!touched.has('priority')) { const pr = $(`input[name=priority][value=${r.priority}]`, f); if (pr) pr.checked = true; }
+    found.innerHTML = r.found.length ? `<span class="small muted">فهمت:</span> ${[...new Set(r.found)].map(k => `<span class="chip col-blue">${I('check')}${FOUND[k]}</span>`).join('')}` : '';
+  };
+  box.addEventListener('input', apply);
+
+  // التحويل إلى نص
+  let rec = null, listening = false, base = '';
+  const setMic = (on) => { listening = on; mic.classList.toggle('on', on); mic.setAttribute('aria-label', on ? 'إيقاف' : 'ابدأ التحدث'); mic.innerHTML = I(on ? 'stop' : 'mic'); };
+  function startSR() {
+    rec = new SpeechRec(); rec.lang = 'ar-SA'; rec.interimResults = true; rec.continuous = true; rec.maxAlternatives = 1;
+    base = box.value ? box.value.trim() + ' ' : '';
+    rec.onresult = (e) => {
+      let fin = '', mid = '';
+      for (let i = 0; i < e.results.length; i++) (e.results[i].isFinal ? (fin += e.results[i][0].transcript + ' ') : (mid += e.results[i][0].transcript));
+      box.value = (base + fin + mid).replace(/\s+/g, ' ').trim(); apply();
+    };
+    rec.onerror = (e) => {
+      const msg = { 'not-allowed': 'لم يُسمح باستخدام الميكروفون. اسمح به من إعدادات المتصفح', 'service-not-allowed': 'خدمة تحويل الكلام غير متاحة هنا', 'no-speech': 'لم أسمع شيئًا. اضغط وتحدّث مرة أخرى', network: 'خدمة تحويل الكلام تحتاج اتصالًا بالإنترنت', 'audio-capture': 'لا يوجد ميكروفون متاح' }[e.error] || 'تعذر تحويل الكلام';
+      st.textContent = msg;
+      if (['service-not-allowed', 'network'].includes(e.error) && canRec) { switchToRecording(); }
+    };
+    rec.onend = () => { setMic(false); if (box.value.trim()) st.textContent = 'تمّ. راجِع التفاصيل ثم اضغط «إنشاء المهمة» — أو اضغط الميكروفون لإكمال الكلام'; };
+    try { rec.start(); setMic(true); st.textContent = 'أستمع… تحدّث بطبيعتك، ثم اضغط الزر عند الانتهاء'; } catch { st.textContent = 'تعذر بدء الاستماع'; }
+  }
+  // البديل: تسجيل صوتي يُرفق بالمهمة
+  let mode = canSR ? 'sr' : 'audio', mr = null, chunks = [];
+  const vf = $('.voice-files', f);
+  function switchToRecording() { mode = 'audio'; st.textContent = 'التحويل إلى نص غير متاح هنا. اضغط الميكروفون لتسجيل المهمة صوتيًا، وتُرفق بها ليستكملها مدير المكتب'; }
+  async function toggleAudio() {
+    if (mr) { mr.stop(); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mr = new MediaRecorder(stream); chunks = [];
+      mr.ondataavailable = (e) => chunks.push(e.data);
+      mr.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop()); setMic(false);
+        const type = mr.mimeType || 'audio/webm'; const ext = type.includes('mp4') ? 'm4a' : 'webm'; mr = null;
+        const fd = new FormData(); fd.append('files', new File(chunks, `مهمة-صوتية-${new Date().toISOString().slice(11, 19).replace(/:/g, '')}.${ext}`, { type })); fd.append('voice', '1');
+        try {
+          const up = await api('POST', '/api/files', fd);
+          const ids = JSON.parse(vf.dataset.ids); up.forEach(x => ids.push(x.id)); vf.dataset.ids = JSON.stringify(ids); vf.classList.remove('hidden');
+          $('.files', vf).insertAdjacentHTML('beforeend', up.map(x => `<span class="file">${I('mic')}<span>${esc(x.original_name)}</span></span>`).join(''));
+          if (!el.title.value.trim() && !touched.has('title')) el.title.value = `مهمة صوتية من ${state.me.name} — ${new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' }).format(new Date())}`;
+          st.textContent = 'حُفظ التسجيل. أضف عنوانًا مختصرًا إن شئت، ثم «إنشاء المهمة»';
+        } catch (e) { showErr(e); }
+      };
+      mr.start(); setMic(true); st.textContent = 'أسجّل… اضغط الزر عند الانتهاء';
+    } catch { st.textContent = 'تعذر الوصول إلى الميكروفون — تحقق من الإذن'; }
+  }
+  mic.onclick = () => {
+    if (mode === 'sr') { if (listening && rec) rec.stop(); else startSR(); return; }
+    if (canRec) toggleAudio(); else box.focus();
+  };
+
+  async function create(d) {
+    if (listening && rec) try { rec.stop(); } catch { /* متوقف */ }
+    const title = (d.title || '').trim();
+    if (!title) throw new Error('اكتب عنوانًا للمهمة، أو تحدّث مرة أخرى');
+    if (!d.section) throw new Error('اختر القسم');
+    const fileIds = JSON.parse(vf.dataset.ids);
+    const body = { title, section: d.section, priority: d.priority || 'normal', due_date: d.due_date || undefined, due_time: d.due_time || undefined,
+      recurrence: d.recurrence || undefined, deliverable: (d.deliverable || '').trim() || undefined,
+      description: (d.transcript || '').trim() ? `سُجّلت بالصوت. النص كما قيل:\n${d.transcript.trim()}` : (fileIds.length ? 'سُجّلت صوتيًا — استمع إلى التسجيل المرفق.' : undefined),
+      file_ids: fileIds };
+    if (d.assignee_id) { body.assignee_id = Number(d.assignee_id); body.assignee = (people.find(u => u.id === body.assignee_id) || {}).name; }
+    const it = await POST('/api/tasks', body);
+    try { localStorage.setItem('voice-section', d.section); } catch { /* اختياري */ }
+    toast(`أُنشئت المهمة ${it.ref} من الصوت`, 'ok');
+    return it;
+  }
+  // «إنشاء وتسجيل مهمة أخرى»: ينشئ ثم يفرّغ النموذج ويبدأ الاستماع من جديد
+  $('#vagain', f).onclick = async () => {
+    const err = $('.err-box', f); err.classList.add('hidden');
+    try {
+      await create(formData(f));
+      box.value = ''; touched.clear(); Object.values(el).forEach(x => { if (x !== el.section) x.value = ''; });
+      const pn = $('input[name=priority][value=normal]', f); if (pn) pn.checked = true;
+      vf.dataset.ids = '[]'; $('.files', vf).innerHTML = ''; vf.classList.add('hidden'); found.innerHTML = '';
+      refreshView(); if (mode === 'sr') startSR();
+    } catch (e) { err.textContent = e.message; err.classList.remove('hidden'); }
+  };
+  // بعد الإنشاء: فتح المهمة الجديدة
+  const origSubmit = f.onsubmit;
+  f.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = $('.err-box', f); err.classList.add('hidden');
+    const btn = $('button[type=submit]', f); btn.disabled = true;
+    try { const it = await create(formData(f)); m.close(); location.hash = `#/item/${it.id}`; refreshView(); }
+    catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); }
+    finally { btn.disabled = false; }
+  };
+  void origSubmit;
+  // يبدأ الاستماع فورًا (الضغط على زر «بالصوت» نفسه يُعد إذنًا من المستخدم)
+  if (mode === 'sr') startSR();
 }
