@@ -557,3 +557,16 @@ a.chip.link { text-decoration: none; cursor: pointer; } a.chip.link:hover { filt
 
 /* كلمة المرور المؤقتة: كبيرة وواضحة للنسخ أو القراءة */
 .temp-pw { font-size: 1.6rem; font-weight: 700; letter-spacing: .08em; text-align: center; padding: 14px; border: 2px dashed var(--brand-2); border-radius: 12px; background: var(--gray-soft, #eef1f4); user-select: all; font-family: ui-monospace, Menlo, Consolas, monospace; }
+
+/* ===== مهمة بالصوت ===== */
+.voice-btn svg.i { width: 20px; height: 20px; }
+.voice-stage { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 6px 0 14px; text-align: center; }
+.voice-mic { width: 84px; height: 84px; border-radius: 50%; border: 0; background: var(--brand); color: #fff; display: grid; place-items: center; cursor: pointer; box-shadow: 0 6px 18px rgba(11, 58, 90, .25); }
+.voice-mic svg.i { width: 36px; height: 36px; }
+.voice-mic.on { background: var(--c-red); animation: voicePulse 1.4s ease-out infinite; }
+@keyframes voicePulse { 0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, .45); } 70% { box-shadow: 0 0 0 22px rgba(220, 38, 38, 0); } 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); } }
+@media (prefers-reduced-motion: reduce) { .voice-mic.on { animation: none; } }
+.voice-status { font-weight: 600; min-height: 1.4em; }
+.voice-example { max-width: 520px; }
+.voice-found { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; min-height: 4px; }
+.voice-preview { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--gray-soft, #f4f7f9); margin-bottom: 10px; }

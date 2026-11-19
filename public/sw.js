@@ -1,6 +1,6 @@
 // Service Worker: تثبيت التطبيق (PWA)، تخزين الواجهة مؤقتًا، واستقبال إشعارات Push
-const CACHE = 'office-shell-v4';
-const SHELL = ['/', '/index.html', '/css/app.css', '/js/app.js', '/js/icons.js', '/img/logo.png', '/img/icon-192.png', '/manifest.webmanifest'];
+const CACHE = 'office-shell-v5';
+const SHELL = ['/', '/index.html', '/css/app.css', '/js/app.js', '/js/icons.js', '/js/voice-parse.js', '/img/logo.png', '/img/icon-192.png', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

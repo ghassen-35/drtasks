@@ -789,6 +789,40 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(!consoleErrors.length, 'أخطاء JavaScript: ' + consoleErrors.join(' | '));
     });
 
+    await check('مهمة بالصوت: يتحدث المدير فتُنشأ المهمة بعنوانها وأولويتها وموعدها ووقتها ومسؤولها، ويُحفظ النص كما قيل', async () => {
+      const c = await browser.newContext({ ...devices['iPhone 13'], locale: 'ar-SA', permissions: ['microphone'] });
+      // محاكاة خدمة الكلام في الجهاز: تعيد الجملة المنطوقة على دفعتين (مؤقتة ثم نهائية) كما يفعل الجوال
+      await c.addInitScript(() => {
+        class FakeSR { constructor() { this.lang = ''; } start() { setTimeout(() => {
+          const said = 'عاجل، الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني يوم الأحد الساعة عشرة صباحا، مساعد الاختبار، والمطلوب خطاب رد معتمد';
+          const ev = (fin, txt) => ({ results: Object.assign([Object.assign([{ transcript: txt }], { isFinal: fin })], {}) });
+          this.onresult && this.onresult(ev(false, said.slice(0, 20)));
+          setTimeout(() => { this.onresult && this.onresult(ev(true, said)); this.onend && this.onend(); }, 150);
+        }, 200); } stop() { this.onend && this.onend(); } }
+        window.SpeechRecognition = FakeSR;
+      });
+      const pg = await c.newPage(); pg.on('pageerror', e => consoleErrors.push('[voice] ' + e.message));
+      await pg.goto(BASE); await pg.fill('input[name=username]', 'owner'); await pg.fill('input[name=password]', 'Owner#2026x'); await pg.click('#lf button.primary');
+      await pg.waitForSelector('#btnVoice'); await pg.click('#btnVoice');
+      await pg.waitForFunction(() => (document.querySelector('#vtitle') || {}).value === 'الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني', null, { timeout: 8000 });
+      assert(await pg.isVisible('#vfound .chip'), 'لا يظهر ما فهمته المنصة');
+      assert(await noHScroll(pg), 'تمرير أفقي في نافذة الصوت على الجوال');
+      await pg.screenshot({ path: path.join(SHOTS, '09-voice-task-mobile.png') });
+      await pg.click('.modal button[type=submit]');
+      await pg.waitForSelector('h1:has-text("الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني")');
+      const id = Number(pg.url().match(/item\/(\d+)/)[1]);
+      const it = (await apiAs(mgr, 'GET', `/api/items/${id}`)).body.item;
+      const meta = (await apiAs(mgr, 'GET', '/api/meta')).body;
+      const sunday = (() => { const d = new Date(meta.today + 'T12:00:00Z'); let k = (0 - d.getUTCDay() + 7) % 7; if (!k) k = 7; d.setUTCDate(d.getUTCDate() + k); return d.toISOString().slice(0, 10); })();
+      assert(it.priority === 'urgent' && it.due_date === sunday && it.due_time === '10:00' && it.assignee_id === staff.asst && it.deliverable === 'خطاب رد معتمد' && it.source === 'owner',
+        'تفاصيل المهمة غير صحيحة: ' + JSON.stringify({ p: it.priority, d: it.due_date, t: it.due_time, a: it.assignee_id, del: it.deliverable }));
+      assert(String(it.description).includes('النص كما قيل'), 'لم يُحفظ النص الأصلي');
+      // مدير المكتب يُبلَّغ بالمهمة الجديدة
+      const n = (await apiAs(mgr, 'GET', '/api/notifications')).body;
+      assert(n.some(x => x.title.includes('الرد على خطاب الإدارة العامة')), 'لم يُبلَّغ مدير المكتب');
+      await c.close();
+    });
+
     await check('إعادة تعيين كلمة المرور من المنصة: مؤقتة من الشريك، رابط البريد، ورمز الاستعادة', async () => {
       const users = (await apiAs(mgr, 'GET', '/api/admin/users')).body; const ownerId = users.find(u => u.username === 'owner').id;
       // (1) مدير المكتب يُصدر كلمة مؤقتة للمدير: يُطلب تأكيد كلمة مروره هو أولًا
@@ -845,7 +879,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 35 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 36 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);
