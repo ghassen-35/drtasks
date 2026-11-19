@@ -575,7 +575,7 @@ function followRibbonHtml(follow) {
   const paused = localStorage.getItem('ribbons-paused') === '1';
   const due = (i) => (i.due_date ? fmtDate(i.due_date) + (i.due_time ? ' ' + i.due_time : '') : '');
   const one = ({ i, tone, why }) => `<button type="button" class="r-item r-pill ${tone}" data-id="${i.id}" title="${esc(why)}">
-      <span class="r-tag">${I(COLOR_ICON[i.color])}${esc(i.color_label)}</span>${i.section ? `<span class="r-sec">${esc(i.section_name)}</span>` : ''}<b>${esc(i.title)}</b>${due(i) ? `<small>· ${esc(due(i))}</small>` : ''}</button>`;
+      ${i.section ? `<span class="r-sec">${esc(i.section_name)}</span>` : ''}<b>${esc(i.title)}</b>${due(i) ? `<small>· ${esc(due(i))}</small>` : ''}</button>`;
   const content = items.map(one).join('');
   const dur = Math.max(25, items.length * 8);
   return `<section class="ribbon follow ${paused ? 'paused' : ''} ${items.length < 2 ? 'static' : ''}" aria-label="المتابعة: العاجلة ثم مهام اليوم ثم قيد المتابعة">
