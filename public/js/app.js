@@ -77,6 +77,27 @@ const colorLegendHtml = (counts) => `<div class="r-legend small color-legend">${
 const colorKeyHtml = (counts) => `<div class="color-key" aria-label="تفسير الألوان">${['red', 'blue', 'gray'].map(c => `<a class="ck c-${c}" href="#/tasks?scope=open&color=${c}">
     <span class="cbox c-${c}">${I(COLOR_ICON[c])}</span>
     <span class="ck-t"><b>${esc(state.meta.colors[c].label)} <span class="n">${counts[c] || 0}</span></b><small>${esc(state.meta.colors[c].hint)}</small></span></a>`).join('')}</div>`;
+// في صفحة المهمة: هل تظهر في الشريط العلوي؟ بأي لون؟ ولماذا؟ وكيف تصبح «قيد المتابعة»
+function ribbonNote(i) {
+  if (!i.is_open || i.kind === 'note') return '';
+  const canWait = (isManager() || (isMember() && i.kind === 'task')) && !i.closed_at;
+  const howGray = canWait ? `لتصبح «قيد المتابعة» (رمادي) اضغط في الأسفل «بانتظار رد طرف خارجي»${isManager() ? ' أو «طلب اعتماد / قرار»' : ''}.` : '';
+  const waitWhy = ['waiting_reply', 'waiting_info', 'waiting_approval'].includes(i.status) ? `حالتها «${esc(i.status_label)}»` : 'عليها طلب اعتماد لم يُبتّ فيه';
+  let txt;
+  if (i.color === 'red') {
+    const why = [i.priority === 'urgent' && 'أولويتها عاجلة', i.status === 'stalled' && 'حالتها متعثرة', i.is_overdue && 'تجاوزت موعدها'].filter(Boolean).join('، و');
+    txt = `تظهر في الشريط العلوي باللون <b class="t-red">الأحمر «عاجلة»</b>. السبب: ${why}.`;
+  } else if (i.color === 'gray') {
+    txt = `تظهر في الشريط العلوي باللون <b class="t-gray">الرمادي «قيد المتابعة»</b> لأن ${waitWhy}.${i.due_date ? ' وتصبح حمراء إن تجاوزت موعدها.' : ''}`;
+  } else if (i.color === 'blue') {
+    txt = `تظهر في الشريط العلوي باللون <b class="t-blue">الأزرق «مهام اليوم»</b> لأن موعدها اليوم. ${howGray}`;
+  } else if (i.due_date) {
+    txt = `لا تظهر في الشريط العلوي الآن، لأن موعدها لم يحن بعد. ستظهر باللون الأزرق «مهام اليوم» في يوم موعدها (${esc(fmtDate(i.due_date))})، وحمراء إن تأخرت. ${howGray}`;
+  } else {
+    txt = `لا تظهر في الشريط العلوي، لأنها بلا موعد ولا تنتظر أحدًا. حدّد لها موعدًا من «تعديل التفاصيل» لتظهر يوم موعدها. ${howGray}`;
+  }
+  return `<p class="ribbon-note c-${i.color || 'none'}">${I(i.color ? COLOR_ICON[i.color] : 'calendar')}<span>${txt}</span></p>`;
+}
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
   return `<div class="row c-${i.color || 'none'} ${i.status === 'done' ? 'done' : ''}">
     <div class="main">
@@ -1197,6 +1218,7 @@ async function viewItem(main, id) {
         ${i.acknowledged_at ? `<span class="chip st-acknowledged">${I('check')}تم تأكيد الاستلام ${fmtTs(i.acknowledged_at)}</span>` : (i.kind !== 'task' && i.status !== 'cancelled' ? '<span class="chip st-new">لم يُؤكد الاستلام بعد</span>' : '')}
         ${i.requires_approval ? '<span class="chip st-waiting_approval">يتطلب اعتماد النتيجة</span>' : ''}${i.closed_at ? '<span class="chip st-done">مغلقة نهائيًا</span>' : ''}
         ${pendingCount ? `<span class="chip overdue">${I('gavel')}${pendingCount} طلب ينتظر القرار</span>` : ''}</div>
+      ${ribbonNote(i)}
       <dl class="facts">
         ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
