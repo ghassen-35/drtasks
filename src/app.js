@@ -166,7 +166,7 @@ function createApp(P) {
       inbox_pending: c(`SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','note') AND status NOT IN ('done','cancelled') AND (acknowledged_at IS NULL OR kind='assignment')`),
     };
     out.updates = all(`SELECT m.id,m.item_id,m.kind,m.body,m.created_at,u.name AS author_name,i.title AS item_title,i.ref FROM messages m JOIN items i ON i.id=m.item_id LEFT JOIN users u ON u.id=m.author_id
-      WHERE u.role='manager' AND u.member=0 AND (m.kind IN ('update','result','message') OR (m.kind IN ('system','decision') AND m.meta IS NOT NULL)) ORDER BY m.id DESC LIMIT 8`);
+      WHERE m.author_id IS NOT ? AND (m.kind IN ('update','result','message') OR (m.kind IN ('system','decision') AND m.meta IS NOT NULL)) ORDER BY m.id DESC LIMIT 8`, req.user.id);
     out.achievements = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE kind IN ${D.TASK_KINDS} AND status='done' ORDER BY completed_at DESC LIMIT 5`).map(i => D.decorate(i, t));
     out.meetings = all(`SELECT * FROM meetings WHERE status='scheduled' AND starts_at>=? ORDER BY starts_at LIMIT 5`, t);
     return out;

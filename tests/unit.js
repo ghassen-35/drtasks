@@ -114,7 +114,12 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   S.updateItem(owner, tk.id, { priority: 'urgent', due_date: today, category: 'commitment' });
   const ed = S.getItem(tk.id);
   t('رجل الأعمال يعدّل الأولوية والموعد والتصنيف', ed.priority === 'urgent' && ed.due_date === today && ed.category === 'commitment');
-  t('رجل الأعمال لا يغيّر حالة مهمة ليست فرعية', err(() => S.updateItem(owner, tk.id, { status: 'done' })) === 403);
+  // مساحة عمل مشتركة: المدير يغيّر الحالة كما يغيّرها مدير المكتب، ويُسجَّل من فعل ذلك
+  S.updateItem(owner, tk.id, { status: 'in_progress' });
+  t('مدير الشؤون التعليمية يغيّر حالة المهمة مباشرة (مساحة عمل مشتركة) ويُسجَّل اسمه', S.getItem(tk.id).status === 'in_progress'
+    && !!get("SELECT id FROM audit_log WHERE entity='item' AND entity_id=? AND action='status' AND user_id=?", tk.id, owner.id));
+  { const own = S.createTask(owner, { title: 'مهمة أنشأها المدير', section: 'family' });
+    t('ما ينشئه المدير مهمة مباشرة (لا تكليف في صندوق وارد) ومصدرها المدير', own.kind === 'task' && own.source === 'owner'); }
 
   const st = S.createSubtask(owner, tk.id, { title: 'خطوة أولى' });
   t('المهمة الفرعية ترث القسم وتظهر تحت أصلها', st.parent_task_id === tk.id && st.section === 'association' && S.subtasksOf(tk.id).length === 1);

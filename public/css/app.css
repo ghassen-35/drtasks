@@ -532,3 +532,7 @@ details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size:
 .ribbon-note.c-blue { background: var(--c-blue-soft); border-inline-start-color: var(--c-blue); }
 .ribbon-note.c-gray { background: var(--c-gray-soft); border-inline-start-color: var(--c-gray); }
 .t-red { color: var(--c-red); } .t-blue { color: var(--c-blue); } .t-gray { color: var(--c-gray); }
+
+/* صفحة المهمة: تحديث الحالة بخطوة واحدة */
+.item-qs { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-weight: 600; font-size: .9rem; color: var(--ink-2, #334); }
+.item-qs select { width: auto; min-height: 40px; }

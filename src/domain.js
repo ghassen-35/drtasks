@@ -56,18 +56,20 @@ const APPROVAL_KINDS = {
 
 // الصلاحيات تُفحص في الخادم لكل عملية — وليس بإخفاء الأزرار فقط
 // member (عضو فريق): لا يملك item.view العامة، بل item.view_scoped — أي مسار لم يُراعِ الأعضاء صراحةً يرفضهم تلقائيًا
-const PERMS = {
-  owner: new Set([
-    'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
-    'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
-    'folders.view', 'users.manage', 'projects.manage', 'item.edit', 'directives.view', 'directives.manage',
-  ]),
-  manager: new Set([
+// مساحة عمل إدارية واحدة: مدير الشؤون التعليمية ومدير المكتب يعملان على البيانات نفسها بالصلاحيات التشغيلية نفسها.
+// الفرق الوحيد: القرار (الاعتماد/الرفض) لمدير الشؤون التعليمية، ومدير المكتب يسجّل القرار نيابةً عنه إذا ورده بقناة أخرى.
+const MANAGER_PERMS = [
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
     'reports.view', 'meetings.view', 'meetings.manage', 'sops.view', 'sops.manage',
     'partners.view', 'partners.manage', 'contacts.view', 'projects.manage', 'folders.view', 'users.manage',
     'directives.view', 'directives.manage', 'approval.record',
+];
+const PERMS = {
+  owner: new Set([
+    ...MANAGER_PERMS.filter(p => !['approval.request', 'approval.record'].includes(p)),
+    'approval.decide', 'item.edit', 'assignment.create', 'note.create', 'item.cancel_own',
   ]),
+  manager: new Set(MANAGER_PERMS),
   member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
 // صلاحيات يمنحها مدير المكتب لكل موظف (فوق صلاحياته الأساسية). أي صلاحية خارج هذه القائمة تُتجاهل
