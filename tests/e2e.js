@@ -794,7 +794,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       // محاكاة خدمة الكلام في الجهاز: تعيد الجملة المنطوقة على دفعتين (مؤقتة ثم نهائية) كما يفعل الجوال
       await c.addInitScript(() => {
         class FakeSR { constructor() { this.lang = ''; } start() { setTimeout(() => {
-          const said = 'عاجل، الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني يوم الأحد الساعة عشرة صباحا، مساعد الاختبار، والمطلوب خطاب رد معتمد';
+          const said = window.__said || 'عاجل، الرد على خطاب الإدارة العامة بخصوص خطة الفصل الثاني يوم الأحد الساعة عشرة صباحا، مساعد الاختبار، والمطلوب خطاب رد معتمد';
           const ev = (fin, txt) => ({ results: Object.assign([Object.assign([{ transcript: txt }], { isFinal: fin })], {}) });
           this.onresult && this.onresult(ev(false, said.slice(0, 20)));
           setTimeout(() => { this.onresult && this.onresult(ev(true, said)); this.onend && this.onend(); }, 150);
@@ -817,6 +817,24 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(it.priority === 'urgent' && it.due_date === sunday && it.due_time === '10:00' && it.assignee_id === staff.asst && it.deliverable === 'خطاب رد معتمد' && it.source === 'owner',
         'تفاصيل المهمة غير صحيحة: ' + JSON.stringify({ p: it.priority, d: it.due_date, t: it.due_time, a: it.assignee_id, del: it.deliverable }));
       assert(String(it.description).includes('النص كما قيل'), 'لم يُحفظ النص الأصلي');
+      // جملة قصيرة ناقصة: تظهر أسئلة سريعة لما لم يُذكر، ويُجاب عنها بضغطات
+      await pg.evaluate(() => { window.__said = 'متابعة توقيع عقد التدريب'; });
+      await pg.click('#btnVoice');
+      await pg.waitForFunction(() => (document.querySelector('#vtitle') || {}).value === 'متابعة توقيع عقد التدريب', null, { timeout: 8000 });
+      await pg.waitForSelector('#vq .vq-row[data-q=assignee]');
+      for (const k of ['section', 'assignee', 'date', 'priority']) assert(await pg.$(`#vq .vq-row[data-q=${k}]`), 'لم يظهر سؤال: ' + k);
+      await pg.click('#vq .vq-row[data-q=section] .vq-btn:has-text("الجمعية")');
+      await pg.click('#vq .vq-row[data-q=assignee] .vq-btn:has-text("مساعد الاختبار")');
+      await pg.click('#vq .vq-row[data-q=date] .vq-btn:has-text("غدًا")');
+      await pg.click('#vq .vq-row[data-q=priority] .vq-btn:has-text("مهمة")');
+      if (await pg.$('#vq .vq-row[data-q=place]')) await pg.click('#vq .vq-row[data-q=place] .vq-btn:has-text("مهمة مستقلة")');
+      await pg.waitForSelector('#vq .vq-done');
+      await pg.screenshot({ path: path.join(SHOTS, '10-voice-questions-mobile.png') });
+      await pg.click('.modal button[type=submit]');
+      await pg.waitForSelector('h1:has-text("متابعة توقيع عقد التدريب")');
+      const it2 = (await apiAs(mgr, 'GET', `/api/items/${Number(pg.url().match(/item\/(\d+)/)[1])}`)).body.item;
+      const tomorrow = (() => { const d = new Date(meta.today + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); })();
+      assert(it2.section === 'association' && it2.assignee_id === staff.asst && it2.due_date === tomorrow && it2.priority === 'important', 'إجابات الأسئلة لم تُحفظ: ' + JSON.stringify({ s: it2.section, a: it2.assignee_id, d: it2.due_date, p: it2.priority }));
       // مدير المكتب يُبلَّغ بالمهمة الجديدة
       const n = (await apiAs(mgr, 'GET', '/api/notifications')).body;
       assert(n.some(x => x.title.includes('الرد على خطاب الإدارة العامة')), 'لم يُبلَّغ مدير المكتب');

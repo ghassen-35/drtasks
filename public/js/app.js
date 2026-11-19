@@ -2206,7 +2206,9 @@ function modalVoice() {
   const defSec = (secs.find(x => x.key === lastSec) || secs[0] || {}).key;
   const canSR = !!SpeechRec;
   const canRec = !!(window.MediaRecorder && navigator.mediaDevices);
-  const FOUND = { priority: 'الأولوية', date: 'الموعد', time: 'الوقت', assignee: 'المسؤول', section: 'القسم', recurrence: 'التكرار', deliverable: 'المخرج المطلوب' };
+  const FOUND = { priority: 'الأولوية', date: 'الموعد', time: 'الوقت', assignee: 'المسؤول', section: 'القسم', place: 'المكان', recurrence: 'التكرار', deliverable: 'المخرج المطلوب' };
+  let places = [];
+  const KIND = { project: 'مشروع', initiative: 'مبادرة', folder: 'مجلد' };
   const m = openModal({
     title: 'مهمة بالصوت', submit: 'إنشاء المهمة', wide: true, confirmClose: false,
     body: `<div class="voice-stage">
@@ -2217,11 +2219,13 @@ function modalVoice() {
       <label class="f"><span>ما قلته (يمكنك تعديله)</span><textarea name="transcript" id="vtext" rows="3" placeholder="سيظهر كلامك هنا…"></textarea></label>
       <div class="voice-files hidden" data-ids="[]"><div class="files"></div></div>
       <div class="voice-found" id="vfound"></div>
+      <div class="voice-q hidden" id="vq" aria-live="polite"></div>
       <div class="voice-preview">
         <div class="small muted" style="margin-bottom:6px">ستُنشأ المهمة هكذا — عدّل ما تشاء قبل الإنشاء:</div>
         ${field('العنوان *', '<input type="text" name="title" id="vtitle" maxlength="300" required>')}
         <div class="grid2">
           ${field('القسم *', `<select name="section" id="vsec">${secs.map(x => opt(x.key, x.name, defSec)).join('')}</select>`)}
+          ${field('المكان داخل القسم', '<select name="place" id="vplace"></select>')}
           ${field('المسؤول', `<select name="assignee_id" id="vass">${opt('', '— يحدده مدير المكتب لاحقًا —')}${people.map(u => opt(u.id, u.name + (u.id === state.me.id ? ' (أنا)' : ''))).join('')}</select>`)}
           ${field('الموعد', '<input type="date" name="due_date" id="vdate">')}
           ${field('الوقت', '<input type="time" name="due_time" id="vtime">')}
@@ -2237,20 +2241,71 @@ function modalVoice() {
   });
   const f = m.form;
   const box = $('#vtext', f), mic = $('#vmic', f), st = $('#vst', f), found = $('#vfound', f);
-  const el = { title: $('#vtitle', f), section: $('#vsec', f), assignee_id: $('#vass', f), due_date: $('#vdate', f), due_time: $('#vtime', f), recurrence: $('#vrec', f), deliverable: $('#vdel', f) };
+  const el = { title: $('#vtitle', f), section: $('#vsec', f), place: $('#vplace', f), assignee_id: $('#vass', f), due_date: $('#vdate', f), due_time: $('#vtime', f), recurrence: $('#vrec', f), deliverable: $('#vdel', f) };
   const touched = new Set();
-  Object.entries(el).forEach(([k, x]) => x.addEventListener('input', () => touched.add(k)));
+  const answered = new Set();
+  const placeOptions = () => {
+    const cur = el.place.value; const inSec = places.filter(x => x.section === el.section.value);
+    el.place.innerHTML = opt('', '— بدون (مهمة مستقلة في القسم) —') + inSec.map(x => { const k = KIND[x.kind] || 'مشروع'; const n = x.kind === 'folder' ? x.path : x.name; return opt((x.kind === 'folder' ? 'f:' : 'p:') + x.id, VoiceTask.norm(n).startsWith(VoiceTask.norm(k)) ? n : `${k}: ${n}`); }).join('');
+    if ([...el.place.options].some(o => o.value === cur)) el.place.value = cur;
+  };
+  placeOptions();
+  el.section.addEventListener('change', () => { placeOptions(); apply(); });
+  Object.entries(el).forEach(([k, x]) => { x.addEventListener('input', () => { touched.add(k); renderQuestions(); }); x.addEventListener('change', () => { touched.add(k); renderQuestions(); }); });
   $$('input[name=priority]', f).forEach(x => x.addEventListener('change', () => touched.add('priority')));
   // كل تغيير في النص يعيد تعبئة ما لم يعدّله المستخدم بيده
   const apply = () => {
-    const r = VoiceTask.parseVoiceTask(box.value, { today: state.meta.today, people, sections: secs });
+    const r = VoiceTask.parseVoiceTask(box.value, { today: state.meta.today, people, sections: secs, places });
     const set = (k, v) => { if (!touched.has(k) && v != null) el[k].value = v; };
     set('title', r.title); set('due_date', r.due_date || ''); set('due_time', r.due_time || ''); set('deliverable', r.deliverable || ''); set('recurrence', r.recurrence || '');
     if (r.assignee_id) set('assignee_id', String(r.assignee_id)); else if (!touched.has('assignee_id')) el.assignee_id.value = '';
-    if (r.section) set('section', r.section);
+    if (r.section && !touched.has('section') && el.section.value !== r.section) { el.section.value = r.section; placeOptions(); }
+    if (r.place) set('place', r.place);
     if (!touched.has('priority')) { const pr = $(`input[name=priority][value=${r.priority}]`, f); if (pr) pr.checked = true; }
     found.innerHTML = r.found.length ? `<span class="small muted">فهمت:</span> ${[...new Set(r.found)].map(k => `<span class="chip col-blue">${I('check')}${FOUND[k]}</span>`).join('')}` : '';
+    lastParse = r; renderQuestions();
   };
+  // ===== أسئلة سريعة لما بقي غير واضح: كل سؤال يُجاب بضغطة واحدة =====
+  let lastParse = null;
+  const qbox = $('#vq', f);
+  const quickDates = [['اليوم', 0], ['غدًا', 1], ['بعد 3 أيام', 3], ['بعد أسبوع', 7]];
+  const dayPlus = (n) => { const d = new Date(state.meta.today + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+  function renderQuestions() {
+    const r = lastParse || { found: [] };
+    const spoken = box.value.trim() || JSON.parse(vf.dataset.ids).length;
+    if (!spoken) { qbox.classList.add('hidden'); return; }
+    const has = (k) => r.found.includes(k) || touched.has({ date: 'due_date', assignee: 'assignee_id' }[k] || k) || answered.has(k);
+    const qs = [];
+    if (!has('section') && secs.length > 1) qs.push({ k: 'section', q: 'في أي قسم؟', a: secs.map(x => [x.key, x.name]) });
+    const inSec = places.filter(x => x.section === el.section.value);
+    // المكان يُسأل عنه بعد معرفة القسم؛ المبادرات والمشاريع أولًا ثم المجلدات، ودون تكرار كلمة «مشروع: مشروع …»
+    const plLabel = (x) => { const k = KIND[x.kind] || 'مشروع'; return VoiceTask.norm(x.name).startsWith(VoiceTask.norm(k)) ? x.name : `${k}: ${x.name}`; };
+    if (!has('place') && (has('section') || secs.length === 1) && inSec.length) qs.push({ k: 'place', q: 'أين تضعها داخل القسم؟', a: [['', 'مهمة مستقلة'], ...[...inSec.filter(x => x.kind !== 'folder'), ...inSec.filter(x => x.kind === 'folder')].slice(0, 7).map(x => [(x.kind === 'folder' ? 'f:' : 'p:') + x.id, plLabel(x)])] });
+    if (!has('assignee')) qs.push({ k: 'assignee', q: 'من المسؤول عنها؟', a: [...people.slice(0, 8).map(u => [String(u.id), u.id === state.me.id ? 'أنا' : u.name]), ['', isOwner() ? 'يحدده مدير المكتب' : 'لاحقًا']] });
+    if (!has('date')) qs.push({ k: 'date', q: 'متى موعدها؟', a: [...quickDates.map(([l, n]) => [dayPlus(n), l]), ['', 'بلا موعد']] });
+    if (!has('priority')) qs.push({ k: 'priority', q: 'ما أولويتها؟', a: [['normal', 'عادية'], ['important', 'مهمة'], ['urgent', 'عاجلة']] });
+    if (!qs.length) { qbox.innerHTML = `<div class="vq-done">${I('checkCircle')} اكتملت تفاصيل المهمة — راجعها ثم اضغط «إنشاء المهمة»</div>`; qbox.classList.remove('hidden'); return; }
+    qbox.innerHTML = `<div class="vq-h">${I('flag')} بقيت ${qs.length === 1 ? 'تفصيلة واحدة' : qs.length === 2 ? 'تفصيلتان' : qs.length + ' تفاصيل'} — اضغط الإجابة</div>` +
+      qs.map(x => `<div class="vq-row" data-q="${x.k}"><div class="vq-q">${esc(x.q)}</div><div class="vq-a">${x.a.map(([v, l]) => `<button type="button" class="chip link vq-btn" data-v="${esc(v)}">${esc(l)}</button>`).join('')}</div></div>`).join('');
+    const wasHidden = qbox.classList.contains('hidden'); qbox.classList.remove('hidden');
+    if (wasHidden && !listening) setTimeout(() => qbox.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 50);
+    $$('.vq-row', qbox).forEach(row => $$('.vq-btn', row).forEach(b => b.onclick = () => answer(row.dataset.q, b.dataset.v)));
+  }
+  function answer(k, v) {
+    answered.add(k);
+    if (k === 'section') { el.section.value = v; touched.add('section'); placeOptions(); }
+    else if (k === 'place') { el.place.value = v; touched.add('place'); }
+    else if (k === 'assignee') { el.assignee_id.value = v; touched.add('assignee_id'); }
+    else if (k === 'date') { el.due_date.value = v; touched.add('due_date'); }
+    else if (k === 'priority') { const pr = $(`input[name=priority][value=${v}]`, f); if (pr) pr.checked = true; touched.add('priority'); }
+    renderQuestions();
+  }
+  // تحميل أماكن القسم (المشاريع والمبادرات والمجلدات) في الخلفية
+  Promise.all([GET('/api/projects').catch(() => []), can('folders.view') ? GET('/api/folders').catch(() => []) : Promise.resolve([])]).then(([pr, fo]) => {
+    places = [...pr.filter(x => x.status !== 'done').map(x => ({ kind: x.kind || 'project', id: x.id, name: x.name, section: x.section, folder_id: x.folder_id })),
+      ...folderPaths(fo).map(x => ({ kind: 'folder', id: x.id, name: x.name, path: x.path, section: x.section }))];
+    placeOptions(); apply();
+  });
   box.addEventListener('input', apply);
 
   // التحويل إلى نص
@@ -2269,7 +2324,7 @@ function modalVoice() {
       st.textContent = msg;
       if (['service-not-allowed', 'network'].includes(e.error) && canRec) { switchToRecording(); }
     };
-    rec.onend = () => { setMic(false); if (box.value.trim()) st.textContent = 'تمّ. راجِع التفاصيل ثم اضغط «إنشاء المهمة» — أو اضغط الميكروفون لإكمال الكلام'; };
+    rec.onend = () => { setMic(false); if (box.value.trim()) { st.textContent = 'تمّ. أجب عن الأسئلة السريعة إن ظهرت، ثم «إنشاء المهمة» — أو اضغط الميكروفون لإكمال الكلام'; if (!qbox.classList.contains('hidden')) qbox.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } };
     try { rec.start(); setMic(true); st.textContent = 'أستمع… تحدّث بطبيعتك، ثم اضغط الزر عند الانتهاء'; } catch { st.textContent = 'تعذر بدء الاستماع'; }
   }
   // البديل: تسجيل صوتي يُرفق بالمهمة
@@ -2291,7 +2346,7 @@ function modalVoice() {
           const ids = JSON.parse(vf.dataset.ids); up.forEach(x => ids.push(x.id)); vf.dataset.ids = JSON.stringify(ids); vf.classList.remove('hidden');
           $('.files', vf).insertAdjacentHTML('beforeend', up.map(x => `<span class="file">${I('mic')}<span>${esc(x.original_name)}</span></span>`).join(''));
           if (!el.title.value.trim() && !touched.has('title')) el.title.value = `مهمة صوتية من ${state.me.name} — ${new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit' }).format(new Date())}`;
-          st.textContent = 'حُفظ التسجيل. أضف عنوانًا مختصرًا إن شئت، ثم «إنشاء المهمة»';
+          st.textContent = 'حُفظ التسجيل. أجب عن الأسئلة السريعة، وأضف عنوانًا مختصرًا إن شئت، ثم «إنشاء المهمة»'; renderQuestions();
         } catch (e) { showErr(e); }
       };
       mr.start(); setMic(true); st.textContent = 'أسجّل… اضغط الزر عند الانتهاء';
@@ -2313,6 +2368,8 @@ function modalVoice() {
       description: (d.transcript || '').trim() ? `سُجّلت بالصوت. النص كما قيل:\n${d.transcript.trim()}` : (fileIds.length ? 'سُجّلت صوتيًا — استمع إلى التسجيل المرفق.' : undefined),
       file_ids: fileIds };
     if (d.assignee_id) { body.assignee_id = Number(d.assignee_id); body.assignee = (people.find(u => u.id === body.assignee_id) || {}).name; }
+    if (d.place && d.place.startsWith('p:')) { const pl = places.find(x => x.kind !== 'folder' && String(x.id) === d.place.slice(2)); body.project_id = Number(d.place.slice(2)); if (pl && pl.folder_id) body.folder_id = pl.folder_id; }
+    else if (d.place && d.place.startsWith('f:')) body.folder_id = Number(d.place.slice(2));
     const it = await POST('/api/tasks', body);
     try { localStorage.setItem('voice-section', d.section); } catch { /* اختياري */ }
     toast(`أُنشئت المهمة ${it.ref} من الصوت`, 'ok');
@@ -2323,7 +2380,7 @@ function modalVoice() {
     const err = $('.err-box', f); err.classList.add('hidden');
     try {
       await create(formData(f));
-      box.value = ''; touched.clear(); Object.values(el).forEach(x => { if (x !== el.section) x.value = ''; });
+      box.value = ''; touched.clear(); answered.clear(); lastParse = null; Object.values(el).forEach(x => { if (x !== el.section) x.value = ''; }); qbox.classList.add('hidden');
       const pn = $('input[name=priority][value=normal]', f); if (pn) pn.checked = true;
       vf.dataset.ids = '[]'; $('.files', vf).innerHTML = ''; vf.classList.add('hidden'); found.innerHTML = '';
       refreshView(); if (mode === 'sr') startSR();
