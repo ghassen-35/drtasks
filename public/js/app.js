@@ -16,7 +16,7 @@ async function api(method, url, body) {
   let data = null; try { data = await res.json(); } catch { }
   // انتهت الجلسة: تظهر شاشة الدخول ويُترك الطلب معلقًا (لا خطأ غير ملتقط من طلبات خلفية متزامنة)
   if (res.status === 401 && url !== '/api/login') { if (state.me) { state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); } else if (!$('#lf')) renderLogin(); return new Promise(() => { }); }
-  if (!res.ok) throw new Error((data && data.error) || 'تعذر تنفيذ الطلب');
+  if (!res.ok) { const e = new Error((data && data.error) || 'تعذر تنفيذ الطلب'); e.status = res.status; throw e; }
   return data;
 }
 const GET = (u) => api('GET', u);
@@ -116,7 +116,7 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
         ${demoChip(i)}
         <span class="txt ltr">${esc(i.ref)}</span>
         ${i.assignee ? `<span class="txt">المسؤول: ${esc(i.assignee)}</span>` : ''}
-        ${showUpdated ? `<span class="txt">آخر تحديث: ${fmtTs(i.updated_at)}</span>` : ''}
+        ${showUpdated ? `<span class="txt">آخر تحديث: ${fmtTs(i.updated_at)}${i.updated_by_name ? ` — ${esc(i.updated_by_name)}` : ''}</span>` : ''}
       </div>
       ${i.next_step ? `<div class="small muted" style="margin-top:4px">الخطوة التالية: ${esc(i.next_step)}</div>` : ''}
     </div>
@@ -1198,7 +1198,7 @@ async function viewItem(main, id) {
         ${i.directive_id ? fact('ضمن التوجيه', can('directives.view') ? `<a href="#/directive/${i.directive_id}">${esc(i.directive_ref)}</a>` : esc(i.directive_ref || '')) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
         ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
-        ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
+        ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at) + (i.updated_by_name ? ` — ${esc(i.updated_by_name)}` : ''))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
         ${data.meeting ? fact('صادرة عن اجتماع', `<a href="#/meeting/${data.meeting.id}">${esc(data.meeting.title)}</a>`) : ''}
@@ -1565,7 +1565,16 @@ async function modalTask(i, after) {
       if (!d.section) throw new Error('اختر القسم');
       applyTaskType(d); applyAssignee(d);
       if (!can('partners.view')) delete d.partner_id; // لا يمسح ربطًا لا يراه
-      if (editing) { delete d.file_ids; await api('PATCH', `/api/items/${i.id}`, d); toast('حُفظت التعديلات', 'ok'); after && after(); }
+      if (editing) {
+        delete d.file_ids;
+        // نرسل ما غيّره المستخدم فقط، مع وقت آخر نسخة رآها: فلا نكتب فوق تعديل زميل على حقل آخر من جهاز آخر
+        const norm = (v) => v === true ? '1' : v === false ? '0' : String(v ?? '');
+        for (const k of Object.keys(d)) if (k in i && norm(d[k]) === norm(i[k])) delete d[k];
+        if (!Object.keys(d).length) { toast('لا توجد تغييرات للحفظ'); return; }
+        d.base_updated_at = i.updated_at;
+        await api('PATCH', `/api/items/${i.id}`, d).catch(e => { if (e.status === 409) { refreshView(); after && after(); } throw e; });
+        toast('حُفظت التعديلات', 'ok'); after && after();
+      }
       else { const it = await POST('/api/tasks', d); toast(`أُنشئت المهمة ${it.ref}`, 'ok'); location.hash = `#/item/${it.id}`; }
       refreshView();
     },

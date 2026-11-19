@@ -378,6 +378,20 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('إعادة التطبيق لا تكرر شيئًا', again.folders === 0 && again.tasks === 0 && again.skipped === 39);
 }
 
+// ---- منع تعارض التعديل من جهازين (دمج على مستوى الحقل)
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status; } };
+  const x = S.createTask(mgr, { title: 'تعارض', section: 'family', priority: 'normal' });
+  const base = S.getItem(x.id).updated_at;
+  const t0 = Date.now(); while (Date.now() - t0 < 5) { /* انتظار ملي ثانية حتى يختلف الوقت */ }
+  S.updateItem(mgr, x.id, { title: 'تعارض — عدّله مدير المكتب' });
+  t('تعديل الحقل نفسه بعد تعديل زميل يُرفض برسالة واضحة (409) ولا يكتب فوقه',
+    err(() => S.updateItem(owner, x.id, { title: 'عنوان المدير', base_updated_at: base })) === 409 && S.getItem(x.id).title === 'تعارض — عدّله مدير المكتب');
+  S.updateItem(owner, x.id, { priority: 'urgent', base_updated_at: base });
+  const y = S.getItem(x.id);
+  t('تعديل حقل آخر من النسخة نفسها يُحفظ ويُبقي تعديل الزميل', y.priority === 'urgent' && y.title === 'تعارض — عدّله مدير المكتب');
+}
+
 // ---- ألوان المهام المعتمدة: أحمر عاجلة، أزرق مستحقة، رمادي معلقة
 {
   const c = (b, st) => { const x = S.createTask(mgr, { section: 'family', ...b }); if (st) S.updateItem(mgr, x.id, { status: st, status_note: 'سبب' }); return S.getItem(x.id).color; };

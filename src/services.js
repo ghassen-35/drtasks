@@ -8,6 +8,7 @@ const events = require('./events');
 class AppError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const bad = (m) => new AppError(400, m);
 const forbidden = (m = 'ليست لديك صلاحية لهذا الإجراء') => new AppError(403, m);
+const conflict = (m) => new AppError(409, m);
 const notFound = (m = 'العنصر غير موجود') => new AppError(404, m);
 function require_(user, perm) { if (!D.can(user, perm)) throw forbidden(); }
 
@@ -272,7 +273,7 @@ function updateItem(user, id, b) {
     // عضو الفريق: يحدّث حالة المهام التي يراها، وضمن حالات العمل؛ وتعديل التفاصيل لمن مُنح item.edit
     require_(user, 'item.work'); assertCanSee(user, it);
     if (it.kind !== 'task') throw forbidden('التكليفات والملاحظات يعالجها مدير المكتب');
-    const allowed = ['status', 'status_note', 'complete_subtasks', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
+    const allowed = ['status', 'status_note', 'complete_subtasks', 'base_updated_at', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
     if (Object.keys(b).some(k => !allowed.includes(k))) throw forbidden('ليست لديك صلاحية تعديل هذا الحقل');
     if (b.status !== undefined && b.status !== it.status) {
       if (it.status === 'cancelled') throw forbidden('المهمة ملغاة؛ إعادة فتحها لمدير المكتب');
@@ -282,6 +283,16 @@ function updateItem(user, id, b) {
     if (!D.can(user, 'partners.view')) { b = { ...b }; delete b.partner_id; } // لا يغيّر ربطًا لا يراه
   } else require_(user, 'item.manage');
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا');
+  // منع تعارض التعديل من جهازين: إن عدّل شخص آخر الحقل نفسه بعد أن فتح المستخدم المهمة، لا نكتب فوق تعديله.
+  // الحقول التي لم يلمسها الآخر تُحفظ عادي (دمج على مستوى الحقل).
+  if (b.base_updated_at) {
+    const fields = [...EDITABLE, 'folder_id', 'assignee_id', 'status'].filter(k => b[k] !== undefined);
+    const clash = fields.length ? get(`SELECT a.field, u.name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id
+      WHERE a.entity='item' AND a.entity_id=? AND a.action IN ('updated','status') AND a.created_at>? AND a.user_id IS NOT ? AND a.field IN (${fields.map(() => '?').join(',')})
+      ORDER BY a.id DESC LIMIT 1`, id, String(b.base_updated_at), user.id, ...fields) : null;
+    if (clash) throw conflict(`عدّل ${clash.name || 'مستخدم آخر'} «${FIELD_LABELS[clash.field] || (clash.field === 'status' ? 'الحالة' : clash.field === 'folder_id' ? 'المجلد' : clash.field === 'assignee_id' ? 'المسؤول' : clash.field)}» في هذه المهمة قبل لحظات. حدّثنا البيانات أمامك؛ راجعها ثم أعد تعديلك إن لزم.`);
+    b = { ...b }; delete b.base_updated_at;
+  }
   // نقل المهمة إلى قسم آخر يفك ربطها بمشروع من القسم القديم
   const newSection = b.section !== undefined ? validSection(b.section) : it.section;
   if (b.project_id === undefined && it.project_id && newSection !== it.section && it.project_section !== newSection) b = { ...b, project_id: null };

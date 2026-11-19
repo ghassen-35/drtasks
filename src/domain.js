@@ -183,6 +183,7 @@ const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,
   (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled') AS subtasks_total,
   (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status='done') AS subtasks_done,
   (SELECT f.name FROM folders f WHERE f.id=i.folder_id) AS folder_name,
+  (SELECT u.name FROM users u WHERE u.id=i.updated_by) AS updated_by_name,
   (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending') AS pending_approvals,
   (SELECT p.name FROM projects p WHERE p.id=i.project_id) AS project_name,
   (SELECT COUNT(*) FROM files f WHERE f.item_id=i.id) AS files_count`;
