@@ -551,3 +551,6 @@ a.chip.link { text-decoration: none; cursor: pointer; } a.chip.link:hover { filt
 .kpi.gray b { color: var(--c-gray); } .kpi.green b { color: var(--green); }
 
 .tile .st[data-go] { cursor: pointer; } .tile .st[data-go]:hover { outline: 2px solid var(--brand-2); outline-offset: -2px; }
+
+.kpis.compact { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+@media (max-width: 640px) { .kpis.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; } .kpis.compact .kpi { padding: 10px 8px; } .kpis.compact .kpi b { font-size: 1.4rem; } .kpis.compact .kpi span { font-size: .78rem; } }

@@ -1206,12 +1206,12 @@ async function viewItem(main, id) {
       ${ribbonNote(i)}
       ${quickStatus(i) ? `<label class="item-qs no-print"><span>تحديث الحالة</span>${quickStatus(i)}</label>` : ''}
       <dl class="facts">
-        ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
+        ${fact('القسم', `<a href="#/section/${esc(i.section)}">${esc(i.section_name)}</a>`)}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', i.project_id && i.project_name ? `<a href="#/tasks?project_id=${i.project_id}&label=${encodeURIComponent(i.project_name)}">${esc(i.project_name)}</a>` : '')}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
         ${i.deliverable ? fact('المخرج المطلوب', esc(i.deliverable)) : ''}
         ${i.directive_id ? fact('ضمن التوجيه', can('directives.view') ? `<a href="#/directive/${i.directive_id}">${esc(i.directive_ref)}</a>` : esc(i.directive_ref || '')) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
-        ${fact('المسؤول عن التنفيذ', i.assignee ? personLink(i) : '')}${fact('القسم', `<a href="#/section/${esc(i.section)}">${esc(sectionName(i.section))}</a>`)}${i.folder_id && i.folder_name ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : ''}${i.project_id && i.project_name ? fact('المشروع', `<a href="#/tasks?project_id=${i.project_id}&label=${encodeURIComponent(i.project_name)}">${esc(i.project_name)}</a>`) : ''}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
+        ${fact('المسؤول عن التنفيذ', i.assignee ? personLink(i) : '')}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
         ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at) + (i.updated_by_name ? ` — ${esc(i.updated_by_name)}` : ''))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
@@ -2089,7 +2089,7 @@ async function viewPerson(main, id) {
     const base = `#/tasks?assignee_id=${p.id}&label=${encodeURIComponent('مهام ' + p.name)}`;
     main.innerHTML = `<div class="page-h">${I('users')}<h1>${esc(p.name)}</h1>${p.title ? `<span class="chip">${esc(p.title)}</span>` : ''}${!p.active ? '<span class="chip overdue">موقوف</span>' : ''}<span class="spacer"></span>
         ${can('task.create') ? `<button class="btn primary" id="assign">${I('plus')} مهمة له</button>` : ''}</div>
-      <div class="kpis section-gap">${k('blue', c.open, 'مفتوحة', base + '&scope=open')}${k('red', c.overdue, 'متأخرة', base + '&scope=overdue')}${k('blue', c.today, 'اليوم', base + '&scope=today')}${k('gray', c.waiting, 'قيد المتابعة', base + '&scope=open&color=gray')}${k('green', c.done_month, 'أنجزها هذا الشهر', base + '&scope=closed')}</div>
+      <div class="kpis compact section-gap">${k('blue', c.open, 'مفتوحة', base + '&scope=open')}${k('red', c.overdue, 'متأخرة', base + '&scope=overdue')}${k('blue', c.today, 'اليوم', base + '&scope=today')}${k('gray', c.waiting, 'قيد المتابعة', base + '&scope=open&color=gray')}${k('green', c.done_month, 'أنجزها هذا الشهر', base + '&scope=closed')}</div>
       <div class="card section-gap"><div class="card-h">${I('list')}<h2>المهام المفتوحة</h2><span class="chip">${p.open.length}</span><span class="spacer"></span><a class="btn sm" href="${base}">كل مهامه</a></div>
         ${listOrEmpty(p.open, i => itemRow(i, { actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مفتوحة مسندة إليه')}</div>
       <div class="card"><div class="card-h">${I('checkCircle')}<h2>آخر ما أنجزه</h2></div>${listOrEmpty(p.done_recent, i => itemRow(i), 'لا يوجد بعد')}</div>`;
