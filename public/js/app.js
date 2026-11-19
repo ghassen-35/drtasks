@@ -52,8 +52,10 @@ const dueChip = (i) => !i.due_date ? '' : `<span class="chip ${i.is_overdue ? 'o
 const kindLabel = (i) => i.kind === 'assignment' ? 'تكليف' : i.kind === 'note' ? (i.msg_type_label || 'ملاحظة') : 'مهمة';
 const sectionName = (k) => (state.meta.sections.find(s => s.key === k) || {}).name || '—';
 const demoChip = (x) => x.is_demo ? '<span class="chip demo">بيانات تجريبية</span>' : '';
-// التحية: الحساب الأعلى يُحيّا بكنيته («مرحبًا أبا صالح»)، والبقية بأسمائهم
-const hello = () => state.me.role === 'owner' && state.meta && state.meta.owner_greeting ? `مرحبًا ${state.meta.owner_greeting}` : `مرحبًا، ${state.me.name}`;
+// التحية: الحساب الأعلى بعباراته المعتمدة بينها فاصل، والبقية بأسمائهم (تُرجع HTML آمنًا)
+const hello = () => state.me.role === 'owner' && state.meta && state.meta.owner_greeting
+  ? state.meta.owner_greeting.split('|').map(x => x.trim()).filter(Boolean).map(x => `<span class="g-part">${esc(x)}</span>`).join('<span class="g-sep" aria-hidden="true">·</span>')
+  : esc(`مرحبًا، ${state.me.name}`);
 const OT = () => (state.meta && state.meta.owner_title) || 'مدير الشؤون التعليمية'; // مسمى الحساب الأعلى
 const isOwner = () => state.me.role === 'owner';
 const isManager = () => state.me.role === 'manager';
@@ -592,7 +594,7 @@ async function viewHome(main) {
     const [h, pend] = await Promise.all([GET('/api/home'), isOwner() ? GET('/api/approvals?status=pending') : Promise.resolve([])]);
     if (h.member) { // عضو فريق: ما يخصه فقط
       main.innerHTML = `
-        <div class="hello"><h1>${esc(hello())}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
+        <div class="hello"><h1>${hello()}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
         ${notifBannerHtml()}
         ${followRibbonHtml(h.follow_ribbon)}
         <div class="card section-gap"><div class="card-h">${I('list')}<h2>مهامي المفتوحة</h2><span class="chip">${h.my_items.length}</span><span class="spacer"></span><a class="btn sm" href="#/tasks">كل مهامي</a></div>
@@ -604,7 +606,7 @@ async function viewHome(main) {
     }
     const s = h.summary;
     const cmdLink = `<a class="cmd-link section-gap" href="#/command">${I('chart')}<span><b>لوحة القيادة</b><small>المؤشرات، ما يحتاج تدخلك، توزيع العمل، والتوجيهات</small></span>${I('back', 'chev')}</a>`;
-    let roleHtml = cmdLink;
+    let roleHtml = '';
     if (isOwner()) {
       roleHtml += `
       <div class="card section-gap"><div class="card-h"><h2>ملخص المكتب</h2></div>
@@ -649,9 +651,10 @@ async function viewHome(main) {
       </div>`;
     }
     main.innerHTML = `
-      <div class="hello"><h1>${esc(hello())}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
+      <div class="hello"><h1>${hello()}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
       ${notifBannerHtml()}
       ${followRibbonHtml(h.follow_ribbon)}
+      ${cmdLink}
       <div class="tiles">${h.tiles.map(tileHtml).join('')}</div>
       ${roleHtml}`;
     bindRibbons(main); bindInboxActions(main); bindTileAdd(main); bindNotifBanner(main);
