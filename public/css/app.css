@@ -519,3 +519,11 @@ details.more-opts > summary { cursor: pointer; color: var(--brand-2); font-size:
 .hello h1 .g-part { display: inline-block; }
 .hello h1 .g-sep { color: var(--brand-2); margin: 0 .35em; font-weight: 400; }
 @media (max-width: 640px) { .hello h1:has(.g-part) { font-size: clamp(.95rem, 4.3vw, 1.6rem); } }
+
+/* صفحة المهمة: سطر يوضح ظهورها في الشريط ولونها */
+.ribbon-note { display: flex; gap: 8px; align-items: flex-start; margin: 10px 0 0; padding: 9px 12px; border-radius: 10px; background: var(--gray-soft, #eef1f4); font-size: .88rem; line-height: 1.6; border-inline-start: 4px solid var(--line); }
+.ribbon-note svg.i { width: 18px; height: 18px; flex: none; margin-top: 3px; }
+.ribbon-note.c-red { background: var(--c-red-soft); border-inline-start-color: var(--c-red); }
+.ribbon-note.c-blue { background: var(--c-blue-soft); border-inline-start-color: var(--c-blue); }
+.ribbon-note.c-gray { background: var(--c-gray-soft); border-inline-start-color: var(--c-gray); }
+.t-red { color: var(--c-red); } .t-blue { color: var(--c-blue); } .t-gray { color: var(--c-gray); }
