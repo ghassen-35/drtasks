@@ -19,7 +19,7 @@
   function parseVoiceTask(raw, ctx = {}) {
     const today = ctx.today || iso(new Date());
     let text = toLatin(String(raw || '')).replace(/[ً-ْٰـ]/g, '').replace(/\s+/g, ' ').trim();
-    const out = { title: '', priority: 'normal', due_date: null, due_time: null, assignee_id: null, assignee_name: null, section: null, recurrence: null, deliverable: null, found: [] };
+    const out = { title: '', priority: 'normal', due_date: null, due_time: null, assignee_id: null, assignee_name: null, section: null, place: null, place_name: null, recurrence: null, deliverable: null, found: [] };
     // يزيل أول مطابقة لنمط من النص، ويعيد المطابقة
     const take = (re) => {
       const n = norm(text); const m = n.match(re);
@@ -98,11 +98,28 @@
     }
     if (best) { take(best.re); out.assignee_id = best.p.id; out.assignee_name = best.p.name; out.found.push('assignee'); }
 
+    // المكان داخل القسم: مشروع أو مبادرة أو مجلد يُذكر اسمه («ضمن مشروع تطوير أداء المشرفين»، «في مجلد وحدة التدريب»)
+    const esc2 = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let place = null;
+    for (const pl of ctx.places || []) {
+      const full = norm(pl.name).trim(); const core = full.replace(/^(?:مشروع|مبادره|مجلد)\s+/, '');
+      for (const cand of [full, core]) {
+        if (cand.length < 5) continue;
+        const re = new RegExp('(?:^|\\s)(?:(?:في|ضمن|تحت|تبع|لـ?)\\s+)?(?:(?:ال)?(?:مشروع|مبادره|مجلد)\\s+)?' + esc2(cand) + '(?=\\s|$|[،,.:؛!])');
+        if (re.test(norm(text)) && (!place || cand.length > place.len)) place = { pl, re, len: cand.length, prefixed: new RegExp('(?:في|ضمن|تحت|تبع)\\s+(?:(?:ال)?(?:مشروع|مبادره|مجلد)\\s+)?' + esc2(cand)).test(norm(text)) };
+      }
+    }
+    if (place) {
+      // يُحذف من العنوان إن قيل «في/ضمن …»، ويبقى إن كان جزءًا من وصف العمل نفسه
+      if (place.prefixed) take(place.re);
+      out.place = (place.pl.kind === 'folder' ? 'f:' : 'p:') + place.pl.id; out.place_name = place.pl.name; out.section = place.pl.section || null; out.found.push('place');
+    }
+
     // القسم: «في قسم الجمعية» يُحذف من العنوان؛ أما ذكر اسم القسم داخل الكلام فيُستدل به دون حذفه
     const secs = (ctx.sections || []).map(s => ({ ...s, n: norm(s.name) }));
     for (const s of secs) {
       const re = new RegExp('(?:^|\\s)(?:في |ضمن |علي )?(?:قسم|مسار) ' + s.n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?=\\s|$|[،,.:؛!])');
-      if (take(re)) { out.section = s.key; break; }
+      if (take(re)) { if (!out.section) out.section = s.key; break; }
     }
     if (!out.section) for (const s of secs) if (new RegExp('(?:^|\\s)(?:و|ب|ل|لل)?' + s.n.replace(/^ال/, '(?:ال)?') + '(?=\\s|$|[،,.:؛!])').test(norm(text))) { out.section = s.key; break; }
     if (out.section) out.found.push('section');
