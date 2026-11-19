@@ -130,6 +130,8 @@ function effectivePerms(user) {
 
 // مسمى الحساب الأعلى قابل للضبط (OWNER_TITLE) دون تغيير البيانات
 const ownerTitle = () => cfg.get('OWNER_TITLE', 'مدير الشؤون التعليمية');
+// تحية الحساب الأعلى في الصفحة الرئيسية (OWNER_GREETING)
+const ownerGreeting = () => cfg.get('OWNER_GREETING', 'أبا صالح');
 const ROLE_LABELS = { get owner() { return ownerTitle(); }, manager: 'مدير المكتب', member: 'موظف' };
 // الدور الفعلي: عمود role مقيد بـ owner/manager في القواعد القديمة، فعضو الفريق يُعرَّف بـ member=1
 const roleSql = (a = '') => `CASE WHEN ${a ? a + '.' : ''}member=1 THEN 'member' ELSE ${a ? a + '.' : ''}role END`;
@@ -352,5 +354,5 @@ function report(period = 'week') {
 
 module.exports = {
   get TZ() { return tz(); }, SECTIONS, SECTION_KEYS, sectionName, STATUSES, CLOSED_STATUSES, PRIORITIES, MSG_TYPES, CATEGORIES, APPROVAL_KINDS, RECURRENCES, PROJECT_KINDS, CHANNELS, IMPORTANCE, COLORS,
-  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, localDate, onTimeStats, needsAttention, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, followRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
+  PERMS, ROLE_LABELS, roleSql, can, fmtDateAr, ownerTitle, ownerGreeting, localDate, onTimeStats, needsAttention, GRANTABLE, SCOPES, GRANT_PRESETS, parseGrants, validateGrants, effectivePerms, todayStr, addDays, decorate, todayRibbon, urgentRibbon, followRibbon, sectionStats, report, ITEM_LIST_COLS, TASK_KINDS, OPEN,
 };
