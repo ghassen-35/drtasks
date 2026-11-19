@@ -114,7 +114,12 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   S.updateItem(owner, tk.id, { priority: 'urgent', due_date: today, category: 'commitment' });
   const ed = S.getItem(tk.id);
   t('رجل الأعمال يعدّل الأولوية والموعد والتصنيف', ed.priority === 'urgent' && ed.due_date === today && ed.category === 'commitment');
-  t('رجل الأعمال لا يغيّر حالة مهمة ليست فرعية', err(() => S.updateItem(owner, tk.id, { status: 'done' })) === 403);
+  // مساحة عمل مشتركة: المدير يغيّر الحالة كما يغيّرها مدير المكتب، ويُسجَّل من فعل ذلك
+  S.updateItem(owner, tk.id, { status: 'in_progress' });
+  t('مدير الشؤون التعليمية يغيّر حالة المهمة مباشرة (مساحة عمل مشتركة) ويُسجَّل اسمه', S.getItem(tk.id).status === 'in_progress'
+    && !!get("SELECT id FROM audit_log WHERE entity='item' AND entity_id=? AND action='status' AND user_id=?", tk.id, owner.id));
+  { const own = S.createTask(owner, { title: 'مهمة أنشأها المدير', section: 'family' });
+    t('ما ينشئه المدير مهمة مباشرة (لا تكليف في صندوق وارد) ومصدرها المدير', own.kind === 'task' && own.source === 'owner'); }
 
   const st = S.createSubtask(owner, tk.id, { title: 'خطوة أولى' });
   t('المهمة الفرعية ترث القسم وتظهر تحت أصلها', st.parent_task_id === tk.id && st.section === 'association' && S.subtasksOf(tk.id).length === 1);
@@ -371,6 +376,20 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   run("DELETE FROM kv WHERE key='seed:association-2026-11'");
   const again = seeds.applySeeds(cfg)[0];
   t('إعادة التطبيق لا تكرر شيئًا', again.folders === 0 && again.tasks === 0 && again.skipped === 39);
+}
+
+// ---- منع تعارض التعديل من جهازين (دمج على مستوى الحقل)
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status; } };
+  const x = S.createTask(mgr, { title: 'تعارض', section: 'family', priority: 'normal' });
+  const base = S.getItem(x.id).updated_at;
+  const t0 = Date.now(); while (Date.now() - t0 < 5) { /* انتظار ملي ثانية حتى يختلف الوقت */ }
+  S.updateItem(mgr, x.id, { title: 'تعارض — عدّله مدير المكتب' });
+  t('تعديل الحقل نفسه بعد تعديل زميل يُرفض برسالة واضحة (409) ولا يكتب فوقه',
+    err(() => S.updateItem(owner, x.id, { title: 'عنوان المدير', base_updated_at: base })) === 409 && S.getItem(x.id).title === 'تعارض — عدّله مدير المكتب');
+  S.updateItem(owner, x.id, { priority: 'urgent', base_updated_at: base });
+  const y = S.getItem(x.id);
+  t('تعديل حقل آخر من النسخة نفسها يُحفظ ويُبقي تعديل الزميل', y.priority === 'urgent' && y.title === 'تعارض — عدّله مدير المكتب');
 }
 
 // ---- ألوان المهام المعتمدة: أحمر عاجلة، أزرق مستحقة، رمادي معلقة

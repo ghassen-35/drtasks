@@ -16,7 +16,7 @@ async function api(method, url, body) {
   let data = null; try { data = await res.json(); } catch { }
   // انتهت الجلسة: تظهر شاشة الدخول ويُترك الطلب معلقًا (لا خطأ غير ملتقط من طلبات خلفية متزامنة)
   if (res.status === 401 && url !== '/api/login') { if (state.me) { state.me = null; renderLogin('انتهت جلستك. سجّل الدخول من جديد.'); } else if (!$('#lf')) renderLogin(); return new Promise(() => { }); }
-  if (!res.ok) throw new Error((data && data.error) || 'تعذر تنفيذ الطلب');
+  if (!res.ok) { const e = new Error((data && data.error) || 'تعذر تنفيذ الطلب'); e.status = res.status; throw e; }
   return data;
 }
 const GET = (u) => api('GET', u);
@@ -59,6 +59,8 @@ const hello = () => state.me.role === 'owner' && state.meta && state.meta.owner_
 const OT = () => (state.meta && state.meta.owner_title) || 'مدير الشؤون التعليمية'; // مسمى الحساب الأعلى
 const isOwner = () => state.me.role === 'owner';
 const isManager = () => state.me.role === 'manager';
+// مساحة العمل الإدارية المشتركة: المدير ومدير المكتب يرون الواجهة نفسها ويعملان على البيانات نفسها
+const isAdmin = () => state.me.role === 'owner' || state.me.role === 'manager';
 const isMember = () => state.me.role === 'member';
 const DEFAULT_APP_NAME = 'مكتب عبدالله عبدالعزيز التويجري';
 const appName = () => (state.meta && state.meta.app_name) || state.appName || DEFAULT_APP_NAME;
@@ -80,8 +82,8 @@ const colorKeyHtml = (counts) => `<div class="color-key" aria-label="تفسير 
 // في صفحة المهمة: هل تظهر في الشريط العلوي؟ بأي لون؟ ولماذا؟ وكيف تصبح «قيد المتابعة»
 function ribbonNote(i) {
   if (!i.is_open || i.kind === 'note') return '';
-  const canWait = (isManager() || (isMember() && i.kind === 'task')) && !i.closed_at;
-  const howGray = canWait ? `لتصبح «قيد المتابعة» (رمادي) اضغط في شريط الإجراءات أسفل الصفحة «بانتظار رد طرف خارجي»${isManager() ? ' أو «طلب اعتماد / قرار»' : ''} (على الجوال تجدهما بعد الضغط على «كل الإجراءات»).` : '';
+  const canWait = (isAdmin() || (isMember() && i.kind === 'task')) && !i.closed_at;
+  const howGray = canWait ? `لتصبح «قيد المتابعة» (رمادي) اختر «بانتظار رد» من «تحديث الحالة» أعلى الصفحة${can('approval.request') ? '، أو ارفع «طلب اعتماد / قرار»' : ''}.` : '';
   const waitWhy = ['waiting_reply', 'waiting_info', 'waiting_approval'].includes(i.status) ? `حالتها «${esc(i.status_label)}»` : 'عليها طلب اعتماد لم يُبتّ فيه';
   let txt;
   if (i.color === 'red') {
@@ -98,6 +100,8 @@ function ribbonNote(i) {
   }
   return `<p class="ribbon-note c-${i.color || 'none'}">${I(i.color ? COLOR_ICON[i.color] : 'calendar')}<span>${txt}</span></p>`;
 }
+// اسم المسؤول: رابط لصفحة الموظف (للمدير ومدير المكتب)، ونص عادي لغيرهم
+const personLink = (i) => i.assignee_id && isAdmin() ? `<a href="#/person/${i.assignee_id}">${esc(i.assignee || '')}</a>` : esc(i.assignee || '');
 function itemRow(i, { actions = '', showSection = true, showUpdated = false } = {}) {
   return `<div class="row c-${i.color || 'none'} ${i.status === 'done' ? 'done' : ''}">
     <div class="main">
@@ -108,13 +112,14 @@ function itemRow(i, { actions = '', showSection = true, showUpdated = false } = 
         ${i.recurrence ? `<span class="chip rec">${I('repeat')}${esc(state.meta.recurrences[i.recurrence] || '')}</span>` : ''}
         ${i.subtasks_total ? `<span class="chip">${I('list')}${i.subtasks_done}/${i.subtasks_total}</span>` : ''}
         ${i.parent_task_id ? `<span class="chip">فرعية من: ${esc(i.parent_task_title || '')}</span>` : ''}
-        ${showSection && i.section ? `<span class="chip">${esc(sectionName(i.section))}</span>` : ''}
+        ${showSection && i.section ? `<a class="chip link" href="#/section/${esc(i.section)}">${esc(sectionName(i.section))}</a>` : ''}
+        ${i.folder_name && i.folder_id ? `<a class="chip link" href="#/folder/${i.folder_id}">${I('folder')}${esc(i.folder_name)}</a>` : ''}
         ${i.pending_approvals ? `<span class="chip st-waiting_approval">${I('gavel')}بانتظار قرار</span>` : ''}
         ${i.files_count ? `<span class="chip">${I('clip')}${i.files_count}</span>` : ''}
         ${demoChip(i)}
         <span class="txt ltr">${esc(i.ref)}</span>
-        ${i.assignee ? `<span class="txt">المسؤول: ${esc(i.assignee)}</span>` : ''}
-        ${showUpdated ? `<span class="txt">آخر تحديث: ${fmtTs(i.updated_at)}</span>` : ''}
+        ${i.assignee ? `<span class="txt">المسؤول: ${personLink(i)}</span>` : ''}
+        ${showUpdated ? `<span class="txt">آخر تحديث: ${fmtTs(i.updated_at)}${i.updated_by_name ? ` — ${esc(i.updated_by_name)}` : ''}</span>` : ''}
       </div>
       ${i.next_step ? `<div class="small muted" style="margin-top:4px">الخطوة التالية: ${esc(i.next_step)}</div>` : ''}
     </div>
@@ -142,7 +147,7 @@ function toast(msg, kind = '', onClick, { notif = false } = {}) {
 const showErr = (e) => toast(e.message || String(e), 'err');
 
 // ===== النوافذ المنبثقة =====
-function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', onSubmit, wide = false, init }) {
+function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', onSubmit, wide = false, init, confirmClose = true }) {
   const bg = document.createElement('div'); bg.className = 'modal-bg';
   bg.innerHTML = `<form class="modal" ${wide ? 'style="max-width:820px"' : ''} novalidate>
     <div class="mh"><h2>${esc(title)}</h2><button type="button" class="iconbtn" data-close aria-label="إغلاق">${I('x')}</button></div>
@@ -157,19 +162,21 @@ function openModal({ title, body, submit = 'حفظ', submitClass = 'primary', on
   $$('[data-close]', bg).forEach(b => b.onclick = close);
   // الضغط خارج النافذة لا يضيّع ما كُتب دون تأكيد
   let dirty = false; form.addEventListener('input', () => { dirty = true; });
-  bg.addEventListener('mousedown', e => { if (e.target === bg && (!dirty || confirm('إغلاق النافذة وتجاهل ما كتبته؟'))) close(); });
+  bg.addEventListener('mousedown', e => { if (e.target === bg && (!dirty || !confirmClose || confirm('إغلاق النافذة وتجاهل ما كتبته؟'))) close(); });
   document.addEventListener('keydown', onKey);
   form.onsubmit = async (e) => {
     e.preventDefault();
-    const btn = $('button[type=submit]', form); btn.disabled = true;
+    const btn = $('button[type=submit]', form); if (btn) btn.disabled = true;
     const err = $('.err-box', form); err.classList.add('hidden');
+    if (!onSubmit) return;
     try { await onSubmit(formData(form), form); close(); }
     catch (ex) { err.textContent = ex.message; err.classList.remove('hidden'); err.scrollIntoView({ block: 'nearest' }); }
-    finally { btn.disabled = false; }
+    finally { if (btn) btn.disabled = false; }
   };
   if (init) init(form);
   initFileFields(form);
-  setTimeout(() => { const f = $('input:not([type=hidden]):not([type=radio]):not([type=checkbox]),textarea', form); f && f.focus(); }, 50);
+  // التركيز التلقائي على أول حقل — إلا إذا بدأ المستخدم العمل داخل النافذة (على جهاز بطيء قد يتأخر المؤقت فيسرق التركيز ويضيع ما يُكتب)
+  setTimeout(() => { if (form.contains(document.activeElement)) return; const f = $('input:not([type=hidden]):not([type=radio]):not([type=checkbox]),textarea', form); f && f.focus(); }, 50);
   return { form, close };
 }
 function formData(form) {
@@ -326,31 +333,22 @@ function navItems() {
     { h: '#/files', i: 'folder', t: 'الملفات' },
     ...common.filter(n => n.h === '#/sops' || can({ '#/meetings': 'meetings.view', '#/partners': 'partners.view', '#/reports': 'reports.view' }[n.h])),
   ];
-  if (isOwner()) return [
-    { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
-    { h: '#/my', i: 'list', t: 'طلباتي وتكليفاتي' },
-    { h: '#/decisions', i: 'gavel', t: 'بانتظار قراري', n: c.pending_decisions },
-    { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
-    ...common,
-  ];
+  // المدير ومدير المكتب: قائمة واحدة. «الوارد» يظهر فقط إن بقيت تكليفات قديمة لم تُعالج
   return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
-    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
-    { h: '#/inbox', i: 'inbox', t: 'الوارد من ' + OT() + '', n: c.inbox_pending },
-    { h: '#/dashboard', i: 'alert', t: 'لوحة المتابعة' },
     { h: '#/tasks', i: 'list', t: 'كل المهام' },
-    { h: '#/approvals', i: 'gavel', t: 'طلبات الاعتماد', n: c.pending_decisions, o: true },
+    { h: '#/approvals', i: 'gavel', t: 'تنتظر قرار ' + OT(), n: c.pending_decisions, o: true },
+    { h: '#/command', i: 'chart', t: 'لوحة القيادة' },
+    { h: '#/dashboard', i: 'alert', t: 'لوحة المتابعة' },
     { h: '#/directives', i: 'flag', t: 'التوجيهات والقرارات' },
+    ...(c.inbox_pending ? [{ h: '#/inbox', i: 'inbox', t: 'الوارد (تكليفات سابقة)', n: c.inbox_pending }] : []),
     ...common,
   ];
 }
 function bottomItems() {
   const c = state.counts;
   if (isMember()) return [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/tasks', i: 'list', t: 'المهام' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
-  return isOwner()
-    ? [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/my', i: 'list', t: 'طلباتي' }, { h: '#/decisions', i: 'gavel', t: 'قراري', n: c.pending_decisions }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }]
-    : [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/inbox', i: 'inbox', t: 'الوارد', n: c.inbox_pending }, { h: '#/dashboard', i: 'alert', t: 'المتابعة' }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
+  return [{ h: '#/', i: 'dash', t: 'الرئيسية' }, { h: '#/tasks', i: 'list', t: 'المهام' }, { h: '#/approvals', i: 'gavel', t: 'القرارات', n: c.pending_decisions }, { h: '#/notifications', i: 'bell', t: 'الإشعارات', n: c.unread }, { h: '#/more', i: 'more', t: 'المزيد' }];
 }
 function renderShell() {
   const me = state.me;
@@ -361,7 +359,7 @@ function renderShell() {
     <span class="spacer"></span>
     <div class="actions">
       ${canAddAny() ? `<button class="btn primary" id="btnAdd" title="إضافة مهمة أو مشروع أو مبادرة">${I('plus')} <span>إضافة</span></button>` : ''}
-      ${isOwner() ? `<button class="btn" id="btnNote" title="إرسال ملاحظة أو طلب">${I('note')} <span class="desk-only">إرسال ملاحظة أو طلب</span></button>` : ''}
+      <button class="iconbtn" id="btnSearch" aria-label="بحث شامل" title="بحث شامل (/)">${I('search')}</button>
       <button class="iconbtn" id="btnToday" aria-label="مهام اليوم" title="مهام اليوم">${I('calendarCheck')}</button>
       <a class="iconbtn desk-only" href="#/notifications" aria-label="الإشعارات">${I('bell')}<span class="badge hidden" id="bellN"></span></a>
     </div>
@@ -372,8 +370,8 @@ function renderShell() {
   </div>
   <nav class="bottomnav" id="bottomnav" aria-label="التنقل السريع"></nav>`;
   if (canAddAny()) $('#btnAdd').onclick = () => modalAdd();
-  if (isOwner()) $('#btnNote').onclick = () => modalNote();
   $('#btnToday').onclick = () => modalToday();
+  $('#btnSearch').onclick = () => modalSearch();
   document.title = appName();
   renderNav();
 }
@@ -401,6 +399,7 @@ const routes = [
   [/^#?\/?$/, viewHome],
   [/^#\/section\/(\w+)$/, viewSection],
   [/^#\/item\/(\d+)$/, viewItem],
+  [/^#\/person\/(\d+)$/, viewPerson],
   [/^#\/folder\/(\d+)$/, viewFolder],
   [/^#\/directives$/, viewDirectives],
   [/^#\/directive\/(\d+)$/, viewDirective],
@@ -439,7 +438,7 @@ async function route() {
     if (m) {
       state.view = null; state.stale = false;
       main.innerHTML = '<div class="empty">جارٍ التحميل…</div>';
-      try { const v = (await fn(main, ...m.slice(1))) || null; if (current()) state.view = v; }
+      try { const v = (await fn(main, ...m.slice(1))) || null; if (current()) { state.view = v; rememberRecent(h, main); } }
       catch (e) { if (current()) main.innerHTML = `<div class="card"><div class="err-box">${esc(e.message)}</div><a class="btn" href="#/">العودة للرئيسية</a></div>`; }
       if (current()) window.scrollTo(0, 0);
       return;
@@ -594,25 +593,31 @@ function bindRibbons(root) {
 // ===== الصفحة الرئيسية =====
 function tileHtml(s) {
   const sec = state.meta.sections.find(x => x.key === s.key);
-  const st = (v, label, tone) => `<div class="st ${v ? tone : 'zero'}"><b>${v}</b><span>${label}</span></div>`;
+  // كل رقم يفتح قائمته مباشرة (المربع نفسه يفتح صفحة القسم)
+  const st = (v, label, tone, go) => `<div class="st ${v ? tone : 'zero'}" ${v && go ? `data-go="${go}" role="link" tabindex="0" title="عرض: ${label}"` : ''}><b>${v}</b><span>${label}</span></div>`;
+  const L = (scope, label) => `#/tasks?section=${s.key}&scope=${scope}&label=${encodeURIComponent(s.name + ' — ' + label)}`;
   // زر (+) خارج الرابط (لا يصح وضع زر داخل رابط) ويُثبَّت فوق زاوية المربع
   return `<div class="tile-wrap"><a class="tile" href="#/section/${s.key}" aria-label="${esc(s.name)}">
     <div class="th"><div class="ic">${I(sec.icon)}</div><h3>${esc(s.name)}</h3></div>
     <div class="stats">
-      ${st(s.open, 'مفتوحة', 'blue')}${st(s.due_today, 'مستحقة اليوم', 'orange')}${st(s.overdue, 'متأخرة', 'red')}${st(s.awaiting_decision, 'بانتظار قرار', 'orange')}
+      ${st(s.open, 'مفتوحة', 'blue', L('open', 'المفتوحة'))}${st(s.due_today, 'مستحقة اليوم', 'orange', L('today', 'مستحقة اليوم'))}${st(s.overdue, 'متأخرة', 'red', L('overdue', 'المتأخرة'))}${st(s.awaiting_decision, 'بانتظار قرار', 'orange', '#/approvals')}
     </div>
     ${s.extra && s.extra.length ? `<div class="extra">${s.extra.map(e => `<span>${esc(e.label)}: ${e.value}</span>`).join('')}</div>` : ''}
     <div class="top">${s.top ? `أهم متابعة: <b>${esc(s.top.title)}</b>${s.top.due_date ? ` — ${esc(fmtDate(s.top.due_date))}` : ''}` : '<span class="muted">لا توجد متابعات مفتوحة</span>'}</div>
-  </a><button type="button" class="tile-add" data-add-section="${s.key}" aria-label="${isOwner() ? 'تكليف جديد' : 'مهمة جديدة'} في ${esc(s.name)}" title="${isOwner() ? 'تكليف جديد' : 'مهمة جديدة'} في ${esc(s.name)}">${I('plus')}</button></div>`;
+  </a><button type="button" class="tile-add" data-add-section="${s.key}" aria-label="مهمة جديدة في ${esc(s.name)}" title="مهمة جديدة في ${esc(s.name)}">${I('plus')}</button></div>`;
 }
 function bindTileAdd(root) {
-  $$('[data-add-section]', root).forEach(b => b.onclick = () => isOwner() ? modalAssignment({ section: b.dataset.addSection }) : modalTask({ section: b.dataset.addSection }));
+  $$('.tile [data-go]', root).forEach(el => {
+    const go = (e) => { e.preventDefault(); e.stopPropagation(); location.hash = el.dataset.go; };
+    el.onclick = go; el.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') go(e); };
+  });
+  $$('[data-add-section]', root).forEach(b => b.onclick = () => modalTask({ section: b.dataset.addSection }));
 }
 async function viewHome(main) {
   const hijri = new Intl.DateTimeFormat('ar-SA-u-ca-islamic-umalqura-nu-latn', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
   const greg = new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
   async function load() {
-    const [h, pend] = await Promise.all([GET('/api/home'), isOwner() ? GET('/api/approvals?status=pending') : Promise.resolve([])]);
+    const [h, pend] = await Promise.all([GET('/api/home'), isAdmin() ? GET('/api/approvals?status=pending') : Promise.resolve([])]);
     if (h.member) { // عضو فريق: ما يخصه فقط
       main.innerHTML = `
         <div class="hello"><h1>${hello()}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
@@ -627,50 +632,28 @@ async function viewHome(main) {
     }
     const s = h.summary;
     const cmdLink = `<a class="cmd-link section-gap" href="#/command">${I('chart')}<span><b>لوحة القيادة</b><small>المؤشرات، ما يحتاج تدخلك، توزيع العمل، والتوجيهات</small></span>${I('back', 'chev')}</a>`;
-    let roleHtml = '';
-    if (isOwner()) {
-      roleHtml += `
-      <div class="card section-gap"><div class="card-h"><h2>ملخص المكتب</h2></div>
-        <div class="kpis">
-          <a class="kpi blue" href="#/my"><b>${s.open_assignments}</b><span>تكليفاتي المفتوحة</span></a>
-          <a class="kpi red" href="#/my"><b>${s.urgent}</b><span>مهام عاجلة</span></a>
-          <a class="kpi red" href="#/my"><b>${s.overdue}</b><span>مهام متأخرة</span></a>
-          <a class="kpi orange" href="#/decisions"><b>${s.pending_decisions}</b><span>تنتظر قراري</span></a>
-        </div></div>
+    // المدير ومدير المكتب: صفحة رئيسية واحدة لمساحة العمل المشتركة
+    const pendingInbox = s.inbox_pending ? (await GET('/api/items?kind=inbox')).filter(inboxPending) : [];
+    const decideTxt = isOwner() ? 'لا شيء ينتظر قرارك الآن' : 'لا شيء ينتظر قرار ' + OT();
+    let roleHtml = `
+      ${pendingInbox.length ? `<div class="card section-gap"><div class="card-h">${I('inbox')}<h2>تكليفات سابقة تحتاج إجراء</h2><span class="chip p-urgent">${pendingInbox.length}</span><span class="spacer"></span><a class="btn sm" href="#/inbox">عرض الكل</a></div>
+        ${listOrEmpty(pendingInbox.slice(0, 5), i => itemRow(i, { actions: inboxActions(i) }))}</div>` : ''}
       <div class="cols section-gap">
-        <div class="card"><div class="card-h">${I('gavel')}<h2>بانتظار قراري</h2><span class="spacer"></span><a class="btn sm" href="#/decisions">عرض الكل</a></div>
-          ${listOrEmpty(pend.slice(0, 4), a => `<div class="row ${a.blocking ? 'p-urgent' : 'p-important'}"><div class="main"><a class="title" href="#/item/${a.item_id}">${esc(a.title)}</a>
-            <div class="meta"><span class="chip st-waiting_approval">${esc(a.kind_label)}</span><span class="chip">${esc(a.section_name)}</span>${a.blocking ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}<span class="txt">${fmtTs(a.requested_at)}</span></div></div></div>`, 'لا شيء ينتظر قرارك الآن')}
+        <div class="card"><div class="card-h">${I('gavel')}<h2>${isOwner() ? 'بانتظار قراري' : 'تنتظر قرار ' + esc(OT())}</h2>${pend.length ? `<span class="chip p-important">${pend.length}</span>` : ''}<span class="spacer"></span><a class="btn sm" href="#/approvals">عرض الكل</a></div>
+          ${listOrEmpty(pend.slice(0, 4), a => `<a class="row ${a.blocking ? 'p-urgent' : 'p-important'}" href="#/item/${a.item_id}"><div class="main"><span class="title">${esc(a.title)}</span>
+            <div class="meta"><span class="chip st-waiting_approval">${esc(a.kind_label)}</span><span class="chip">${esc(a.section_name)}</span>${a.blocking ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}<span class="txt">${fmtTs(a.requested_at)}</span></div></div></a>`, decideTxt)}
         </div>
-        <div class="card"><div class="card-h">${I('note')}<h2>آخر تحديثات مدير المكتب</h2></div>
+        <div class="card"><div class="card-h">${I('note')}<h2>آخر التحديثات</h2></div>
           ${listOrEmpty(h.updates, u => `<a class="row" href="#/item/${u.item_id}"><div class="main"><span class="title">${esc(u.item_title)}</span>
-            <div class="small" style="white-space:pre-wrap">${esc((u.body || '').slice(0, 160))}</div><div class="meta"><span class="txt">${fmtTs(u.created_at)}</span></div></div></a>`, 'لا توجد تحديثات بعد')}
+            <div class="small" style="white-space:pre-wrap">${esc((u.body || '').slice(0, 160))}</div><div class="meta">${u.author_name ? `<span class="chip">${esc(u.author_name)}</span>` : ''}<span class="txt">${fmtTs(u.created_at)}</span></div></div></a>`, 'لا توجد تحديثات بعد')}
         </div>
-        <div class="card"><div class="card-h">${I('checkCircle')}<h2>أبرز الإنجازات</h2></div>
-          ${listOrEmpty(h.achievements, i => itemRow(i), 'لا توجد إنجازات مسجلة بعد')}
-        </div>
-        <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2></div>
+        <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2><span class="spacer"></span><a class="btn sm" href="#/meetings">الكل</a></div>
           ${listOrEmpty(h.meetings, meetingRow, 'لا توجد اجتماعات قادمة')}
         </div>
+        <div class="card"><div class="card-h">${I('checkCircle')}<h2>آخر الإنجازات</h2><span class="spacer"></span><a class="btn sm" href="#/tasks?scope=done">الكل</a></div>
+          ${listOrEmpty(h.achievements, i => itemRow(i), 'لا توجد إنجازات مسجلة بعد')}
+        </div>
       </div>`;
-    } else {
-      const inbox = await GET('/api/items?kind=inbox');
-      const pendingInbox = inbox.filter(inboxPending);
-      roleHtml += `
-      <div class="card section-gap"><div class="card-h">${I('inbox')}<h2>الوارد من ${OT()}</h2><span class="chip ${pendingInbox.length ? 'p-urgent' : ''}">${pendingInbox.length} يحتاج إجراء</span><span class="spacer"></span><a class="btn sm" href="#/inbox">صندوق الوارد</a></div>
-        ${listOrEmpty(pendingInbox.slice(0, 5), i => itemRow(i, { actions: inboxActions(i) }), 'لا يوجد وارد جديد')}
-      </div>
-      <div class="cols section-gap">
-        <div class="card"><div class="card-h">${I('alert')}<h2>المتابعة التنفيذية</h2><span class="spacer"></span><a class="btn sm" href="#/dashboard">لوحة المتابعة</a></div>
-          <div class="kpis">
-            <a class="kpi blue" href="#/tasks"><b>${s.open}</b><span>مهام مفتوحة</span></a>
-            <a class="kpi red" href="#/dashboard"><b>${s.overdue}</b><span>متأخرة</span></a>
-            <a class="kpi red" href="#/dashboard"><b>${s.urgent}</b><span>عاجلة</span></a>
-            <a class="kpi orange" href="#/approvals"><b>${s.pending_decisions}</b><span>تنتظر قرار ${OT()}</span></a>
-          </div></div>
-        <div class="card"><div class="card-h">${I('calendar')}<h2>الاجتماعات القادمة</h2></div>${listOrEmpty(h.meetings, meetingRow, 'لا توجد اجتماعات قادمة')}</div>
-      </div>`;
-    }
     main.innerHTML = `
       <div class="hello"><h1>${hello()}</h1><span class="date">${esc(greg)} — ${esc(hijri)}</span></div>
       ${notifBannerHtml()}
@@ -695,7 +678,7 @@ function nextAction(i) {
   return 'متابعة';
 }
 function inboxActions(i) {
-  if (!isManager()) return '';
+  if (!isAdmin()) return '';
   let a = '';
   if (!i.acknowledged_at && i.status !== 'cancelled') a += `<button class="btn sm orange" data-ack="${i.id}">${I('check')} تأكيد الاستلام</button>`;
   if (i.kind !== 'task' && i.status !== 'cancelled') a += `<button class="btn sm" data-convert="${i.id}">تحويل إلى مهمة</button>`;
@@ -741,9 +724,11 @@ async function viewDashboard(main) {
   await load(); return { refresh: load };
 }
 function quickStatus(i) {
-  if (!isManager() || !i.is_open || i.kind === 'note') return '';
+  if (!i.is_open || i.kind === 'note' || i.closed_at) return '';
+  if (!isAdmin() && !(isMember() && i.kind === 'task')) return '';
+  const list = isAdmin() ? ['in_progress', 'waiting_reply', 'waiting_info', 'stalled', 'done'] : ['in_progress', 'waiting_reply', 'stalled', 'done'];
   return `<select class="qs" data-id="${i.id}" aria-label="تحديث الحالة" style="min-height:36px;width:auto">
-    ${opt('', 'تحديث سريع للحالة…')}${['in_progress', 'waiting_reply', 'waiting_info', 'stalled', 'done'].filter(s => s !== i.status).map(s => opt(s, state.meta.statuses[s])).join('')}</select>`;
+    ${opt('', 'تحديث سريع للحالة…')}${list.filter(s => s !== i.status).map(s => opt(s, state.meta.statuses[s])).join('')}</select>`;
 }
 function bindQuickStatus(root, items = []) {
   $$('select.qs', root).forEach(s => s.onchange = async () => {
@@ -770,7 +755,7 @@ function modalPostpone(i, after) {
   async function save(date, reason) {
     if (i.is_overdue && !(reason || '').trim()) throw new Error('المهمة متأخرة: اكتب سبب التأخير قبل التأجيل');
     await api('PATCH', `/api/items/${i.id}`, { due_date: date });
-    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `${i.is_overdue ? 'سبب التأخير' : 'تأجيل الموعد'} — الموعد الجديد ${fmtDate(date)}: ${reason.trim()}`, kind: isOwner() ? 'message' : 'update' });
+    if ((reason || '').trim()) await POST(`/api/items/${i.id}/messages`, { body: `${i.is_overdue ? 'سبب التأخير' : 'تأجيل الموعد'} — الموعد الجديد ${fmtDate(date)}: ${reason.trim()}`, kind: 'update' });
     toast(`أُجّل الموعد إلى ${fmtDate(date)}`, 'ok'); after && after();
   }
 }
@@ -838,7 +823,7 @@ function modalDone(i, done) {
       ${field('مرفقات (اختياري)', fileFieldHtml('file_ids', false))}`,
     onSubmit: async (d) => {
       await done({ status: 'done', complete_subtasks: d.subs !== 'keep' }); // الحالة أولًا؛ الملخص بعد نجاحها فقط
-      if ((d.body || '').trim() || (d.file_ids || []).length) await POST(`/api/items/${i.id}/messages`, { body: d.body, file_ids: d.file_ids, kind: isManager() ? 'result' : 'update' }).catch(showErr);
+      if ((d.body || '').trim() || (d.file_ids || []).length) await POST(`/api/items/${i.id}/messages`, { body: d.body, file_ids: d.file_ids, kind: isAdmin() ? 'result' : 'update' }).catch(showErr);
     },
   });
 }
@@ -876,9 +861,9 @@ async function viewTasks(main, query) {
   const f = { scope: 'open' };
   // فلاتر قادمة من لوحة القيادة (مثل #/tasks?scope=overdue&priority=urgent)
   const from = new URLSearchParams(query || '');
-  for (const k of ['scope', 'status', 'priority', 'section', 'assignee_id', 'assignee', 'done_since', 'q', 'category', 'color']) if (from.has(k)) f[k] = from.get(k);
+  for (const k of ['scope', 'status', 'priority', 'section', 'assignee_id', 'assignee', 'done_since', 'q', 'category', 'color', 'project_id', 'folder_id', 'directive_id']) if (from.has(k)) f[k] = from.get(k);
   const ctxLabel = from.get('label');
-  main.innerHTML = `${ctxLabel ? `<div class="btn-row crumbs"><a class="btn sm ghost" href="#/command">${I('back')} لوحة القيادة</a><b>${esc(ctxLabel)}</b></div>` : ''}<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
+  main.innerHTML = `${ctxLabel ? `<div class="btn-row crumbs"><a class="btn sm ghost" href="javascript:history.back()">${I('back')} رجوع</a><b>${esc(ctxLabel)}</b><a class="btn sm ghost" href="#/tasks">إلغاء التصفية</a></div>` : ''}<div class="page-h">${I('list')}<h1>${isMember() ? 'مهامي' : 'كل المهام والتكليفات'}</h1><span class="spacer"></span>${can('task.create') ? `<button class="btn primary" id="add">${I('plus')} مهمة جديدة</button>` : ''}</div>${filtersHtml(f)}<div id="res"></div>`;
   const add = $('#add', main); if (add) add.onclick = () => modalTask();
   async function load() { const items = await GET('/api/items?' + qs({ kind: 'tasks', ...f })); $('#res', main).innerHTML = `<p class="small muted">${countTxt(items.length, 'نتيجة', 'نتيجتان', 'نتائج')}</p>` + listOrEmpty(items, i => itemRow(i, { actions: quickStatus(i), showUpdated: true })); bindQuickStatus(main, items); }
   bindFilters(main, f, load); await load(); return { refresh: load };
@@ -974,7 +959,7 @@ async function viewCommand(main) {
         ${kpi('red', k.overdue, 'متأخرة', link({ scope: 'overdue' }, 'المهام المتأخرة'))}
         ${kpi('red', k.urgent, 'عاجلة', link({ scope: 'open', priority: 'urgent' }, 'المهام العاجلة'))}
         ${kpi('red', k.stalled, 'متعثرة', link({ scope: 'open', status: 'stalled' }, 'المهام المتعثرة'))}
-        ${kpi('orange', k.awaiting_approval, `تنتظر قرار ${OT()}`, isOwner() ? '#/decisions' : '#/approvals')}
+        ${kpi('orange', k.awaiting_approval, `تنتظر قرار ${OT()}`, '#/approvals')}
         ${kpi('green', k.done_week, 'أُنجزت هذا الأسبوع', link({ scope: 'closed', status: 'done', done_since: d.week_start }, 'المنجزة خلال 7 أيام'), `• ${k.done_month} خلال 30 يومًا`)}
         ${kpi(k.on_time_rate == null ? '' : k.on_time_rate >= 80 ? 'green' : k.on_time_rate >= 60 ? 'orange' : 'red', k.on_time_rate == null ? '—' : k.on_time_rate + '%', 'الالتزام بالمواعيد (30 يومًا)', '#/reports', k.on_time_total ? `${trend}` : 'لا بيانات كافية')}
         ${kpi('orange', k.directives_open + k.decisions_open, 'توجيهات وقرارات لم تُنفَّذ', '#/directives', k.directives_at_risk ? `• ${k.directives_at_risk} متأخر` : '')}
@@ -982,17 +967,17 @@ async function viewCommand(main) {
       </div>
       <div class="cols section-gap">
         <div class="card ${d.attention.length ? 'attn' : ''}"><div class="card-h">${I('alert')}<h2>تحتاج تدخل ${esc(OT())}</h2><span class="chip ${d.attention.length ? 'p-urgent' : ''}">${d.attention.length}</span><span class="spacer"></span>
-            ${d.attention.length && isManager() ? shareLinks(attText, `ما يحتاج تدخل ${OT()}`) : ''}</div>
+            ${d.attention.length && isAdmin() ? shareLinks(attText, `ما يحتاج تدخل ${OT()}`) : ''}</div>
           <p class="small muted">مهام متعثرة، أو مهمة/عاجلة متأخرة 3 أيام فأكثر.</p>
           ${listOrEmpty(d.attention.slice(0, 8), i => `<a class="row p-urgent" href="#/item/${i.id}"><div class="main"><span class="title">${esc(i.title)}</span>
             <div class="meta"><span class="chip overdue">${esc(i.attention_reason)}</span>${i.assignee ? `<span class="txt">${esc(i.assignee)}</span>` : ''}<span class="txt">${esc(i.section_name || '')}</span></div></div></a>`, 'لا شيء يحتاج تدخلك الآن 👍')}</div>
-        <div class="card"><div class="card-h">${I('gavel')}<h2>تنتظر القرار</h2><span class="chip">${d.approvals.length}</span><span class="spacer"></span><a class="btn sm" href="${isOwner() ? '#/decisions' : '#/approvals'}">الكل</a></div>
+        <div class="card"><div class="card-h">${I('gavel')}<h2>تنتظر القرار</h2><span class="chip">${d.approvals.length}</span><span class="spacer"></span><a class="btn sm" href="#/approvals">الكل</a></div>
           ${listOrEmpty(d.approvals.slice(0, 6), a => `<a class="row ${a.blocking ? 'p-urgent' : 'p-important'}" href="#/item/${a.item_id}"><div class="main"><span class="title">${esc(a.title)}</span>
             <div class="meta"><span class="chip st-waiting_approval">${esc(a.kind_label)}</span>${a.blocking ? '<span class="chip overdue">يعطل التنفيذ</span>' : ''}<span class="txt">منذ ${esc(fmtTs(a.requested_at).replace('منذ ', ''))}</span></div></div></a>`, 'لا توجد طلبات معلقة')}</div>
         <div class="card"><div class="card-h">${I('users')}<h2>توزيع العمل والالتزام</h2><span class="spacer"></span><a class="btn sm" href="#/reports">التقارير</a></div>
           ${d.workload.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>أُنجزت (أسبوع)</th><th>في الموعد</th></tr></thead><tbody>
             ${d.workload.map(p => { const ln = link(p.user_id ? { scope: 'open', assignee_id: p.user_id } : { scope: 'open', assignee: p.name }, `مهام ${p.name}`);
-              return `<tr><td><a href="${ln}">${esc(p.name)}</a></td><td><a href="${ln}">${p.open}</a></td><td class="${p.overdue ? 'late' : ''}">${p.overdue ? `<a href="${link(p.user_id ? { scope: 'overdue', assignee_id: p.user_id } : { scope: 'overdue', assignee: p.name }, `متأخرات ${p.name}`)}">${p.overdue}</a>` : 0}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`; }).join('')}
+              return `<tr><td><a href="${p.user_id && isAdmin() ? '#/person/' + p.user_id : ln}">${esc(p.name)}</a></td><td><a href="${ln}">${p.open}</a></td><td class="${p.overdue ? 'late' : ''}">${p.overdue ? `<a href="${link(p.user_id ? { scope: 'overdue', assignee_id: p.user_id } : { scope: 'overdue', assignee: p.name }, `متأخرات ${p.name}`)}">${p.overdue}</a>` : 0}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`; }).join('')}
             </tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
         <div class="card"><div class="card-h">${I('flag')}<h2>التوجيهات الجارية</h2><span class="spacer"></span><a class="btn sm" href="#/directives">السجل</a></div>
           ${d.directives_ready.length ? `<div class="info-box" style="margin-bottom:8px">${d.directives_ready.length} ${d.directives_ready.length === 1 ? 'توجيه اكتملت مهامه' : 'توجيهات اكتملت مهامها'} — تحتاج تسجيل النتيجة.</div>` : ''}
@@ -1182,8 +1167,8 @@ async function viewItem(main, id) {
   main.innerHTML = `<div id="ih"></div><div id="subs"></div>
     <div class="card section-gap"><div class="card-h">${I('note')}<h2>المحادثة والتحديثات والقرارات</h2></div><div class="timeline" id="tl"></div></div>
     <form class="composer no-print" id="cmp">
-      <textarea name="body" placeholder="${isOwner() ? 'اكتب ملاحظة أو ردًا لمدير المكتب على هذه المهمة…' : (isMember() ? 'اكتب تحديثًا أو رسالة لمدير المكتب…' : 'اكتب رسالة أو تحديثًا ل" + OT() + "…')}" aria-label="نص الرسالة"></textarea>
-      ${!isOwner() ? `<div class="grid2" style="margin-top:8px"><select name="kind" aria-label="نوع الرسالة">${opt('update', 'تحديث تنفيذ')}${opt('message', 'رسالة / استفسار')}</select>${isManager() ? '<input type="text" name="next_step" placeholder="الخطوة التالية (اختياري)">' : ''}</div>` : ''}
+      <textarea name="body" placeholder="${isMember() ? 'اكتب تحديثًا أو رسالة لمكتب ' + OT() + '…' : 'اكتب ملاحظة أو تحديثًا على هذه المهمة (يراه الطرف الآخر في المكتب والمسؤول عنها)…'}" aria-label="نص الرسالة"></textarea>
+      <div class="grid2" style="margin-top:8px"><select name="kind" aria-label="نوع الرسالة">${opt('update', 'تحديث تنفيذ')}${opt('message', 'ملاحظة / استفسار')}</select>${isAdmin() ? '<input type="text" name="next_step" placeholder="الخطوة التالية (اختياري)">' : ''}</div>
       <div class="tools">${fileFieldHtml()}<span class="spacer" style="flex:1"></span><button class="btn primary" type="submit">${I('send')} إرسال</button></div>
     </form>
     <div class="card section-gap"><details class="log" id="log"><summary>سجل الإجراءات والتغييرات</summary><div id="logc"></div></details></div>`;
@@ -1219,14 +1204,15 @@ async function viewItem(main, id) {
         ${i.requires_approval ? '<span class="chip st-waiting_approval">يتطلب اعتماد النتيجة</span>' : ''}${i.closed_at ? '<span class="chip st-done">مغلقة نهائيًا</span>' : ''}
         ${pendingCount ? `<span class="chip overdue">${I('gavel')}${pendingCount} طلب ينتظر القرار</span>` : ''}</div>
       ${ribbonNote(i)}
+      ${quickStatus(i) ? `<label class="item-qs no-print"><span>تحديث الحالة</span>${quickStatus(i)}</label>` : ''}
       <dl class="facts">
-        ${fact('القسم', esc(i.section_name))}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', esc(i.project_name || ''))}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
+        ${fact('القسم', `<a href="#/section/${esc(i.section)}">${esc(i.section_name)}</a>`)}${i.folder_id && can('folders.view') ? fact('المجلد', `<a href="#/folder/${i.folder_id}">${esc(i.folder_name)}</a>`) : fact('المجلد', esc(i.folder_name || ''))}${fact(i.project_kind === 'initiative' ? 'المبادرة' : 'المشروع', i.project_id && i.project_name ? `<a href="#/tasks?project_id=${i.project_id}&label=${encodeURIComponent(i.project_name)}">${esc(i.project_name)}</a>` : '')}${fact('التصنيف', esc(state.meta.categories[i.category] || ''))}
         ${i.recurrence ? fact('مهمة دورية', `${I('repeat')} ${esc(state.meta.recurrences[i.recurrence])}${i.next_occurrence_id ? ` — <a href="#/item/${i.next_occurrence_id}">الموعد التالي</a>` : ''}`) : ''}
         ${i.deliverable ? fact('المخرج المطلوب', esc(i.deliverable)) : ''}
         ${i.directive_id ? fact('ضمن التوجيه', can('directives.view') ? `<a href="#/directive/${i.directive_id}">${esc(i.directive_ref)}</a>` : esc(i.directive_ref || '')) : ''}
         ${data.parent_task ? fact('مهمة فرعية من', `<a href="#/item/${data.parent_task.id}">${esc(data.parent_task.ref)} — ${esc(data.parent_task.title)}</a>`) : ''}
-        ${fact('المسؤول عن التنفيذ', esc(i.assignee || ''))}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
-        ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at))}
+        ${fact('المسؤول عن التنفيذ', i.assignee ? personLink(i) : '')}${fact('مصدر التكليف', i.source === 'owner' ? '' + OT() + '' : i.source === 'meeting' ? 'قرار اجتماع' : esc(i.created_by_name || 'مدير المكتب'))}
+        ${fact('تاريخ الإنشاء', fmtTs(i.created_at))}${fact('الموعد النهائي', esc(fmtDue(i)))}${fact('آخر تحديث', fmtTs(i.updated_at) + (i.updated_by_name ? ` — ${esc(i.updated_by_name)}` : ''))}
         ${fact('الخطوة التالية', esc(i.next_step || ''))}
         ${data.parent ? fact('مرتبطة بالمهمة', `<a href="#/item/${data.parent.id}">${esc(data.parent.ref)} — ${esc(data.parent.title)}</a>`) : ''}
         ${data.meeting ? fact('صادرة عن اجتماع', `<a href="#/meeting/${data.meeting.id}">${esc(data.meeting.title)}</a>`) : ''}
@@ -1239,6 +1225,7 @@ async function viewItem(main, id) {
       <div class="actions-bar no-print" id="acts"></div>
     </div>`;
     const et = $('#editTop', main); if (et) et.onclick = () => modalTask(data.item, load);
+    bindQuickStatus($('#ih', main), [data.item]);
     renderActions();
   }
   // المهام الفرعية: قائمة بإنجاز سريع، وإضافة من المكان نفسه
@@ -1273,31 +1260,34 @@ async function viewItem(main, id) {
   }
   function renderActions() {
     const i = data.item; const a = []; const bar = $('#acts', main);
-    if (isManager() && !i.closed_at) {
-      if (!i.acknowledged_at && i.status !== 'cancelled') a.push(`<button class="btn orange" data-a="ack">${I('check')} تأكيد الاستلام</button>`);
+    // الترتيب: الأكثر استخدامًا أولًا (الإنجاز، البدء، التأجيل)، ثم المتابعة، ثم الإغلاق والإلغاء
+    const canPostpone = canEditItem(i) && i.is_open && !i.closed_at && i.kind !== 'note';
+    const pendingApproval = data.approvals.some(x => x.status === 'pending');
+    if (isAdmin() && !i.closed_at) {
+      if (!i.acknowledged_at && i.status !== 'cancelled' && i.kind !== 'task') a.push(`<button class="btn orange" data-a="ack">${I('check')} تأكيد الاستلام</button>`);
       if (i.kind !== 'task' && i.status !== 'cancelled') a.push(`<button class="btn primary" data-a="convert">تحويل إلى مهمة</button>`);
       if (i.kind === 'note' && i.is_open && i.acknowledged_at) a.push(`<button class="btn" data-a="noteDone">تمت المعالجة</button>`);
       if (i.kind !== 'note' && i.is_open) {
-        if (['new', 'acknowledged', 'waiting_reply', 'waiting_info', 'stalled'].includes(i.status) && !data.approvals.some(x => x.status === 'pending')) a.push(`<button class="btn" data-s="in_progress">${I('play')} بدء/استئناف التنفيذ</button>`);
-        if (i.status !== 'waiting_reply') a.push(`<button class="btn" data-s="waiting_reply">بانتظار رد طرف خارجي</button>`);
-        if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">متعثرة</button>`);
-        a.push(`<button class="btn" data-a="approval">${I('gavel')} طلب اعتماد / قرار</button>`);
-        a.push(`<button class="btn green" data-a="result">${I('checkCircle')} رفع النتيجة النهائية</button>`);
+        a.push(`<button class="btn green" data-a="result">${I('checkCircle')} أُنجزت — رفع النتيجة</button>`);
+        if (['new', 'acknowledged', 'waiting_reply', 'waiting_info', 'stalled'].includes(i.status) && !pendingApproval) a.push(`<button class="btn" data-s="in_progress">${I('play')} ${i.status === 'new' || i.status === 'acknowledged' ? 'بدء التنفيذ' : 'استئناف التنفيذ'}</button>`);
+        if (canPostpone) a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
+        if (i.status !== 'waiting_reply') a.push(`<button class="btn" data-s="waiting_reply">${I('bell')} بانتظار رد طرف آخر</button>`);
+        if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">${I('alert')} متعثرة</button>`);
+        if (can('approval.request')) a.push(`<button class="btn" data-a="approval">${I('gavel')} طلب قرار من ${esc(OT())}</button>`);
       }
+      if (i.sop_id && i.is_open && !i.parent_task_id && canAddSub()) a.push(`<button class="btn" data-a="applySop">${I('book')} خطوات الإجراء كقائمة تحقق</button>`);
       if (i.status === 'done' && !i.closed_at) a.push(`<button class="btn green" data-a="close">إغلاق نهائي</button>`);
       if (!i.is_open) a.push(`<button class="btn" data-s="in_progress">إعادة فتح</button>`);
       if (i.is_open) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء</button>`);
     }
     if (isMember() && i.is_open && !i.closed_at && i.kind === 'task') {
-      if (i.status !== 'in_progress') a.push(`<button class="btn primary" data-s="in_progress">${I('play')} بدء التنفيذ</button>`);
-      if (i.status !== 'waiting_reply') a.push(`<button class="btn" data-s="waiting_reply">بانتظار رد طرف خارجي</button>`);
-      if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">متعثرة</button>`);
       a.push(`<button class="btn green" data-s="done">${I('checkCircle')} أنجزت المهمة</button>`);
+      if (i.status !== 'in_progress') a.push(`<button class="btn primary" data-s="in_progress">${I('play')} بدء التنفيذ</button>`);
+      if (canPostpone) a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
+      if (i.status !== 'waiting_reply') a.push(`<button class="btn" data-s="waiting_reply">${I('bell')} بانتظار رد طرف آخر</button>`);
+      if (i.status !== 'stalled') a.push(`<button class="btn" data-s="stalled">${I('alert')} متعثرة</button>`);
+      if (i.sop_id && !i.parent_task_id && canAddSub()) a.push(`<button class="btn" data-a="applySop">${I('book')} خطوات الإجراء كقائمة تحقق</button>`);
     }
-    if (canEditItem(i) && i.is_open && !i.closed_at && i.kind !== 'note') a.push(`<button class="btn" data-a="postpone">${I('clock')} تأجيل الموعد</button>`);
-    if (isOwner() && i.created_by === state.me.id && i.is_open && !i.closed_at) a.push(`<button class="btn ghost" data-s="cancelled">إلغاء التكليف</button>`);
-    if (i.sop_id && i.is_open && !i.parent_task_id && canAddSub() && (!isMember() || i.kind === 'task')) a.push(`<button class="btn" data-a="applySop">${I('book')} خطوات الإجراء كقائمة تحقق</button>`);
-    if (isOwner()) a.push(`<button class="btn" data-a="noteOn">${I('note')} إرسال ملاحظة مستقلة على المهمة</button>`);
     // على الجوال يظهر أول إجراءين فقط، وزر «كل الإجراءات» يفتح البقية (مثل «بانتظار رد» و«طلب اعتماد»)
     bar.innerHTML = a.join('') + (a.length > 2 ? `<button type="button" class="btn more-acts" data-more aria-expanded="false">${I('more')} كل الإجراءات (${a.length})</button>` : '');
     bar.classList.toggle('hidden', !a.length);
@@ -1411,7 +1401,7 @@ async function viewDecisions(main) {
   let tab = 'pending';
   async function load() {
     const list = await GET('/api/approvals?status=' + (tab === 'pending' ? 'pending' : 'decided'));
-    main.innerHTML = `<div class="page-h">${I('gavel')}<h1>${isOwner() ? 'بانتظار قراري' : 'طلبات الاعتماد المرفوعة'}</h1></div>
+    main.innerHTML = `<div class="page-h">${I('gavel')}<h1>${isOwner() ? 'بانتظار قراري' : 'تنتظر قرار ' + esc(OT())}</h1></div>
       <div class="tabs"><button data-tab="pending" class="${tab === 'pending' ? 'active' : ''}">بانتظار القرار</button><button data-tab="decided" class="${tab === 'decided' ? 'active' : ''}">القرارات السابقة</button></div>
       ${isOwner() && tab === 'pending' ? '<p class="small muted">افتح أي طلب لقراءة التفاصيل والمرفقات والمحادثة، ثم اعتمد أو ارفض أو اطلب تعديلًا. تسجيل الاعتماد لا يُنفّذ أي إجراء مالي أو تعاقدي خارجي تلقائيًا.</p>' : ''}
       ${listOrEmpty(list, a => `<div class="row ${a.status === 'pending' ? (a.blocking ? 'p-urgent' : 'p-important') : 'done'}"><div class="main">
@@ -1435,11 +1425,11 @@ function modalAdd(pre = {}) {
     title: 'إضافة جديدة',
     body: `<div class="add-choices">
       ${can('directives.manage') ? choice('directive', 'flag', `توجيه من ${OT()}`, 'يُسجَّل بقناة وروده ويتحول إلى مهام تنفيذية تُتابع حتى النتيجة') : ''}
-      ${can('task.create') || can('assignment.create') ? choice('task', 'checkCircle', isOwner() ? 'مهمة / تكليف' : 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة') : ''}
+      ${can('task.create') ? choice('task', 'checkCircle', 'مهمة', 'مستقلة أو دورية أو ضمن مشروع أو مبادرة') : ''}
       ${can('projects.manage') ? choice('project', 'briefcase', 'مشروع', 'يجمع مهامًا تحت هدف واحد') + choice('initiative', 'flag', 'مبادرة', 'فكرة أو برنامج تُتابع مهامه') : ''}</div>`,
     init: (form) => $$('[data-k]', form).forEach(b => b.onclick = () => {
       m.close(); const k = b.dataset.k;
-      if (k === 'task') isOwner() ? modalAssignment(pre) : modalTask(pre);
+      if (k === 'task') modalTask(pre);
       else if (k === 'directive') modalDirective(pre);
       else modalProject({ section: pre.section, folder_id: pre.folder_id, kind: k });
     }),
@@ -1589,7 +1579,16 @@ async function modalTask(i, after) {
       if (!d.section) throw new Error('اختر القسم');
       applyTaskType(d); applyAssignee(d);
       if (!can('partners.view')) delete d.partner_id; // لا يمسح ربطًا لا يراه
-      if (editing) { delete d.file_ids; await api('PATCH', `/api/items/${i.id}`, d); toast('حُفظت التعديلات', 'ok'); after && after(); }
+      if (editing) {
+        delete d.file_ids;
+        // نرسل ما غيّره المستخدم فقط، مع وقت آخر نسخة رآها: فلا نكتب فوق تعديل زميل على حقل آخر من جهاز آخر
+        const norm = (v) => v === true ? '1' : v === false ? '0' : String(v ?? '');
+        for (const k of Object.keys(d)) if (k in i && norm(d[k]) === norm(i[k])) delete d[k];
+        if (!Object.keys(d).length) { toast('لا توجد تغييرات للحفظ'); return; }
+        d.base_updated_at = i.updated_at;
+        await api('PATCH', `/api/items/${i.id}`, d).catch(e => { if (e.status === 409) { refreshView(); after && after(); } throw e; });
+        toast('حُفظت التعديلات', 'ok'); after && after();
+      }
       else { const it = await POST('/api/tasks', d); toast(`أُنشئت المهمة ${it.ref}`, 'ok'); location.hash = `#/item/${it.id}`; }
       refreshView();
     },
@@ -1800,7 +1799,7 @@ async function viewPartner(main, id) {
       ${p.contacts_hidden ? '<div class="warn-box">بيانات التواصل محجوبة وفق صلاحياتك</div>' : `<h3>بيانات التواصل</h3><dl class="facts">${f('الهاتف', p.phone ? `<a class="ltr" href="tel:${esc(p.phone)}">${esc(p.phone)}</a>` : '')}${f('البريد', p.email ? `<a class="ltr" href="mailto:${esc(p.email)}">${esc(p.email)}</a>` : '')}${f('ملاحظات التواصل', esc(p.contact_notes))}</dl>`}
       ${p.commitments ? `<h3 class="section-gap">الالتزامات والوعود</h3><div class="desc">${esc(p.commitments)}</div>` : ''}
       ${p.opportunities ? `<h3 class="section-gap">الفرص المفتوحة</h3><div class="desc">${esc(p.opportunities)}</div>` : ''}</div>
-      <div class="card"><div class="card-h"><h2>المهام المرتبطة</h2><span class="spacer"></span>${isManager() ? `<button class="btn sm" id="addT">${I('plus')} مهمة مرتبطة</button>` : ''}</div>${listOrEmpty(p.tasks, i => itemRow(i), 'لا توجد مهام مرتبطة')}</div>`;
+      <div class="card"><div class="card-h"><h2>المهام المرتبطة</h2><span class="spacer"></span>${can('task.create') ? `<button class="btn sm" id="addT">${I('plus')} مهمة مرتبطة</button>` : ''}</div>${listOrEmpty(p.tasks, i => itemRow(i), 'لا توجد مهام مرتبطة')}</div>`;
     const e = $('#edit', main); if (e) e.onclick = () => modalPartner(p);
     const t = $('#addT', main); if (t) t.onclick = () => modalTask({ section: 'partnerships', partner_id: p.id, title: '' });
   }
@@ -1844,7 +1843,7 @@ async function viewReports(main) {
           <div class="fill late" style="width:${s.overdue / max * 100}%"></div><div class="fill" style="width:${(s.open - s.overdue) / max * 100}%"></div><div class="fill done" style="width:${s.completed / max * 100}%"></div></div><b>${s.open + s.completed}</b></div>`).join('')}</div></div>
       <div class="card"><div class="card-h">${I('users')}<h2>عبء العمل حسب المسؤول</h2></div>
         ${r.by_person.length ? `<div class="table-wrap"><table class="tbl"><thead><tr><th>المسؤول</th><th>مفتوحة</th><th>متأخرة</th><th>مستحقة خلال أسبوع</th><th>أُنجزت في الفترة</th><th>في الموعد</th></tr></thead><tbody>
-          ${r.by_person.map(p => `<tr><td>${esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
+          ${r.by_person.map(p => `<tr><td>${p.user_id && isAdmin() ? `<a href="#/person/${p.user_id}">${esc(p.name)}</a>` : esc(p.name)}</td><td>${p.open}</td><td class="${p.overdue ? 'late' : ''}">${p.overdue}</td><td>${p.due_week}</td><td>${p.completed}</td><td>${p.on_time_rate == null ? '—' : p.on_time_rate + '%'}</td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">لا توجد مهام مسندة</div>'}</div>
       <div class="card"><div class="card-h"><h2>المهام المكتملة في الفترة</h2></div>${listOrEmpty(r.completed_items, i => itemRow(i), 'لا توجد مهام مكتملة في هذه الفترة')}</div>`;
     $$('[data-p]', main).forEach(b => b.onclick = () => { period = b.dataset.p; load(); });
     $('#pdf', main).onclick = () => window.print();
@@ -1894,7 +1893,7 @@ async function viewSettings(main) {
     <label class="check"><input type="checkbox" name="email_enabled" ${p.email.enabled ? 'checked' : ''}> أوافق على استلام إشعارات بالبريد الإلكتروني</label>
     <div class="grid2">${['new_assignment', 'approval_request', 'new_message', 'overdue', 'digest', 'decision'].map(k => `<label class="check"><input type="checkbox" data-group="email" value="${k}" ${p.email.types.includes(k) ? 'checked' : ''}> ${T[k]}</label>`).join('')}</div>
 `}
-    ${!isManager() && !state.meta.whatsapp.configured ? '' : `    <h3 class="section-gap">واتساب (مستقبلًا)</h3>
+    ${!isAdmin() && !state.meta.whatsapp.configured ? '' : `    <h3 class="section-gap">واتساب (مستقبلًا)</h3>
     <div class="warn-box">${state.meta.whatsapp.configured ? 'تكامل واتساب الرسمي مُعد على الخادم.' : 'غير مفعّل. يتطلب ربطًا رسميًا عبر WhatsApp Business Platform (حساب أعمال موثّق وقوالب معتمدة وتكلفة لكل محادثة). المنصة تعمل بالكامل دونه.'}</div>
     <div class="grid2">${field('رقم واتساب (بالصيغة الدولية)', `<input type="tel" name="whatsapp_phone" dir="ltr" value="${esc(p.whatsapp_phone)}" placeholder="9665xxxxxxxx">`)}<label class="check" style="margin-top:24px"><input type="checkbox" name="whatsapp_enabled" ${p.whatsapp_enabled ? 'checked' : ''}> استلام التنبيهات عبر واتساب عند تفعيله</label></div>
 `}
@@ -1906,7 +1905,7 @@ async function viewSettings(main) {
   <form class="card" id="pw"><div class="card-h"><h2>تغيير كلمة المرور</h2></div>
     <div class="grid2">${field('الحالية', '<input type="password" name="current" autocomplete="current-password" dir="ltr">')}${field('الجديدة (8 أحرف على الأقل)', '<input type="password" name="next" autocomplete="new-password" dir="ltr">')}</div>
     <button class="btn">تغيير</button></form>
-  ${isManager() ? `<div class="card"><div class="card-h"><h2>النسخ الاحتياطي والتصدير</h2></div>
+  ${isAdmin() ? `<div class="card"><div class="card-h"><h2>النسخ الاحتياطي والتصدير</h2></div>
     ${state.meta.file_backup ? '<p class="small muted">تُنشأ نسخة تلقائية يوميًا (آخر 14 نسخة) في مجلد data/backups على الخادم.</p>' : ''}
     <p class="small muted">«تصدير البيانات» ينزّل ملف JSON بكل التكليفات والرسائل والقرارات (دون كلمات المرور ودون محتوى المرفقات) للأرشفة والاطلاع. ليس أداة استعادة تلقائية.</p>
     <div class="btn-row">${state.meta.file_backup ? `<button class="btn" id="bk">${I('download')} إنشاء نسخة احتياطية الآن</button>` : ''}<a class="btn" href="/api/export.json">${I('download')} تصدير البيانات (JSON)</a></div></div>` : ''}`;
@@ -1965,7 +1964,7 @@ async function renderUsersAdmin(el) {
   const pname = (id) => (projects.find(p => p.id === id) || {}).name || `#${id}`;
   el.innerHTML = `<div class="card-h">${I('users')}<h2>المستخدمون والفريق</h2><span class="spacer"></span><button type="button" class="btn primary sm" id="addUser">${I('plus')} إضافة موظف</button></div>
     <p class="small muted">لكل موظف حساب دخول خاص وصلاحيات تحددها: ماذا يرى (مهامه فقط، أو أقسامًا محددة، أو كل المكتب) وماذا يستطيع أن يفعل. تُفحص الصلاحيات في الخادم لكل عملية.</p>
-    <div class="list">${users.map(u => `<div class="row ${u.active ? '' : 'done'}"><div class="main"><span class="title">${esc(u.name)} <span class="small muted ltr">@${esc(u.username)}</span></span>
+    <div class="list">${users.map(u => `<div class="row ${u.active ? '' : 'done'}"><div class="main"><span class="title">${u.role === 'member' ? `<a href="#/person/${u.id}">${esc(u.name)}</a>` : esc(u.name)} <span class="small muted ltr">@${esc(u.username)}</span></span>
       <div class="meta"><span class="chip kind">${esc(u.title || u.role_label)}</span>${u.must_change_password ? '<span class="chip">لم يغيّر كلمة المرور بعد</span>' : ''}${u.active ? '' : '<span class="chip st-cancelled">موقوف</span>'}${u.email ? `<span class="txt ltr">${esc(u.email)}</span>` : ''}
       ${u.role === 'member' ? grantsSummary(u.grants) + (u.projects.length ? u.projects.map(id => `<span class="chip">${I('folder')}${esc(pname(id))}</span>`).join('') : '') : '<span class="txt">يرى كل المهام</span>'}</div></div>
       <div class="side"><button type="button" class="btn sm" data-edit-user="${u.id}">تعديل</button></div></div>`).join('')}</div>`;
@@ -2030,3 +2029,73 @@ if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').cat
 // تحديث تاريخ "اليوم" والبيانات عند العودة للتبويب
 document.addEventListener('visibilitychange', () => { if (!document.hidden && state.me) { if (wsWanted) connectWs(); GET('/api/meta').then(m => { state.meta = m; }).catch(() => { }); refreshView(); } });
 boot();
+
+
+// ===== البحث الشامل والعناصر المفتوحة مؤخرًا =====
+// يُحفظ في هذا الجهاز لكل مستخدم: آخر 8 صفحات تفصيلية فُتحت (مهمة، اجتماع، توجيه، جهة، مجلد، قسم، موظف، إجراء)
+const RECENT_RE = /^#\/(item|meeting|directive|partner|folder|section|person|sop)\/\w+$/;
+const RECENT_LABEL = { item: 'مهمة', meeting: 'اجتماع', directive: 'توجيه', partner: 'جهة', folder: 'مجلد', section: 'قسم', person: 'موظف', sop: 'إجراء' };
+const recentKey = () => 'recent:' + (state.me && state.me.id);
+function getRecent() { try { return JSON.parse(localStorage.getItem(recentKey()) || '[]'); } catch { return []; } }
+function rememberRecent(h, main) {
+  if (!RECENT_RE.test(h)) return;
+  const t = ((main.querySelector('h1') || {}).textContent || '').trim(); if (!t) return;
+  const type = h.split('/')[1];
+  const list = [{ h, t: t.slice(0, 120), type }, ...getRecent().filter(r => r.h !== h)].slice(0, 8);
+  try { localStorage.setItem(recentKey(), JSON.stringify(list)); } catch { /* التخزين غير متاح */ }
+}
+function modalSearch() {
+  const recent = getRecent();
+  const recentHtml = recent.length ? `<div class="sr-group"><h4>${I('clock')} فتحتها مؤخرًا</h4>${recent.map(r => `<a class="sr-row" href="${esc(r.h)}"><span class="sr-t">${esc(r.t)}</span><span class="sr-s">${esc(RECENT_LABEL[r.type] || '')}</span></a>`).join('')}</div>` : '';
+  const quick = [['#/tasks?scope=today', 'مهام اليوم'], ['#/tasks?scope=overdue', 'المتأخرة'], ['#/tasks?scope=open&color=gray', 'قيد المتابعة'], ...(isAdmin() ? [['#/approvals', 'تنتظر القرار'], ['#/meetings', 'الاجتماعات'], ['#/partners', 'الجهات']] : [])];
+  const bg = openModal({
+    title: 'بحث شامل', wide: true, confirmClose: false,
+    body: `<input type="search" id="sq" placeholder="اكتب كلمة: مهمة، موظف، قسم، مجلد، اجتماع، جهة، توجيه، ملف…" aria-label="بحث شامل" autocomplete="off">
+      <div class="sr-quick">${quick.map(([h, t]) => `<a class="chip link" href="${h}">${esc(t)}</a>`).join('')}</div>
+      <div id="sr">${recentHtml || '<p class="small muted">اكتب حرفين على الأقل للبحث في كل المنصة.</p>'}</div>`,
+  });
+  const box = $('#sq', bg.form); const res = $('#sr', bg.form); let timer = null; let seq = 0;
+  box.focus();
+  box.oninput = () => {
+    clearTimeout(timer);
+    const q = box.value.trim();
+    if (q.length < 2) { res.innerHTML = recentHtml || ''; return; }
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      try {
+        const r = await GET('/api/search?q=' + encodeURIComponent(q));
+        if (my !== seq) return;
+        res.innerHTML = r.groups.length ? r.groups.map(g => `<div class="sr-group"><h4>${esc(g.title)} <span class="n">${g.rows.length}</span></h4>${g.rows.map(x => `<a class="sr-row ${x.color ? 'c-' + x.color : ''}" href="${esc(x.h)}"><span class="sr-t">${esc(x.t)}</span><span class="sr-s">${esc(x.s || '')}</span></a>`).join('')}</div>`).join('')
+          : `<div class="empty">لا توجد نتائج لـ «${esc(q)}»</div>`;
+      } catch (e) { res.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; }
+    }, 250);
+  };
+  box.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); const first = $('.sr-row', res); if (first) first.click(); } };
+  // فتح نتيجة يغلق النافذة (الانتقال يغلق النوافذ تلقائيًا)
+}
+// اختصار لوحة المفاتيح: «/» أو Ctrl+K يفتح البحث (على الكمبيوتر)
+document.addEventListener('keydown', (e) => {
+  if (!state.me || $('.modal-bg')) return;
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || '');
+  if ((e.key === '/' && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) { e.preventDefault(); modalSearch(); }
+});
+
+// ===== صفحة الموظف: من هو، وما المسند إليه، وما المتأخر =====
+async function viewPerson(main, id) {
+  async function load() {
+    const p = await GET('/api/people/' + id);
+    const c = p.counts;
+    const k = (cls, n, label, h) => `<a class="kpi ${cls}" href="${h}"><b>${n}</b><span>${label}</span></a>`;
+    const base = `#/tasks?assignee_id=${p.id}&label=${encodeURIComponent('مهام ' + p.name)}`;
+    main.innerHTML = `<div class="page-h">${I('users')}<h1>${esc(p.name)}</h1>${p.title ? `<span class="chip">${esc(p.title)}</span>` : ''}${!p.active ? '<span class="chip overdue">موقوف</span>' : ''}<span class="spacer"></span>
+        ${can('task.create') ? `<button class="btn primary" id="assign">${I('plus')} مهمة له</button>` : ''}</div>
+      <div class="kpis compact section-gap">${k('blue', c.open, 'مفتوحة', base + '&scope=open')}${k('red', c.overdue, 'متأخرة', base + '&scope=overdue')}${k('blue', c.today, 'اليوم', base + '&scope=today')}${k('gray', c.waiting, 'قيد المتابعة', base + '&scope=open&color=gray')}${k('green', c.done_month, 'أنجزها هذا الشهر', base + '&scope=closed')}</div>
+      <div class="card section-gap"><div class="card-h">${I('list')}<h2>المهام المفتوحة</h2><span class="chip">${p.open.length}</span><span class="spacer"></span><a class="btn sm" href="${base}">كل مهامه</a></div>
+        ${listOrEmpty(p.open, i => itemRow(i, { actions: quickStatus(i), showUpdated: true }), 'لا توجد مهام مفتوحة مسندة إليه')}</div>
+      <div class="card"><div class="card-h">${I('checkCircle')}<h2>آخر ما أنجزه</h2></div>${listOrEmpty(p.done_recent, i => itemRow(i), 'لا يوجد بعد')}</div>`;
+    bindQuickStatus(main, p.open);
+    const a = $('#assign', main); if (a) a.onclick = () => modalTask({ assignee_id: p.id, assignee: p.name });
+  }
+  await load();
+  return { refresh: load };
+}

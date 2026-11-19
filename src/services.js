@@ -8,6 +8,7 @@ const events = require('./events');
 class AppError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const bad = (m) => new AppError(400, m);
 const forbidden = (m = 'ليست لديك صلاحية لهذا الإجراء') => new AppError(403, m);
+const conflict = (m) => new AppError(409, m);
 const notFound = (m = 'العنصر غير موجود') => new AppError(404, m);
 function require_(user, perm) { if (!D.can(user, perm)) throw forbidden(); }
 
@@ -21,6 +22,8 @@ function sysMsg(itemId, userId, body, meta = null, kind = 'system') {
 function touch(itemId, userId) { run('UPDATE items SET updated_at=?, updated_by=? WHERE id=?', nowIso(), userId, itemId); }
 const link = (id) => `#/item/${id}`;
 const otherRole = (user) => (user.role === 'owner' ? 'manager' : 'owner');
+// مساحة العمل الإدارية المشتركة: مدير الشؤون التعليمية ومدير المكتب
+const isAdmin = (user) => user && (user.role === 'owner' || user.role === 'manager');
 
 function getItem(id) {
   const it = get(`SELECT ${D.ITEM_LIST_COLS}, (SELECT p.section FROM projects p WHERE p.id=i.project_id) AS project_section, i.description, i.original_text, i.meeting_id, i.decision_id, i.sop_id, i.partner_id, i.acknowledged_by, i.started_at, i.updated_by
@@ -201,7 +204,7 @@ function createTask(user, b, { internal = false } = {}) {
   return tx(() => {
     const ref = nextRef('MH');
     const { id } = run(`INSERT INTO items(ref,kind,source,title,description,original_text,section,category,project_id,priority,due_date,due_time,status,assignee,next_step,requires_approval,sop_id,partner_id,meeting_id,decision_id,created_by,updated_by,is_demo)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'task', b.source === 'meeting' ? 'meeting' : 'manager', title, str(b.description), str(b.description),
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ref, 'task', b.source === 'meeting' ? 'meeting' : (user.role === 'owner' && !internal ? 'owner' : 'manager'), title, str(b.description), str(b.description),
       section, b.category || 'general', b.project_id || null, validPriority(b.priority), validDate(b.due_date), validTime(b.due_time), 'new',
       str(b.assignee, 200) || user.name, str(b.next_step, 500), b.requires_approval ? 1 : 0, b.sop_id || null, b.partner_id || null,
       b.meeting_id || null, b.decision_id || null, user.id, user.id, b.is_demo ? 1 : 0);
@@ -213,6 +216,7 @@ function createTask(user, b, { internal = false } = {}) {
     if (user.role === 'member' && !canSee(user, { id })) throw forbidden('لا يمكنك إنشاء مهمة خارج نطاق صلاحياتك (القسم أو المسؤول)');
     sysMsg(id, user.id, `أنشأ ${user.name} ${b.parent_task_id ? 'المهمة الفرعية' : 'المهمة'} ${ref}`);
     if (user.role === 'member') notifyRole('manager', { type: 'new_assignment', title: `أنشأ ${user.name} ${b.parent_task_id ? 'مهمة فرعية' : 'مهمة'}: ${title}`, body: `${D.sectionName(section)} — ${ref}`, link: link(b.parent_task_id || id) });
+    else if (user.role === 'owner' && !internal) notifyRole('manager', { type: 'new_assignment', title: `${b.priority === 'urgent' ? 'مهمة عاجلة' : 'مهمة جديدة'} من ${D.ownerTitle()}: ${title}`, body: `${D.sectionName(section)} — ${ref}`, link: link(id), urgent: b.priority === 'urgent' });
     events.broadcastChange({ item: id });
     return getItem(id);
   });
@@ -264,20 +268,12 @@ function convertToTask(user, id, b) {
 const EDITABLE = ['title', 'description', 'section', 'category', 'project_id', 'assignee', 'due_date', 'due_time', 'priority', 'next_step', 'requires_approval', 'sop_id', 'partner_id', 'recurrence', 'deliverable'];
 function updateItem(user, id, b) {
   const it = getItem(id);
-  // رجل الأعمال: يعدّل بيانات أي مهمة (الموعد، الأولوية، التصنيف، المجلد، المشروع…)،
-  // أما الحالة فيلغي تكليفه فقط، ويُنجز أو يعيد فتح المهام الفرعية
-  if (user.role === 'owner') {
-    require_(user, 'item.edit');
-    if (b.status !== undefined) {
-      const ok = (b.status === 'cancelled' && it.created_by === user.id && D.can(user, 'item.cancel_own'))
-        || (it.parent_task_id && ['done', 'in_progress'].includes(b.status));
-      if (!ok) throw forbidden();
-    }
-  } else if (user.role === 'member') {
+  // المدير ومدير المكتب: مساحة عمل واحدة وصلاحيات تشغيلية واحدة (item.manage)
+  if (user.role === 'member') {
     // عضو الفريق: يحدّث حالة المهام التي يراها، وضمن حالات العمل؛ وتعديل التفاصيل لمن مُنح item.edit
     require_(user, 'item.work'); assertCanSee(user, it);
     if (it.kind !== 'task') throw forbidden('التكليفات والملاحظات يعالجها مدير المكتب');
-    const allowed = ['status', 'status_note', 'complete_subtasks', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
+    const allowed = ['status', 'status_note', 'complete_subtasks', 'base_updated_at', ...(D.can(user, 'item.edit') ? [...EDITABLE.filter(k => k !== 'requires_approval'), 'folder_id', 'assignee_id'] : [])];
     if (Object.keys(b).some(k => !allowed.includes(k))) throw forbidden('ليست لديك صلاحية تعديل هذا الحقل');
     if (b.status !== undefined && b.status !== it.status) {
       if (it.status === 'cancelled') throw forbidden('المهمة ملغاة؛ إعادة فتحها لمدير المكتب');
@@ -287,6 +283,16 @@ function updateItem(user, id, b) {
     if (!D.can(user, 'partners.view')) { b = { ...b }; delete b.partner_id; } // لا يغيّر ربطًا لا يراه
   } else require_(user, 'item.manage');
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا');
+  // منع تعارض التعديل من جهازين: إن عدّل شخص آخر الحقل نفسه بعد أن فتح المستخدم المهمة، لا نكتب فوق تعديله.
+  // الحقول التي لم يلمسها الآخر تُحفظ عادي (دمج على مستوى الحقل).
+  if (b.base_updated_at) {
+    const fields = [...EDITABLE, 'folder_id', 'assignee_id', 'status'].filter(k => b[k] !== undefined);
+    const clash = fields.length ? get(`SELECT a.field, u.name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id
+      WHERE a.entity='item' AND a.entity_id=? AND a.action IN ('updated','status') AND a.created_at>? AND a.user_id IS NOT ? AND a.field IN (${fields.map(() => '?').join(',')})
+      ORDER BY a.id DESC LIMIT 1`, id, String(b.base_updated_at), user.id, ...fields) : null;
+    if (clash) throw conflict(`عدّل ${clash.name || 'مستخدم آخر'} «${FIELD_LABELS[clash.field] || (clash.field === 'status' ? 'الحالة' : clash.field === 'folder_id' ? 'المجلد' : clash.field === 'assignee_id' ? 'المسؤول' : clash.field)}» في هذه المهمة قبل لحظات. حدّثنا البيانات أمامك؛ راجعها ثم أعد تعديلك إن لزم.`);
+    b = { ...b }; delete b.base_updated_at;
+  }
   // نقل المهمة إلى قسم آخر يفك ربطها بمشروع من القسم القديم
   const newSection = b.section !== undefined ? validSection(b.section) : it.section;
   if (b.project_id === undefined && it.project_id && newSection !== it.section && it.project_section !== newSection) b = { ...b, project_id: null };
@@ -359,7 +365,7 @@ function setStatus(user, it, status, note) {
   if (status === 'done') { sets.push('completed_at=?'); vals.push(at); }
   if (status !== 'done' && it.status === 'done') { sets.push('completed_at=NULL'); }
   // ضمان التسلسل: لا يُعد بدء التنفيذ استلامًا ضمنيًا دون تسجيله
-  if (!it.acknowledged_at && user.role === 'manager' && status !== 'cancelled') { sets.push('acknowledged_at=?', 'acknowledged_by=?'); vals.push(at, user.id); }
+  if (!it.acknowledged_at && isAdmin(user) && status !== 'cancelled') { sets.push('acknowledged_at=?', 'acknowledged_by=?'); vals.push(at, user.id); }
   run(`UPDATE items SET ${sets.join(',')} WHERE id=?`, ...vals, it.id);
   audit('item', it.id, user.id, 'status', 'status', it.status, status);
   sysMsg(it.id, user.id, `غيّر ${user.name} الحالة من «${D.STATUSES[it.status]}» إلى «${D.STATUSES[status]}»${note ? ` — ${note}` : ''}`, { event: 'status', from: it.status, to: status });
@@ -415,7 +421,7 @@ function createSubtask(user, parentId, b) {
     const st = createTask(user, {
       title: b.title, description: b.description, section: parent.section, category: parent.category, project_id: parent.project_id, folder_id: parent.folder_id,
       priority: b.priority || parent.priority, due_date: b.due_date || null, assignee_id: b.assignee_id || parent.assignee_id || undefined,
-      assignee: b.assignee_id ? undefined : (parent.assignee || (user.role === 'owner' ? 'مدير المكتب' : undefined)), parent_task_id: parent.id, source: user.role === 'owner' ? 'owner' : undefined, is_demo: parent.is_demo,
+      assignee: b.assignee_id ? undefined : (parent.assignee || undefined), parent_task_id: parent.id, source: user.role === 'owner' ? 'owner' : undefined, is_demo: parent.is_demo,
     }, { internal: true });
     if (user.role === 'owner') run("UPDATE items SET source='owner' WHERE id=?", st.id);
     sysMsg(parent.id, user.id, `أضاف ${user.name} مهمة فرعية: ${st.title}`, { event: 'subtask', id: st.id });
@@ -449,12 +455,12 @@ function addMessage(user, id, b, fileIds = []) {
   assertCanSee(user, it);
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا؛ لا يمكن إضافة رسائل');
   const body = str(b.body, 8000);
-  const kind = b.kind === 'update' && ['manager', 'member'].includes(user.role) ? 'update' : b.kind === 'result' && user.role === 'manager' ? 'result' : 'message';
+  const kind = b.kind === 'update' ? 'update' : b.kind === 'result' && isAdmin(user) ? 'result' : 'message';
   if (!body && !fileIds.length) throw bad('اكتب رسالة أو أرفق ملفًا');
   return tx(() => {
     const mid = run('INSERT INTO messages(item_id,author_id,kind,body) VALUES(?,?,?,?)', id, user.id, kind, body).id;
     for (const f of fileIds) run('UPDATE files SET message_id=?, item_id=? WHERE id=? AND uploader_id=? AND message_id IS NULL', mid, id, f, user.id);
-    if (b.next_step !== undefined && user.role === 'manager') { run('UPDATE items SET next_step=? WHERE id=?', str(b.next_step, 500), id); audit('item', id, user.id, 'updated', 'next_step', it.next_step, b.next_step); }
+    if (b.next_step !== undefined && isAdmin(user)) { run('UPDATE items SET next_step=? WHERE id=?', str(b.next_step, 500), id); audit('item', id, user.id, 'updated', 'next_step', it.next_step, b.next_step); }
     touch(id, user.id);
     audit('item', id, user.id, kind === 'update' ? 'update_posted' : 'message');
     const title = user.role === 'owner' ? `ملاحظة من ${D.ownerTitle()} على: ${it.title}` : kind === 'update' ? `تحديث من ${user.name}: ${it.title}` : `رسالة من ${user.name}: ${it.title}`;

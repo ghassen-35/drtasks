@@ -166,7 +166,7 @@ function createApp(P) {
       inbox_pending: c(`SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','note') AND status NOT IN ('done','cancelled') AND (acknowledged_at IS NULL OR kind='assignment')`),
     };
     out.updates = all(`SELECT m.id,m.item_id,m.kind,m.body,m.created_at,u.name AS author_name,i.title AS item_title,i.ref FROM messages m JOIN items i ON i.id=m.item_id LEFT JOIN users u ON u.id=m.author_id
-      WHERE u.role='manager' AND u.member=0 AND (m.kind IN ('update','result','message') OR (m.kind IN ('system','decision') AND m.meta IS NOT NULL)) ORDER BY m.id DESC LIMIT 8`);
+      WHERE m.author_id IS NOT ? AND (m.kind IN ('update','result','message') OR (m.kind IN ('system','decision') AND m.meta IS NOT NULL)) ORDER BY m.id DESC LIMIT 8`, req.user.id);
     out.achievements = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE kind IN ${D.TASK_KINDS} AND status='done' ORDER BY completed_at DESC LIMIT 5`).map(i => D.decorate(i, t));
     out.meetings = all(`SELECT * FROM meetings WHERE status='scheduled' AND starts_at>=? ORDER BY starts_at LIMIT 5`, t);
     return out;
@@ -205,6 +205,56 @@ function createApp(P) {
       .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
   }
   app.get('/api/items', wrap(req => listItems(req.query, req.user)));
+
+  // ===== البحث الشامل: مكان واحد للمهام والأشخاص والأقسام والمجلدات والمشاريع والاجتماعات والتوجيهات والجهات والإجراءات والملفات =====
+  // كل مجموعة تحترم صلاحيات المستخدم (الموظف يرى ما يخصه فقط)
+  app.get('/api/search', wrap(req => {
+    const u = req.user; const q = String(req.query.q || '').trim().slice(0, 100);
+    if (q.length < 2) return { q, groups: [] };
+    const has = (c) => `instr(lower(COALESCE(${c},'')), lower(?)) > 0`;
+    const admin = u.role !== 'member';
+    const groups = [];
+    const add = (key, title, rows) => { if (rows.length) groups.push({ key, title, rows }); };
+    add('items', 'المهام', listItems({ kind: 'all', q, limit: 12 }, u).filter(i => i.kind !== 'note' || admin).slice(0, 8)
+      .map(i => ({ h: `#/item/${i.id}`, t: i.title, s: [i.ref, i.section_name, i.status_label, i.assignee].filter(Boolean).join(' · '), color: i.color })));
+    if (admin) add('people', 'الأشخاص', all(`SELECT id,name,title,${D.roleSql()} AS role FROM users WHERE active=1 AND (${has('name')} OR ${has('title')}) ORDER BY member, id LIMIT 6`, q, q)
+      .map(x => ({ h: x.role === 'member' ? `#/person/${x.id}` : '#/tasks?scope=open', t: x.name, s: x.title || D.ROLE_LABELS[x.role] || '' })));
+    const secs = admin ? D.SECTION_KEYS : (D.can(u, 'folders.view') ? (S.allowedSections(u) || D.SECTION_KEYS) : []);
+    add('sections', 'الأقسام', secs.map(k => ({ k, n: D.sectionName(k) })).filter(x => x.n.includes(q)).map(x => ({ h: `#/section/${x.k}`, t: x.n, s: 'قسم' })));
+    if (D.can(u, 'folders.view')) {
+      add('folders', 'المجلدات', all(`SELECT id,name,section FROM folders WHERE ${has('name')} ORDER BY name LIMIT 12`, q).filter(f => secs.includes(f.section)).slice(0, 6)
+        .map(f => ({ h: `#/folder/${f.id}`, t: f.name, s: D.sectionName(f.section) })));
+    }
+    const pids = admin ? null : S.memberProjects(u.id);
+    add('projects', 'المشاريع والمبادرات', all(`SELECT id,name,section,kind FROM projects WHERE ${has('name')} ORDER BY name LIMIT 12`, q).filter(p => admin || pids.includes(p.id) || secs.includes(p.section)).slice(0, 6)
+      .map(p => ({ h: `#/tasks?project_id=${p.id}&label=${encodeURIComponent(p.name)}`, t: p.name, s: `${D.PROJECT_KINDS[p.kind] || 'مشروع'} · ${D.sectionName(p.section)}` })));
+    if (D.can(u, 'meetings.view')) {
+      add('meetings', 'الاجتماعات', all(`SELECT id,title,starts_at FROM meetings WHERE ${has('title')} ORDER BY starts_at DESC LIMIT 6`, q).map(m => ({ h: `#/meeting/${m.id}`, t: m.title, s: String(m.starts_at || '').slice(0, 10) })));
+      add('decisions', 'قرارات الاجتماعات', all(`SELECT d.id,d.text,d.meeting_id,m.title AS mt FROM decisions d JOIN meetings m ON m.id=d.meeting_id WHERE ${has('d.text')} ORDER BY d.id DESC LIMIT 6`, q)
+        .map(d => ({ h: `#/meeting/${d.meeting_id}`, t: d.text, s: d.mt })));
+    }
+    if (D.can(u, 'directives.view')) add('directives', 'التوجيهات', all(`SELECT id,ref,title FROM directives WHERE ${has('title')} OR ${has('ref')} OR ${has('details')} ORDER BY id DESC LIMIT 6`, q, q, q).map(d => ({ h: `#/directive/${d.id}`, t: d.title, s: d.ref })));
+    if (D.can(u, 'partners.view')) add('partners', 'الجهات والشراكات', all(`SELECT id,name,relation_type FROM partners WHERE ${has('name')} OR ${has('relation_type')} ORDER BY name LIMIT 6`, q, q).map(p => ({ h: `#/partner/${p.id}`, t: p.name, s: p.relation_type || 'جهة' })));
+    if (D.can(u, 'sops.view')) add('sops', 'الإجراءات التشغيلية', all(`SELECT id,name FROM sops WHERE ${has('name')} OR ${has('purpose')} ORDER BY name LIMIT 6`, q, q).map(x => ({ h: `#/sop/${x.id}`, t: x.name, s: 'إجراء' })));
+    add('files', 'الملفات والمرفقات', all(`SELECT f.id,f.original_name,f.item_id,f.meeting_id,f.sop_id FROM files f WHERE f.is_voice=0 AND ${has('f.original_name')} AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL) ORDER BY f.id DESC LIMIT 20`, q)
+      .filter(f => (f.item_id && S.canSee(u, { id: f.item_id })) || (f.meeting_id && D.can(u, 'meetings.view')) || (f.sop_id && D.can(u, 'sops.view'))).slice(0, 6)
+      .map(f => ({ h: f.item_id ? `#/item/${f.item_id}` : f.meeting_id ? `#/meeting/${f.meeting_id}` : `#/sop/${f.sop_id}`, t: f.original_name, s: 'ملف', file: f.id })));
+    return { q, groups };
+  }));
+
+  // ===== صفحة الموظف: بياناته ومهامه (للمدير ومدير المكتب) =====
+  app.get('/api/people/:id', wrap(req => {
+    if (req.user.role === 'member') throw new S.AppError(403, 'ليست لديك صلاحية لهذا الإجراء');
+    const id = Number(req.params.id); const t = D.todayStr();
+    const p = get(`SELECT id,name,title,email,active,${D.roleSql()} AS role FROM users WHERE id=?`, id);
+    if (!p) throw new S.AppError(404, 'غير موجود');
+    const items = listItems({ kind: 'tasks', assignee_id: id, limit: 300 }, req.user);
+    const open = items.filter(i => i.is_open);
+    const monthStart = t.slice(0, 8) + '01';
+    return { ...p, role_label: D.ROLE_LABELS[p.role], open, done_recent: items.filter(i => i.status === 'done').slice(0, 10),
+      counts: { open: open.length, overdue: open.filter(i => i.is_overdue).length, today: open.filter(i => i.is_due_today).length, waiting: open.filter(i => i.color === 'gray').length,
+        done_month: items.filter(i => i.status === 'done' && i.completed_at && D.localDate(i.completed_at) >= monthStart).length } };
+  }));
 
   function attachFiles(user, itemId, ids) {
     for (const f of (ids || []).map(Number).filter(Boolean)) run('UPDATE files SET item_id=? WHERE id=? AND uploader_id=? AND item_id IS NULL AND message_id IS NULL AND approval_id IS NULL', itemId, f, user.id);

@@ -56,18 +56,20 @@ const APPROVAL_KINDS = {
 
 // الصلاحيات تُفحص في الخادم لكل عملية — وليس بإخفاء الأزرار فقط
 // member (عضو فريق): لا يملك item.view العامة، بل item.view_scoped — أي مسار لم يُراعِ الأعضاء صراحةً يرفضهم تلقائيًا
-const PERMS = {
-  owner: new Set([
-    'item.view', 'item.message', 'assignment.create', 'note.create', 'item.cancel_own',
-    'approval.decide', 'reports.view', 'meetings.view', 'sops.view', 'partners.view', 'contacts.view',
-    'folders.view', 'users.manage', 'projects.manage', 'item.edit', 'directives.view', 'directives.manage',
-  ]),
-  manager: new Set([
+// مساحة عمل إدارية واحدة: مدير الشؤون التعليمية ومدير المكتب يعملان على البيانات نفسها بالصلاحيات التشغيلية نفسها.
+// الفرق الوحيد: القرار (الاعتماد/الرفض) لمدير الشؤون التعليمية، ومدير المكتب يسجّل القرار نيابةً عنه إذا ورده بقناة أخرى.
+const MANAGER_PERMS = [
     'item.view', 'item.message', 'item.manage', 'task.create', 'approval.request',
     'reports.view', 'meetings.view', 'meetings.manage', 'sops.view', 'sops.manage',
     'partners.view', 'partners.manage', 'contacts.view', 'projects.manage', 'folders.view', 'users.manage',
     'directives.view', 'directives.manage', 'approval.record',
+];
+const PERMS = {
+  owner: new Set([
+    ...MANAGER_PERMS.filter(p => !['approval.request', 'approval.record'].includes(p)),
+    'approval.decide', 'item.edit', 'assignment.create', 'note.create', 'item.cancel_own',
   ]),
+  manager: new Set(MANAGER_PERMS),
   member: new Set(['item.view_scoped', 'item.message', 'item.work', 'sops.view']),
 };
 // صلاحيات يمنحها مدير المكتب لكل موظف (فوق صلاحياته الأساسية). أي صلاحية خارج هذه القائمة تُتجاهل
@@ -181,6 +183,7 @@ const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,
   (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled') AS subtasks_total,
   (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status='done') AS subtasks_done,
   (SELECT f.name FROM folders f WHERE f.id=i.folder_id) AS folder_name,
+  (SELECT u.name FROM users u WHERE u.id=i.updated_by) AS updated_by_name,
   (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending') AS pending_approvals,
   (SELECT p.name FROM projects p WHERE p.id=i.project_id) AS project_name,
   (SELECT COUNT(*) FROM files f WHERE f.item_id=i.id) AS files_count`;

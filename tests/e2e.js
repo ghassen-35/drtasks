@@ -131,26 +131,31 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     const ecdh = require('crypto').createECDH('prime256v1'); ecdh.generateKeys();
     await apiAs(mgr, 'POST', '/api/push/subscribe', { endpoint: `http://127.0.0.1:${pushPort}/push/mgr`, keys: { p256dh: ecdh.getPublicKey('base64url'), auth: require('crypto').randomBytes(16).toString('base64url') } });
     tileBefore = (await apiAs(mgr, 'GET', '/api/home')).body.tiles.find(t => t.key === 'association');
-    await mgr.goto(BASE + '/#/inbox'); await mgr.waitForSelector('h1:has-text("الوارد من مدير الشؤون التعليمية")');
+    // مساحة العمل المشتركة: مدير المكتب يفتح قائمة المهام على جهاز آخر لاختبار المزامنة الفورية
+    await mgr.goto(BASE + '/#/tasks?scope=open'); await mgr.waitForSelector('h1:has-text("كل المهام")');
 
-    await check('يرسل مدير الشؤون التعليمية تكليفًا يتعلق بالجمعية (مع مرفق)', async () => {
+    await check('مساحة عمل مشتركة: يضيف مدير الشؤون التعليمية مهمة من جواله (مع مرفق) فتصبح مهمة مباشرة لا تكليفًا', async () => {
       await owner.click('#btnAdd'); await owner.click('.modal [data-k=task]'); await owner.waitForSelector('.modal input[name=title]');
       await owner.fill('.modal input[name=title]', TITLE);
-      await owner.fill('.modal textarea[name=description]', 'أرجو إعداد التقرير السنوي متضمنًا الأرقام والإنجازات، ورفعه لي للاعتماد.');
-      await owner.click('.modal .seg label:has-text("الجمعية")');
+      await owner.fill('.modal textarea[name=description]', 'إعداد التقرير السنوي متضمنًا الأرقام والإنجازات، ورفعه للاعتماد.');
+      await owner.selectOption('.modal select[name=section]', 'association');
       await owner.click('.modal .seg label:has-text("مهم")');
-      const f = path.join(DATA, 'brief.txt'); fs.writeFileSync(f, 'ملف توضيحي للتكليف');
+      await owner.evaluate(() => document.querySelectorAll('.modal details').forEach(d => { d.open = true; }));
+      await owner.check('.modal input[name=requires_approval]');
+      const f = path.join(DATA, 'brief.txt'); fs.writeFileSync(f, 'ملف توضيحي للمهمة');
       await owner.setInputFiles('.modal input[type=file]', f);
       await owner.waitForSelector('.modal .files .file');
-      await owner.click('.modal button:has-text("إرسال إلى مدير المكتب")');
+      await owner.click('.modal button[type=submit]');
       await owner.waitForSelector(`h1:has-text("${TITLE}")`);
       itemId = Number(owner.url().match(/item\/(\d+)/)[1]);
       ref = await owner.textContent('.item-head .ref');
-      assert(/^TK-\d{4}-\d{4}$/.test(ref.trim()), 'رقم مرجعي غير صالح: ' + ref);
-      assert(await owner.isVisible('text=لم يُؤكد الاستلام بعد'), 'حالة الاستلام غير ظاهرة');
+      assert(/^MH-\d{4}-\d{4}$/.test(ref.trim()), 'يجب أن تكون مهمة مباشرة (MH): ' + ref);
+      assert(!(await owner.isVisible('text=لم يُؤكد الاستلام بعد')), 'لا حاجة لتأكيد استلام بين المدير ومدير المكتب');
+      const it = (await apiAs(owner, 'GET', `/api/items/${itemId}`)).body.item;
+      assert(it.kind === 'task' && it.source === 'owner' && it.requires_approval, 'المهمة لم تُحفظ كما يجب: ' + JSON.stringify({ kind: it.kind, source: it.source }));
     });
 
-    await check('يظهر التكليف في صندوق الوارد لدى مدير المكتب (فوريًا دون إعادة تحميل)', async () => {
+    await check('السيناريو الأول: تظهر المهمة لدى مدير المكتب على جهازه فورًا دون إعادة تحميل', async () => {
       await mgr.waitForSelector(`.row a.title:has-text("${TITLE}")`, { timeout: 8000 });
       await mgr.screenshot({ path: path.join(SHOTS, '02-manager-inbox-desktop.png'), fullPage: true });
     });
@@ -165,34 +170,22 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(pushHits.length >= 1 && pushHits[0].enc === 'aes128gcm' && pushHits[0].auth, 'لم يُرسل طلب Push مشفر: ' + JSON.stringify(pushHits));
     });
 
-    await check('يؤكد مدير المكتب الاستلام', async () => {
-      await mgr.click(`.row:has(a.title:has-text("${TITLE}")) button:has-text("تأكيد الاستلام")`);
-      await mgr.waitForSelector('.toast.ok');
-    });
-
-    await check('يرى مدير الشؤون التعليمية تأكيد الاستلام (فوريًا) ويصله إشعار', async () => {
-      await owner.waitForSelector('.chip.st-acknowledged', { timeout: 8000 });
-      const n = (await apiAs(owner, 'GET', '/api/notifications')).body;
-      assert(n.some(x => x.type === 'acknowledged'), 'لا يوجد إشعار تأكيد الاستلام');
-    });
-
-    await check('يحوّل مدير المكتب التكليف إلى مهمة في قسم الجمعية دون تكرار', async () => {
-      await mgr.goto(`${BASE}/#/item/${itemId}`); await mgr.waitForSelector('#acts button:has-text("تحويل إلى مهمة")', { state: 'attached' });
-      await act(mgr, '#acts button:has-text("تحويل إلى مهمة")');
-      await mgr.waitForSelector('.modal select[name=section]');
+    await check('السيناريو الثاني: يعدّل مدير المكتب موعد المهمة فيراه المدير فورًا، ويُسجَّل من عدّل', async () => {
+      await mgr.goto(`${BASE}/#/item/${itemId}`); await mgr.waitForSelector('#editTop');
+      await mgr.click('#editTop'); await mgr.waitForSelector('.modal input[name=due_date]');
+      const due = new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10);
+      await mgr.fill('.modal input[name=due_date]', due);
       await mgr.fill('.modal input[name=next_step]', 'جمع بيانات البرامج من المشرفين');
-      await mgr.fill('.modal input[name=due_date]', new Date(Date.now() + 3 * 864e5).toISOString().slice(0, 10));
-      await mgr.check('.modal input[name=requires_approval]');
-      await mgr.click('.modal button:has-text("تحويل إلى مهمة")');
-      await mgr.waitForSelector('.modal-bg', { state: 'detached' });
-      await mgr.waitForSelector('.chip.kind:has-text("مهمة")');
-      const list = (await apiAs(mgr, 'GET', '/api/items?kind=all&q=' + encodeURIComponent(TITLE))).body;
-      assert(Array.isArray(list) && list.length === 1, 'يوجد تكرار أو خطأ: ' + JSON.stringify(list).slice(0, 200));
-      assert(list[0].kind === 'task' && list[0].ref === ref.trim() && list[0].section === 'association', 'التحويل لم يحافظ على السجل');
+      await mgr.click('.modal button[type=submit]'); await mgr.waitForSelector('.modal-bg', { state: 'detached' });
+      // المدير على صفحة المهمة نفسها في جواله: يتحدث الموعد دون إعادة تحميل
+      await owner.waitForFunction((d) => { const x = document.querySelector('.facts'); return x && x.textContent.includes(d); }, new Intl.DateTimeFormat('ar-SA-u-ca-gregory-nu-latn', { day: 'numeric', month: 'long' }).format(new Date(due + 'T12:00:00')).split(' ')[0], { timeout: 8000 });
+      const it = (await apiAs(owner, 'GET', `/api/items/${itemId}`)).body;
+      assert(it.item.due_date === due, 'الموعد لم يُحفظ');
+      assert(it.messages.some(m => m.kind === 'system' && m.body.includes('عدّل مدير المكتب')), 'لم يُسجَّل من عدّل');
     });
 
     await check('يبدأ التنفيذ ويضيف تحديثًا', async () => {
-      await act(mgr, '#acts button:has-text("بدء/استئناف التنفيذ")');
+      await act(mgr, '#acts [data-s=in_progress]');
       await mgr.waitForSelector('.item-head .chip.st-in_progress');
       await mgr.fill('#cmp textarea[name=body]', 'تم جمع بيانات 4 برامج من أصل 6، والعمل جارٍ على البقية.');
       await mgr.click('#cmp button:has-text("إرسال")');
@@ -219,7 +212,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     });
 
     await check('يرفع مدير المكتب تقريرًا ويطلب اعتماده (مع مرفق)', async () => {
-      await act(mgr, '#acts button:has-text("طلب اعتماد")');
+      await act(mgr, '#acts [data-a=approval]');
       await mgr.selectOption('.modal select[name=kind]', 'report');
       await mgr.fill('.modal input[name=title]', 'مسودة التقرير السنوي للجمعية');
       await mgr.fill('.modal textarea[name=body]', 'مرفق المسودة الأولى مع المقارنة بالعام الماضي.');
@@ -259,7 +252,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     await check('يستكمل مدير المكتب العمل ويعيد الطلب فيعتمده مدير الشؤون التعليمية', async () => {
       await mgr.fill('#cmp textarea[name=body]', 'أُضيف قسم المستفيدين.'); await mgr.click('#cmp button:has-text("إرسال")');
       await mgr.waitForSelector('.msg:has-text("أُضيف قسم المستفيدين")');
-      await act(mgr, '#acts button:has-text("طلب اعتماد")');
+      await act(mgr, '#acts [data-a=approval]');
       await mgr.fill('.modal input[name=title]', 'التقرير السنوي — النسخة المعدلة');
       await mgr.click('.modal button:has-text("إرسال الطلب")');
       await owner.waitForSelector('form.decide', { timeout: 8000 });
@@ -271,9 +264,8 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     await check('سياسة الإغلاق: لا تكتمل المهمة المشروطة بالاعتماد دون اعتماد النتيجة', async () => {
       const r = await apiAs(mgr, 'PATCH', `/api/items/${itemId}`, { status: 'done' });
       assert(r.status === 400, 'سُمح بالإكمال دون اعتماد');
-      // الصلاحيات مطبقة في الخادم: مدير الشؤون التعليمية لا يستطيع تغيير الحالة أو تأكيد الاستلام
-      assert((await apiAs(owner, 'PATCH', `/api/items/${itemId}`, { status: 'done' })).status === 403, 'مدير الشؤون التعليمية غيّر الحالة');
-      assert((await apiAs(owner, 'POST', `/api/items/${itemId}/ack`)).status === 403, 'مدير الشؤون التعليمية أكّد الاستلام');
+      // مساحة عمل مشتركة: سياسة الإغلاق تنطبق على المدير كما تنطبق على مدير المكتب، والقرار للمدير وحده
+      assert((await apiAs(owner, 'PATCH', `/api/items/${itemId}`, { status: 'done' })).status === 400, 'المدير تجاوز سياسة الإغلاق');
       assert((await apiAs(mgr, 'POST', `/api/approvals/1/decide`, { decision: 'approved' })).status === 403, 'مدير المكتب اتخذ قرارًا');
       assert((await apiAs(owner, 'POST', `/api/items/${itemId}/approvals`, { kind: 'report', title: 'x' })).status === 403, 'مدير الشؤون التعليمية طلب اعتمادًا');
       // حد المحاولات لكل مستخدم يصمد أمام تزوير عنوان IP عبر X-Forwarded-For
@@ -291,7 +283,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
     });
 
     await check('يرفع مدير المكتب النتيجة النهائية ويعتمدها مدير الشؤون التعليمية ثم تُغلق', async () => {
-      await act(mgr, '#acts button:has-text("رفع النتيجة النهائية")');
+      await act(mgr, '#acts [data-a=result]');
       await mgr.fill('.modal textarea[name=body]', 'التقرير السنوي النهائي جاهز ومرفق.');
       await mgr.click('.modal button:has-text("رفع النتيجة وطلب الاعتماد")');
       await mgr.waitForSelector('.approval:has-text("اعتماد النتيجة النهائية")');
@@ -322,9 +314,11 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await owner.goto(`${BASE}/#/item/${itemId}`);
       await owner.waitForSelector('.msg.owner:has-text("مقارنة بأرقام العام الماضي")');
       const d = (await apiAs(owner, 'GET', `/api/items/${itemId}`)).body;
-      assert(d.item.original_text.includes('أرجو إعداد التقرير السنوي'), 'النص الأصلي مفقود');
+      assert(d.item.original_text.includes('إعداد التقرير السنوي'), 'النص الأصلي مفقود');
       assert(d.approvals.length === 3 && d.approvals.filter(a => a.decided_by).length === 3, 'القرارات غير محفوظة');
-      assert(d.audit.some(a => a.action === 'acknowledged') && d.audit.some(a => a.action === 'converted') && d.audit.some(a => a.action === 'closed'), 'سجل التغييرات ناقص');
+      // سجل من فعل ماذا: أنشأها المدير، عدّل موعدها مدير المكتب، غيّر حالتها، وأغلقها
+      const by = (act) => d.audit.filter(a => a.action === act).map(a => a.user_name);
+      assert(by('created').includes('مدير الشؤون التعليمية') && by('updated').includes('مدير المكتب') && d.audit.some(a => a.action === 'status') && by('closed').includes('مدير المكتب'), 'سجل التغييرات ناقص: ' + JSON.stringify(d.audit.map(a => [a.action, a.user_name])));
       assert(d.files.length === 1 && d.approvals[0].files.length === 1, 'المرفقات غير محفوظة');
       const fr = await owner.evaluate(async (id) => (await fetch('/api/files/' + id)).status, d.files[0].id);
       assert(fr === 200, 'تعذر تنزيل المرفق');
@@ -345,19 +339,19 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(tasks.length === 1 && tasks[0].source === 'meeting', 'المهمة المرتبطة بالقرار غير صحيحة');
       await owner.goto(BASE + '/#/meetings'); await owner.click('button[data-tab=decisions]');
       await owner.waitForSelector('.row:has-text("إطلاق حملة التسجيل")');
-      assert(!(await owner.isVisible('#add')), 'زر إنشاء اجتماع ظاهر لمدير الشؤون التعليمية');
+      assert(await owner.isVisible('#add'), 'مساحة عمل مشتركة: يجب أن يستطيع المدير إنشاء اجتماع كما يفعل مدير المكتب');
     });
 
-    await check('زر (+) في مربع القسم يفتح تكليفًا جديدًا والقسم محدد مسبقًا', async () => {
+    await check('زر (+) في مربع القسم يفتح مهمة جديدة والقسم محدد مسبقًا (للمدير ومدير المكتب)', async () => {
       await owner.goto(BASE + '/#/'); await owner.waitForSelector('.tiles');
       await owner.click('button.tile-add[data-add-section="family"]');
-      await owner.waitForSelector('.modal input[name=title]');
-      assert(await owner.isChecked('.modal input[name=section][value=family]'), 'القسم غير محدد مسبقًا');
+      await owner.waitForSelector('.modal select[name=section]');
+      assert(await owner.$eval('.modal select[name=section]', e => e.value) === 'family', 'القسم غير محدد مسبقًا');
       await owner.fill('.modal input[name=title]', 'حجز موعد عائلي من زر المربع');
-      await owner.click('.modal button:has-text("إرسال إلى مدير المكتب")');
+      await owner.click('.modal button[type=submit]');
       await owner.waitForSelector('h1:has-text("حجز موعد عائلي من زر المربع")');
       const it = (await apiAs(owner, 'GET', '/api/items?kind=all&q=' + encodeURIComponent('حجز موعد عائلي'))).body;
-      assert(it.length === 1 && it[0].section === 'family' && it[0].kind === 'assignment', 'التكليف لم يُنشأ في القسم الصحيح');
+      assert(it.length === 1 && it[0].section === 'family' && it[0].kind === 'task', 'المهمة لم تُنشأ في القسم الصحيح');
       await mgr.goto(BASE + '/#/'); await mgr.waitForSelector('.tiles');
       await mgr.click('button.tile-add[data-add-section="commercial"]');
       await mgr.waitForSelector('.modal select[name=section]');
@@ -650,8 +644,11 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(mt.length === 5 && mt.every(x => x.task_id), 'القرارات الخمسة لم تتحول إلى مهام');
       // أعمال متعددة لشخص واحد: تظهر في توزيع العمل، والرابط يفتح قائمته
       await openFresh(owner, '#/command'); await owner.waitForSelector('.tbl');
+      // اسم الشخص يفتح صفحته، ورقم «مفتوحة» يفتح قائمة مهامه
       const href = await owner.$eval('.tbl a:has-text("مساعد الاختبار")', a => a.getAttribute('href')); // الجدول يتحدث فوريًا فنفتح الرابط مباشرة
-      await owner.goto(BASE + '/' + href); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
+      assert(href === `#/person/${staff.asst}`, 'اسم الموظف لا يفتح صفحته: ' + href);
+      const openHref = await owner.$eval('.tbl tr:has(a:has-text("مساعد الاختبار")) td:nth-child(2) a', a => a.getAttribute('href'));
+      await owner.goto(BASE + '/' + openHref); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
       const mine = (await apiAs(owner, 'GET', `/api/items?kind=tasks&scope=open&assignee_id=${staff.asst}`)).body;
       assert(mine.length >= 6, 'توزيع العمل لا يعكس المهام المتعددة: ' + mine.length);
       // تكليف عاجل يحتاج تنفيذًا فوريًا
@@ -666,6 +663,97 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       await apiAs(owner, 'PATCH', `/api/items/${urg.id}`, { status: 'cancelled' });
       const c = (await apiAs(owner, 'GET', `/api/items/${urg.id}`)).body;
       assert(c.item.status === 'cancelled' && c.audit.some(a => a.new_value === 'cancelled') && c.messages.length > 0, 'الإلغاء لم يحفظ السجل');
+    });
+
+    await check('البحث الشامل: من أي صفحة، بالاسم أو الرقم، ونتائج تُفتح مباشرة، و«فتحتها مؤخرًا»', async () => {
+      await mgr.goto(BASE + '/#/meetings'); await mgr.waitForSelector('main h1');
+      await mgr.click('#btnSearch'); await mgr.waitForSelector('#sq');
+      // «فتحتها مؤخرًا» يتذكر المهمة التي فُتحت سابقًا في هذا الجهاز
+      assert(await mgr.isVisible('.sr-group:has-text("فتحتها مؤخرًا")'), 'لا تظهر العناصر المفتوحة مؤخرًا');
+      await mgr.fill('#sq', 'التقرير السنوي');
+      await mgr.waitForSelector(`.sr-group:has-text("المهام") .sr-row:has-text("${TITLE}")`, { timeout: 8000 });
+      await mgr.fill('#sq', 'الجمعية');
+      await mgr.waitForSelector('.sr-group:has-text("الأقسام") .sr-row:has-text("الجمعية")');
+      await mgr.fill('#sq', 'مساعد');
+      await mgr.waitForSelector('.sr-group:has-text("الأشخاص") .sr-row:has-text("مساعد الاختبار")');
+      await mgr.click('.sr-group:has-text("الأشخاص") .sr-row:has-text("مساعد الاختبار")');
+      await mgr.waitForSelector('h1:has-text("مساعد الاختبار")');
+      assert(!(await mgr.$('.modal-bg')), 'نافذة البحث بقيت مفتوحة بعد فتح النتيجة');
+      // اختصار لوحة المفاتيح «/»
+      await mgr.keyboard.press('/'); await mgr.waitForSelector('#sq'); await mgr.keyboard.press('Escape');
+      // صلاحيات البحث: الموظف لا يرى أشخاصًا ولا مهامًا خارج نطاقه
+      const memSearch = await (async () => { const c = await browser.newContext(); const pg = await c.newPage(); await pg.goto(BASE); await pg.fill('input[name=username]', 'qa.coord'); await pg.fill('input[name=password]', 'Staff#2026x'); await pg.click('button:has-text("دخول")'); await pg.waitForSelector('#main'); const r = await apiAs(pg, 'GET', '/api/search?q=' + encodeURIComponent('التقرير السنوي')); const r2 = await apiAs(pg, 'GET', '/api/search?q=' + encodeURIComponent('مساعد')); const r3 = await apiAs(pg, 'GET', '/api/people/' + staff.asst); await c.close(); return [r.body, r2.body, r3.status]; })();
+      assert(!memSearch[0].groups.some(g => g.key === 'items'), 'الموظفة (قسم الدعوي) ترى مهمة من قسم الجمعية في البحث');
+      assert(!memSearch[1].groups.some(g => g.key === 'people') && memSearch[2] === 403, 'الموظف يرى بيانات زملائه');
+    });
+
+    await check('السيناريو الرابع: من الرئيسية إلى القائمة والقسم والمهمة والموظف عبر الأرقام والروابط', async () => {
+      await owner.goto(BASE + '/#/'); await owner.waitForSelector('.tiles');
+      // رقم «مفتوحة» في مربع الجمعية يفتح مهامها المفتوحة مباشرة
+      await owner.click('.tile-wrap:has(h3:has-text("الجمعية")) .st[data-go*="scope=open"]');
+      await owner.waitForSelector('.crumbs:has-text("الجمعية — المفتوحة")');
+      assert(owner.url().includes('section=association') && owner.url().includes('scope=open'), 'الرقم لم يفتح القائمة الصحيحة: ' + owner.url());
+      await owner.waitForSelector('#res p.small'); // انتظار اكتمال تحميل القائمة (سطر عدد النتائج)
+      const rows = await owner.$$eval('#res .row', r => r.length);
+      const api = (await apiAs(owner, 'GET', '/api/items?kind=tasks&section=association&scope=open')).body.length;
+      assert(rows === api && rows > 0, `عدد القائمة (${rows}) لا يطابق الرقم (${api})`);
+      // اسم القسم في البطاقة يفتح صفحة القسم
+      const sec = await owner.$('#res .row a.chip.link[href^="#/section/"]'); assert(sec, 'اسم القسم ليس رابطًا');
+      // اسم المسؤول يفتح صفحة الموظف، وأرقامها تفتح قوائمها
+      const t2 = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'مراجعة كشوف الحضور', section: 'association', assignee_id: staff.asst, due_date: (await apiAs(mgr, 'GET', '/api/meta')).body.today })).body;
+      await owner.goto(`${BASE}/#/item/${t2.id}`); await owner.waitForSelector('.facts');
+      await owner.click(`.facts a[href="#/person/${staff.asst}"]`); await owner.waitForSelector('h1:has-text("مساعد الاختبار")');
+      await owner.click('.kpi:has-text("اليوم")'); await owner.waitForSelector('.crumbs:has-text("مهام مساعد الاختبار")');
+      await owner.waitForSelector('#res .row a.title:has-text("مراجعة كشوف الحضور")');
+      // من الرئيسية: بطاقة «تنتظر القرار» وبطاقات اللون تفتح وجهاتها
+      await owner.goto(BASE + '/#/'); await owner.waitForSelector('.color-key');
+      await owner.click('.color-key .ck.c-blue'); await owner.waitForSelector('#res');
+      assert(owner.url().includes('color=blue'), 'بطاقة «مهام اليوم» لم تفتح القائمة المصفاة');
+    });
+
+    await check('فاحص الروابط: كل رابط داخلي في الصفحات الأساسية يفتح صفحة سليمة لكل دور (المدير، مدير المكتب، موظف)', async () => {
+      const memCtx = await browser.newContext({ ...devices['Pixel 7'], locale: 'ar-SA' }); const mem = await memCtx.newPage();
+      mem.on('pageerror', e => consoleErrors.push('[member] ' + e.message));
+      await mem.goto(BASE); await mem.fill('input[name=username]', 'qa.asst'); await mem.fill('input[name=password]', 'Staff#2026x'); await mem.click('button:has-text("دخول")'); await mem.waitForSelector('#main');
+      const seeds = { owner: ['#/', '#/tasks', '#/approvals', '#/command', '#/dashboard', '#/directives', '#/meetings', '#/partners', '#/reports', '#/files', '#/more', `#/item/${itemId}`],
+        mgr: ['#/', '#/tasks?scope=open', '#/command', '#/dashboard', '#/sops', '#/settings', '#/section/association', `#/person/${staff.asst}`],
+        mem: ['#/', '#/tasks', '#/files', '#/more'] };
+      const bad = []; let visited = 0;
+      for (const [who, pg] of [['owner', owner], ['mgr', mgr], ['mem', mem]]) {
+        const seen = new Set(); const queue = [...seeds[who]];
+        // نمط واحد لكل نوع صفحة يكفي (item/5 و item/9 نفس الصفحة) مع حد أعلى للزيارات
+        const pattern = (h) => h.replace(/\d+/g, 'N').replace(/label=[^&]*/, '');
+        const patterns = new Map();
+        while (queue.length && seen.size < 70) {
+          const h = queue.shift(); if (seen.has(h)) continue; seen.add(h);
+          await pg.goto(BASE + '/' + h);
+          await pg.waitForFunction(() => { const m = document.querySelector('#main .view'); return m && !m.textContent.includes('جارٍ التحميل…'); }, null, { timeout: 10000 }).catch(() => bad.push(`${who} ${h}: لم تكتمل`));
+          visited++;
+          const state = await pg.evaluate(() => ({ text: (document.querySelector('#main') || {}).textContent || '', err: [...document.querySelectorAll('#main .err-box:not(.hidden)')].map(e => e.textContent.trim()).filter(Boolean), h1: !!document.querySelector('#main h1') }));
+          if (state.text.includes('الصفحة غير موجودة')) bad.push(`${who} ${h}: صفحة غير موجودة`);
+          if (state.err.length) bad.push(`${who} ${h}: ${state.err.join(' / ')}`);
+          const links = await pg.$$eval('#main a[href^="#/"], .sidenav a[href^="#/"], .bottomnav a[href^="#/"]', a => a.map(x => x.getAttribute('href')));
+          for (const l of links) { const k = pattern(l); if (!patterns.has(k) && !seen.has(l)) { patterns.set(k, l); queue.push(l); } }
+        }
+      }
+      await memCtx.close();
+      assert(!bad.length, 'روابط معطلة: ' + bad.join(' | '));
+      assert(visited > 40, 'عدد الصفحات المفحوصة قليل: ' + visited);
+      console.log(`   (فُحصت ${visited} صفحة عبر الأدوار الثلاثة)`);
+    });
+
+    await check('السيناريو الخامس: تحديث حالة مهمة من الجوال بخطوة واحدة دون خلل في التصميم', async () => {
+      const t3 = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'متابعة خطاب الوزارة', section: 'personal' })).body;
+      await owner.goto(`${BASE}/#/item/${t3.id}`); await owner.waitForSelector('.item-qs select');
+      assert(await noHScroll(owner), 'تمرير أفقي في صفحة المهمة على الجوال');
+      await owner.selectOption('.item-qs select', 'waiting_reply');
+      await owner.waitForSelector('.modal textarea, .item-head .chip.st-waiting_reply', { timeout: 8000 });
+      if (await owner.$('.modal textarea')) { await owner.fill('.modal textarea', 'بانتظار رد الوزارة'); await owner.click('.modal button[type=submit]'); }
+      await owner.waitForSelector('.item-head .chip.st-waiting_reply');
+      await owner.waitForSelector('.ribbon-note.c-gray');
+      // يظهر لمدير المكتب على جهازه رماديًا «قيد المتابعة»
+      const it = (await apiAs(mgr, 'GET', `/api/items/${t3.id}`)).body.item;
+      assert(it.color === 'gray' && it.updated_by_name === 'مدير الشؤون التعليمية', 'الحالة أو «آخر تحديث بواسطة» غير صحيحة');
     });
 
     await check('الواجهة على الجوال والكمبيوتر: لا تمرير أفقي، والصفحات الأساسية تعمل', async () => {
@@ -705,7 +793,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 32 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 34 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);
