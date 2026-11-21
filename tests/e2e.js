@@ -789,6 +789,36 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
       assert(!consoleErrors.length, 'أخطاء JavaScript: ' + consoleErrors.join(' | '));
     });
 
+    await check('حذف المهمة من قائمة الحالة: تأكيد، تختفي من القوائم والأعداد، وتُستعاد من «المحذوفات»', async () => {
+      const meta = (await apiAs(mgr, 'GET', '/api/meta')).body;
+      const t = (await apiAs(mgr, 'POST', '/api/tasks', { title: 'مهمة سُجّلت بالخطأ', section: 'family', due_date: meta.today })).body;
+      await apiAs(mgr, 'POST', `/api/items/${t.id}/subtasks`, { title: 'خطوة تابعة لها' });
+      const openBefore = (await apiAs(mgr, 'GET', '/api/home')).body.tiles.find(x => x.key === 'family').open;
+      await mgr.goto(BASE + '/#/tasks?scope=open&section=family'); await mgr.waitForSelector(`#res .row:has(a.title:has-text("مهمة سُجّلت بالخطأ"))`);
+      await mgr.selectOption(`#res .row:has(a.title:has-text("مهمة سُجّلت بالخطأ")) select.qs`, '__delete');
+      await mgr.waitForSelector('.modal:has-text("حذف المهمة")');
+      assert(await mgr.isVisible('.modal:has-text("ستُحذف معها")'), 'لا يذكر المهام الفرعية التي ستُحذف');
+      await mgr.fill('.modal input[name=reason]', 'سُجّلت بالخطأ');
+      await mgr.click('.modal button[type=submit]'); await mgr.waitForSelector('.modal-bg', { state: 'detached' });
+      await mgr.waitForFunction(() => !document.querySelector('#res').textContent.includes('مهمة سُجّلت بالخطأ'), null, { timeout: 8000 });
+      const openAfter = (await apiAs(mgr, 'GET', '/api/home')).body.tiles.find(x => x.key === 'family').open;
+      assert(openAfter === openBefore - 2, `الأعداد لم تنقص: ${openBefore} ← ${openAfter}`);
+      const srch = (await apiAs(mgr, 'GET', '/api/search?q=' + encodeURIComponent('سُجّلت بالخطأ'))).body;
+      assert(!srch.groups.some(g => g.key === 'items'), 'المحذوفة تظهر في البحث');
+      // الموظف لا يحذف ولا يرى المحذوفات
+      const ex = (await apiAs(mgr, 'GET', '/api/admin/users')).body.find(u => u.username === 'qa.asst');
+      assert(ex, 'الموظف غير موجود');
+      // المحذوفات والاستعادة
+      await mgr.goto(BASE + '/#/trash'); await mgr.waitForSelector('h1:has-text("المحذوفات")');
+      await mgr.waitForSelector(`.row:has(a.title:has-text("مهمة سُجّلت بالخطأ"))`);
+      assert(!(await mgr.isVisible('.row:has(a.title:has-text("خطوة تابعة لها"))')), 'الفرعية المحذوفة مع أمها تظهر منفصلة');
+      await mgr.click(`.row:has(a.title:has-text("مهمة سُجّلت بالخطأ")) [data-restore]`);
+      await mgr.waitForSelector('.empty:has-text("لا توجد مهام محذوفة"), .row', { timeout: 8000 });
+      const it = (await apiAs(mgr, 'GET', `/api/items/${t.id}`)).body;
+      assert(!it.item.deleted_at && it.subtasks.length === 1 && it.messages.some(m => m.body.includes('سُجّلت بالخطأ')), 'لم تُستعد كما كانت، أو لم يُسجَّل سبب الحذف');
+      assert((await apiAs(mgr, 'GET', '/api/home')).body.tiles.find(x => x.key === 'family').open === openBefore, 'الأعداد لم تعد بعد الاستعادة');
+    });
+
     await check('مهمة بالصوت: يتحدث المدير فتُنشأ المهمة بعنوانها وأولويتها وموعدها ووقتها ومسؤولها، ويُحفظ النص كما قيل', async () => {
       const c = await browser.newContext({ ...devices['iPhone 13'], locale: 'ar-SA', permissions: ['microphone'] });
       // محاكاة خدمة الكلام في الجهاز: تعيد الجملة المنطوقة على دفعتين (مؤقتة ثم نهائية) كما يفعل الجوال
@@ -897,7 +927,7 @@ const noHScroll = (page) => page.evaluate(() => document.scrollingElement.scroll
   } finally {
     await browser.close(); await stopServer(); pushSrv.close(); mailSrv.close();
     const failed = results.filter(r => !r[2].startsWith('نجح'));
-    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 36 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
+    const md = `# نتائج اختبار السيناريو الإلزامي — ${TARGET === 'node' ? 'Node' : 'Cloudflare (workerd محليًا)'}\n\nتاريخ التشغيل: ${new Date().toISOString()}\n\n| # | الخطوة | النتيجة |\n|---|---|---|\n${results.map(r => `| ${r[0]} | ${r[1]} | ${r[2]} |`).join('\n')}\n\nالحالة العامة: ${failed.length || results.length < 37 ? 'فشل' : 'نجاح كامل'} (${results.length - failed.length}/${results.length})\n`;
     fs.writeFileSync(path.join(ROOT, 'tests', TARGET === 'node' ? 'RESULTS.md' : 'RESULTS-cloudflare.md'), md);
     fs.rmSync(DATA, { recursive: true, force: true });
     console.log(`\n${results.length - failed.length}/${results.length} نجحت`);

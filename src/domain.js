@@ -170,7 +170,8 @@ function addDays(dateStr, n) {
   const d = new Date(dateStr + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10);
 }
 
-const TASK_KINDS = "('assignment','task')";
+// المحذوفة (deleted_at) خارج كل الأعداد والقوائم: الشرط مُلحق هنا لأن كل الاستعمالات بصيغة «kind IN ${TASK_KINDS}» داخل سلسلة AND
+const TASK_KINDS = "('assignment','task') AND deleted_at IS NULL";
 const OPEN = "status NOT IN ('done','cancelled')";
 
 const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,i.category,i.project_id,i.parent_id,i.priority,i.due_date,i.due_time,
@@ -180,8 +181,9 @@ const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,
   (SELECT d.ref FROM directives d WHERE d.id=i.directive_id) AS directive_ref,
   (SELECT pt.title FROM items pt WHERE pt.id=i.parent_task_id) AS parent_task_title,
   (SELECT p.kind FROM projects p WHERE p.id=i.project_id) AS project_kind,
-  (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled') AS subtasks_total,
-  (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status='done') AS subtasks_done,
+  (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status!='cancelled' AND st.deleted_at IS NULL) AS subtasks_total,
+  (SELECT COUNT(*) FROM items st WHERE st.parent_task_id=i.id AND st.status='done' AND st.deleted_at IS NULL) AS subtasks_done,
+  i.deleted_kind, i.deleted_at, (SELECT u.name FROM users u WHERE u.id=i.deleted_by) AS deleted_by_name,
   (SELECT f.name FROM folders f WHERE f.id=i.folder_id) AS folder_name,
   (SELECT u.name FROM users u WHERE u.id=i.updated_by) AS updated_by_name,
   (SELECT COUNT(*) FROM approvals a WHERE a.item_id=i.id AND a.status='pending') AS pending_approvals,
@@ -190,7 +192,7 @@ const ITEM_LIST_COLS = `i.id,i.ref,i.kind,i.msg_type,i.source,i.title,i.section,
 
 function decorate(item, today = todayStr()) {
   if (!item) return item;
-  const open = !CLOSED_STATUSES.includes(item.status);
+  const open = !CLOSED_STATUSES.includes(item.status) && !item.deleted_at;
   item.is_open = open;
   item.is_overdue = open && !!item.due_date && item.due_date < today;
   item.is_due_today = open && item.due_date === today;
@@ -279,7 +281,7 @@ function sectionStats(key) {
     due_today: c(`SELECT COUNT(*) c ${base} AND ${OPEN} AND due_date=?`, key, t),
     overdue: c(`SELECT COUNT(*) c ${base} AND ${OPEN} AND due_date<?`, key, t),
     awaiting_decision: c(`SELECT COUNT(*) c FROM approvals a JOIN items i ON i.id=a.item_id WHERE i.section=? AND a.status='pending'`, key),
-    unacknowledged: c(`SELECT COUNT(*) c FROM items WHERE section=? AND kind IN ('assignment','note') AND acknowledged_at IS NULL AND status!='cancelled'`, key),
+    unacknowledged: c(`SELECT COUNT(*) c FROM items WHERE section=? AND kind IN ('assignment','note') AND deleted_at IS NULL AND acknowledged_at IS NULL AND status!='cancelled'`, key),
   };
   const top = get(`SELECT id,ref,title,due_date,priority,status FROM items WHERE section=? AND kind IN ${TASK_KINDS} AND ${OPEN}
     ORDER BY CASE WHEN status='stalled' THEN 0 WHEN priority='urgent' THEN 1 WHEN due_date<? THEN 2 WHEN due_date=? THEN 3 WHEN priority='important' THEN 4 ELSE 5 END,
@@ -317,8 +319,8 @@ function report(period = 'week') {
   const r = {
     period, from, to: t,
     // التكليفات المستلمة من رجل الأعمال (تبقى source='owner' حتى بعد تحويلها إلى مهمة)
-    received: c(`SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','task') AND source='owner' AND created_at>=?`, fromIso),
-    notes_received: c(`SELECT COUNT(*) c FROM items WHERE kind='note' AND created_at>=?`, fromIso),
+    received: c(`SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','task') AND deleted_at IS NULL AND source='owner' AND created_at>=?`, fromIso),
+    notes_received: c(`SELECT COUNT(*) c FROM items WHERE kind='note' AND deleted_at IS NULL AND created_at>=?`, fromIso),
     completed: c(`SELECT COUNT(*) c FROM items WHERE kind IN ${TASK_KINDS} AND status='done' AND completed_at>=?`, fromIso),
     overdue_now: c(`SELECT COUNT(*) c FROM items WHERE kind IN ${TASK_KINDS} AND ${OPEN} AND due_date<?`, t),
     open_now: c(`SELECT COUNT(*) c FROM items WHERE kind IN ${TASK_KINDS} AND ${OPEN}`),

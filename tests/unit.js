@@ -412,6 +412,27 @@ t('قرار الاجتماع لا يتحول إلى مهمتين', threw && get(
   t('الصوت: كلمة «مهمة» داخل العنوان لا تُفهم أولوية «مهم»', k.priority === 'normal' && k.title === 'إعداد خطة المهمات الميدانية');
 }
 
+// ---- حذف المهمة: قابل للاستعادة، ولا يُمسح شيء
+{
+  const err = (fn) => { try { fn(); return null; } catch (e) { return e.status; } };
+  const x = S.createTask(mgr, { title: 'مهمة للحذف', section: 'family', due_date: today, priority: 'urgent' });
+  S.createSubtask(mgr, x.id, { title: 'فرعية للحذف' });
+  S.requestApproval(mgr, x.id, { kind: 'report', title: 'طلب على مهمة ستُحذف', blocking: true });
+  const inRibbon = () => D.followRibbon().some(i => i.id === x.id);
+  const openFam = () => D.sectionStats('family').open;
+  const before = openFam();
+  t('قبل الحذف تظهر في الشريط', inRibbon());
+  t('الموظف لا يحذف', err(() => S.deleteItem({ id: 9999, role: 'member', grants: JSON.stringify({ scope: 'all', perms: ['task.create', 'item.edit'] }) }, x.id)) === 403);
+  S.deleteItem(owner, x.id, 'أُلغي الموضوع');
+  const d = S.getItem(x.id);
+  t('بعد الحذف: محفوظة في المحذوفات بكامل بياناتها، مع من حذفها ومتى', d.kind === 'task' && d.title === 'مهمة للحذف' && !!d.deleted_at && d.deleted_by_name === owner.name);
+  t('بعد الحذف: تختفي من الشريط وأعداد القسم، ومعها فرعيتها', !inRibbon() && openFam() === before - 2 && S.subtasksOf(x.id).length === 0);
+  t('بعد الحذف: يُسحب طلب القرار المعلق عليها', get("SELECT COUNT(*) c FROM approvals WHERE item_id=? AND status='pending'", x.id).c === 0);
+  t('المهمة المحذوفة لا تُعدّل قبل استعادتها', err(() => S.updateItem(mgr, x.id, { title: 'تعديل' })) === 400);
+  const r = S.restoreItem(mgr, x.id);
+  t('الاستعادة تعيدها وفرعيتها كما كانت', r.kind === 'task' && !r.deleted_at && S.subtasksOf(x.id).length === 1 && inRibbon() && openFam() === before);
+}
+
 // ---- ألوان المهام المعتمدة: أحمر عاجلة، أزرق مستحقة، رمادي معلقة
 {
   const c = (b, st) => { const x = S.createTask(mgr, { section: 'family', ...b }); if (st) S.updateItem(mgr, x.id, { status: st, status_note: 'سبب' }); return S.getItem(x.id).color; };

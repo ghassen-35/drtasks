@@ -283,6 +283,7 @@ function updateItem(user, id, b) {
     if (!D.can(user, 'partners.view')) { b = { ...b }; delete b.partner_id; } // لا يغيّر ربطًا لا يراه
   } else require_(user, 'item.manage');
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا');
+  if (it.deleted_at) throw bad('المهمة محذوفة؛ استعدها أولًا من «المحذوفات»');
   // منع تعارض التعديل من جهازين: إن عدّل شخص آخر الحقل نفسه بعد أن فتح المستخدم المهمة، لا نكتب فوق تعديله.
   // الحقول التي لم يلمسها الآخر تُحفظ عادي (دمج على مستوى الحقل).
   if (b.base_updated_at) {
@@ -325,7 +326,7 @@ function updateItem(user, id, b) {
     // «إنجاز الكل»: إنجاز المهام الفرعية المفتوحة مع أمها
     if (b.status === 'done' && b.complete_subtasks) {
       // عبر setStatus نفسها (اعتماد النتيجة، الإشعارات، التكرار)، ولما يراه المستخدم فقط
-      const open = all("SELECT id FROM items WHERE parent_task_id=? AND status NOT IN ('done','cancelled') AND closed_at IS NULL", id).map(r => getItem(r.id));
+      const open = all("SELECT id FROM items WHERE parent_task_id=? AND deleted_at IS NULL AND status NOT IN ('done','cancelled') AND closed_at IS NULL", id).map(r => getItem(r.id));
       let doneN = 0, skipped = 0;
       for (const st of open) {
         if ((user.role === 'member' && !canSee(user, st)) || (st.requires_approval && !hasApprovedFinal(st.id))) { skipped++; continue; }
@@ -334,7 +335,7 @@ function updateItem(user, id, b) {
       if (doneN || skipped) sysMsg(id, user.id, `أنجز ${user.name} ${doneN} من المهام الفرعية المفتوحة مع المهمة${skipped ? ` — وبقيت ${skipped} (تتطلب اعتمادًا أو خارج صلاحياته)` : ''}`, { event: 'subtasks_done' });
     }
     if (b.status === 'cancelled' && it.status !== 'cancelled') {
-      const open = all("SELECT id FROM items WHERE parent_task_id=? AND status NOT IN ('done','cancelled') AND closed_at IS NULL", id);
+      const open = all("SELECT id FROM items WHERE parent_task_id=? AND deleted_at IS NULL AND status NOT IN ('done','cancelled') AND closed_at IS NULL", id);
       for (const r of open) { const st = getItem(r.id); run("UPDATE items SET status='cancelled', updated_at=?, updated_by=? WHERE id=?", nowIso(), user.id, st.id); audit('item', st.id, user.id, 'status', 'status', st.status, 'cancelled'); sysMsg(st.id, user.id, `أُلغيت مع المهمة الأم ${it.ref}`, { event: 'status', from: st.status, to: 'cancelled' }); }
     }
     if (!it.parent_task_id && ['section', 'project_id', 'folder_id'].some(k => b[k] !== undefined)) {
@@ -397,7 +398,7 @@ function spawnNextOccurrence(user, it) {
     full.requires_approval, full.sop_id, full.partner_id, full.recurrence, full.acknowledged_at ? nowIso() : null, full.acknowledged_at ? full.acknowledged_by : null,
     full.created_by, user.id, full.is_demo);
   // المهام الفرعية تتكرر معها مفتوحة من جديد
-  for (const st of all("SELECT * FROM items WHERE parent_task_id=? AND status!='cancelled'", full.id)) {
+  for (const st of all("SELECT * FROM items WHERE parent_task_id=? AND deleted_at IS NULL AND status!='cancelled'", full.id)) {
     run(`INSERT INTO items(ref,kind,source,title,description,section,category,project_id,folder_id,priority,status,assignee,assignee_id,parent_task_id,created_by,updated_by,is_demo)
       VALUES(?,'task',?,?,?,?,?,?,?,?,'new',?,?,?,?,?,?)`, nextRef('MH'), st.source, st.title, st.description, st.section, st.category, st.project_id, st.folder_id, st.priority,
       st.assignee, st.assignee_id, id, st.created_by, user.id, st.is_demo);
@@ -431,7 +432,47 @@ function createSubtask(user, parentId, b) {
     return getItem(st.id);
   });
 }
-const subtasksOf = (id) => all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.parent_task_id=? ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, COALESCE(i.due_date,'9999'), i.id`, id).map(x => D.decorate(x));
+const subtasksOf = (id) => all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.parent_task_id=? AND i.deleted_at IS NULL ORDER BY CASE WHEN i.status IN ('done','cancelled') THEN 1 ELSE 0 END, COALESCE(i.due_date,'9999'), i.id`, id).map(x => D.decorate(x));
+
+// ===== حذف المهمة (قابل للاستعادة) =====
+// لا يُمسح شيء: تُعلَّم المهمة ومهامها الفرعية بتاريخ الحذف (deleted_at) وتظهر في «المحذوفات»، فتختفي من القوائم والأعداد والشريط والتقارير والبحث،
+// وتُسحب طلبات القرار المعلقة عليها حتى لا تبقى في «تنتظر القرار». ويمكن استعادتها كما كانت.
+function deleteItem(user, id, reason) {
+  require_(user, 'item.manage');
+  const it = getItem(id);
+  if (it.deleted_at) throw bad('المهمة محذوفة مسبقًا');
+  const at = nowIso(); const why = str(reason, 300);
+  return tx(() => {
+    const ids = [id, ...all("SELECT id FROM items WHERE parent_task_id=? AND deleted_at IS NULL", id).map(r => r.id)];
+    for (const x of ids) {
+      run('UPDATE items SET deleted_at=?, deleted_by=?, updated_at=?, updated_by=? WHERE id=?', at, user.id, at, user.id, x);
+      audit('item', x, user.id, 'deleted', 'kind', null, why || null);
+      run("UPDATE approvals SET status='withdrawn', decided_at=? WHERE item_id=? AND status='pending'", at, x);
+      run('UPDATE notifications SET read_at=? WHERE link=? AND read_at IS NULL', at, link(x));
+    }
+    sysMsg(id, user.id, `حذف ${user.name} المهمة${ids.length > 1 ? ` مع ${ids.length - 1} من مهامها الفرعية` : ''}${why ? ` — السبب: ${why}` : ''}`, { event: 'deleted' });
+    if (it.directive_id) checkDirectiveReady(it.directive_id);
+    events.broadcastChange({ item: id });
+    return { ok: true, deleted: ids.length };
+  });
+}
+function restoreItem(user, id) {
+  require_(user, 'item.manage');
+  const it = getItem(id);
+  if (!it.deleted_at) throw bad('المهمة ليست محذوفة');
+  if (it.parent_task_id && get('SELECT deleted_at FROM items WHERE id=?', it.parent_task_id).deleted_at) throw bad('استعد المهمة الأم أولًا');
+  return tx(() => {
+    // تعود معها مهامها الفرعية التي حُذفت في الوقت نفسه
+    const ids = [id, ...all('SELECT id FROM items WHERE parent_task_id=? AND deleted_at=?', id, it.deleted_at).map(r => r.id)];
+    for (const x of ids) {
+      run('UPDATE items SET deleted_at=NULL, deleted_by=NULL, updated_at=?, updated_by=? WHERE id=?', nowIso(), user.id, x);
+      audit('item', x, user.id, 'restored');
+    }
+    sysMsg(id, user.id, `استعاد ${user.name} المهمة من المحذوفات`, { event: 'restored' });
+    events.broadcastChange({ item: id });
+    return getItem(id);
+  });
+}
 
 function closeItem(user, id) {
   require_(user, 'item.manage');
@@ -454,6 +495,7 @@ function addMessage(user, id, b, fileIds = []) {
   const it = getItem(id);
   assertCanSee(user, it);
   if (it.closed_at) throw bad('المهمة مغلقة نهائيًا؛ لا يمكن إضافة رسائل');
+  if (it.deleted_at) throw bad('المهمة محذوفة؛ استعدها أولًا من «المحذوفات»');
   const body = str(b.body, 8000);
   const kind = b.kind === 'update' ? 'update' : b.kind === 'result' && isAdmin(user) ? 'result' : 'message';
   if (!body && !fileIds.length) throw bad('اكتب رسالة أو أرفق ملفًا');
@@ -478,7 +520,7 @@ function thread(id) {
   for (const m of msgs) { m.files = files.filter(f => f.message_id === m.id); try { m.meta = m.meta ? JSON.parse(m.meta) : null; } catch { m.meta = null; } }
   const approvals = all(`SELECT a.*, ru.name AS requested_by_name, du.name AS decided_by_name, rb.name AS recorded_by_name FROM approvals a LEFT JOIN users ru ON ru.id=a.requested_by LEFT JOIN users du ON du.id=a.decided_by LEFT JOIN users rb ON rb.id=a.recorded_by WHERE a.item_id=? ORDER BY a.id`, id)
     .map(a => ({ ...a, options: a.options ? JSON.parse(a.options) : [], kind_label: D.APPROVAL_KINDS[a.kind], files: files.filter(f => f.approval_id === a.id) }));
-  const notes = all(`SELECT ${D.ITEM_LIST_COLS}, i.description FROM items i WHERE parent_id=? ORDER BY id`, id).map(n => D.decorate(n));
+  const notes = all(`SELECT ${D.ITEM_LIST_COLS}, i.description FROM items i WHERE parent_id=? AND i.deleted_at IS NULL ORDER BY id`, id).map(n => D.decorate(n));
   const auditRows = all(`SELECT a.*, u.name AS user_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE entity='item' AND entity_id=? ORDER BY a.id`, id);
   const itemFiles = files.filter(f => !f.message_id && !f.approval_id);
   return { messages: msgs, approvals, notes, audit: auditRows, files: itemFiles };
@@ -680,7 +722,7 @@ function directiveRow(d, user) {
   const t = D.todayStr();
   const c = get(`SELECT COUNT(*) total, SUM(CASE WHEN i.status='done' THEN 1 ELSE 0 END) done, SUM(CASE WHEN i.status='cancelled' THEN 1 ELSE 0 END) cancelled,
       SUM(CASE WHEN i.${D.OPEN} AND i.due_date<? THEN 1 ELSE 0 END) overdue, SUM(CASE WHEN i.status='stalled' THEN 1 ELSE 0 END) stalled
-    FROM items i WHERE i.directive_id=?${sc.sql}`, t, d.id, ...sc.params);
+    FROM items i WHERE i.directive_id=? AND i.deleted_at IS NULL${sc.sql}`, t, d.id, ...sc.params);
   const active = (c.total || 0) - (c.cancelled || 0);
   const progress = active ? Math.round((c.done || 0) * 100 / active) : 0;
   const state = d.status === 'cancelled' ? 'cancelled' : d.status === 'done' ? 'done' : !active ? 'pending' : progress === 100 ? 'ready' : (c.overdue || c.stalled) ? 'at_risk' : 'in_progress';
@@ -696,7 +738,7 @@ function applySop(user, itemId) {
   const sop = get('SELECT * FROM sops WHERE id=?', it.sop_id); if (!sop) throw bad('الإجراء غير موجود');
   const steps = (sop.steps || '').split('\n').map(x => x.trim().replace(/^\d+[.)-]\s*/, '')).filter(Boolean);
   if (!steps.length) throw bad('لا توجد خطوات في هذا الإجراء');
-  const have = new Set(all('SELECT title FROM items WHERE parent_task_id=?', it.id).map(r => r.title));
+  const have = new Set(all("SELECT title FROM items WHERE parent_task_id=? AND deleted_at IS NULL", it.id).map(r => r.title));
   let n = 0;
   return tx(() => {
     for (const s of steps.slice(0, 40)) if (!have.has(s.slice(0, 300))) { createSubtask(user, it.id, { title: s.slice(0, 300) }); n++; }
@@ -767,5 +809,5 @@ module.exports = {
   createDirective, updateDirective, directiveRow, checkDirectiveReady, applySop,
   AppError, bad, forbidden, notFound, require_, audit, getItem, scopeFor, canSee, assertCanSee, memberProjects, listUsers, createUser, updateUser, createAssignment, createNote, createTask, acknowledge, convertToTask,
   allowedSections, assertSectionAllowed, createSubtask, subtasksOf, spawnNextOccurrence, advanceDate, validProject, validRecurrence,
-  updateItem, closeItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,
+  updateItem, closeItem, deleteItem, restoreItem, addMessage, thread, requestApproval, decide, withdrawApproval, decisionToTask, str, validDate, validSection,
 };
