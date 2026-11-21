@@ -117,7 +117,7 @@ function createApp(P) {
     u.unread = get('SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read_at IS NULL', u.id).c;
     if (D.can(u, 'item.view')) { // أعداد عامة للمالك والمدير فقط
       u.pending_decisions = get("SELECT COUNT(*) c FROM approvals WHERE status='pending'").c;
-      u.inbox_pending = get("SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','note') AND status!='cancelled' AND (acknowledged_at IS NULL OR kind='assignment' OR status NOT IN ('done','cancelled'))").c;
+      u.inbox_pending = get("SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','note') AND deleted_at IS NULL AND status!='cancelled' AND (acknowledged_at IS NULL OR kind='assignment' OR status NOT IN ('done','cancelled'))").c;
     } else { u.pending_decisions = 0; u.inbox_pending = 0; }
     return u;
   }));
@@ -163,7 +163,7 @@ function createApp(P) {
       urgent: out.urgent_ribbon.length,
       overdue: c(`SELECT COUNT(*) c FROM items WHERE kind IN ${D.TASK_KINDS} AND ${D.OPEN} AND due_date<?`, t),
       pending_decisions: c(`SELECT COUNT(*) c FROM approvals WHERE status='pending'`),
-      inbox_pending: c(`SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','note') AND status NOT IN ('done','cancelled') AND (acknowledged_at IS NULL OR kind='assignment')`),
+      inbox_pending: c(`SELECT COUNT(*) c FROM items WHERE kind IN ('assignment','note') AND deleted_at IS NULL AND status NOT IN ('done','cancelled') AND (acknowledged_at IS NULL OR kind='assignment')`),
     };
     out.updates = all(`SELECT m.id,m.item_id,m.kind,m.body,m.created_at,u.name AS author_name,i.title AS item_title,i.ref FROM messages m JOIN items i ON i.id=m.item_id LEFT JOIN users u ON u.id=m.author_id
       WHERE m.author_id IS NOT ? AND (m.kind IN ('update','result','message') OR (m.kind IN ('system','decision') AND m.meta IS NOT NULL)) ORDER BY m.id DESC LIMIT 8`, req.user.id);
@@ -179,9 +179,11 @@ function createApp(P) {
     const where = ['1=1' + sc.sql]; const p = [...sc.params];
     if (q.folder_id) { where.push('(i.folder_id=? OR i.project_id IN (SELECT id FROM projects WHERE folder_id=?))'); p.push(Number(q.folder_id), Number(q.folder_id)); }
     if (q.kind === 'tasks' || !q.kind) where.push(`i.kind IN ${D.TASK_KINDS}`);
-    else if (q.kind === 'inbox') where.push("i.kind IN ('assignment','note')");
-    else if (q.kind === 'mine') { where.push("i.source='owner' AND i.created_by=?"); p.push(user.id); }
-    else if (q.kind !== 'all') { where.push('i.kind=?'); p.push(q.kind); }
+    else if (q.kind === 'inbox') where.push("i.kind IN ('assignment','note') AND i.deleted_at IS NULL");
+    else if (q.kind === 'deleted') { S.require_(user, 'item.manage'); where.push('i.deleted_at IS NOT NULL AND (i.parent_task_id IS NULL OR i.deleted_at!=(SELECT pt.deleted_at FROM items pt WHERE pt.id=i.parent_task_id) OR (SELECT pt.deleted_at FROM items pt WHERE pt.id=i.parent_task_id) IS NULL)'); }
+    else if (q.kind === 'mine') { where.push("i.source='owner' AND i.created_by=? AND i.deleted_at IS NULL"); p.push(user.id); }
+    else if (q.kind !== 'all') { where.push('i.kind=? AND i.deleted_at IS NULL'); p.push(q.kind); }
+    else where.push('i.deleted_at IS NULL');
     if (q.section) { where.push('i.section=?'); p.push(q.section); }
     if (q.status) { where.push('i.status=?'); p.push(q.status); }
     if (q.priority) { where.push('i.priority=?'); p.push(q.priority); }
@@ -202,7 +204,7 @@ function createApp(P) {
       .map(i => D.decorate(i, t))
       // المهام الفرعية تظهر تحت أمها (مع عداد التقدم) لا كبنود مستقلة — إلا في البحث ومهام اليوم والمتأخرة، أو إن كانت الأم لا تُرى
       .filter(i => !q.color || i.color === q.color)
-      .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
+      .filter(i => !i.parent_task_id || q.q || q.subtasks === '1' || q.kind === 'deleted' || ['today', 'overdue'].includes(q.scope) || !S.canSee(user, { id: i.parent_task_id }));
   }
   app.get('/api/items', wrap(req => listItems(req.query, req.user)));
 
@@ -236,7 +238,7 @@ function createApp(P) {
     if (D.can(u, 'directives.view')) add('directives', 'التوجيهات', all(`SELECT id,ref,title FROM directives WHERE ${has('title')} OR ${has('ref')} OR ${has('details')} ORDER BY id DESC LIMIT 6`, q, q, q).map(d => ({ h: `#/directive/${d.id}`, t: d.title, s: d.ref })));
     if (D.can(u, 'partners.view')) add('partners', 'الجهات والشراكات', all(`SELECT id,name,relation_type FROM partners WHERE ${has('name')} OR ${has('relation_type')} ORDER BY name LIMIT 6`, q, q).map(p => ({ h: `#/partner/${p.id}`, t: p.name, s: p.relation_type || 'جهة' })));
     if (D.can(u, 'sops.view')) add('sops', 'الإجراءات التشغيلية', all(`SELECT id,name FROM sops WHERE ${has('name')} OR ${has('purpose')} ORDER BY name LIMIT 6`, q, q).map(x => ({ h: `#/sop/${x.id}`, t: x.name, s: 'إجراء' })));
-    add('files', 'الملفات والمرفقات', all(`SELECT f.id,f.original_name,f.item_id,f.meeting_id,f.sop_id FROM files f WHERE f.is_voice=0 AND ${has('f.original_name')} AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL) ORDER BY f.id DESC LIMIT 20`, q)
+    add('files', 'الملفات والمرفقات', all(`SELECT f.id,f.original_name,f.item_id,f.meeting_id,f.sop_id FROM files f LEFT JOIN items fi ON fi.id=f.item_id WHERE f.is_voice=0 AND (fi.id IS NULL OR fi.deleted_at IS NULL) AND ${has('f.original_name')} AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL) ORDER BY f.id DESC LIMIT 20`, q)
       .filter(f => (f.item_id && S.canSee(u, { id: f.item_id })) || (f.meeting_id && D.can(u, 'meetings.view')) || (f.sop_id && D.can(u, 'sops.view'))).slice(0, 6)
       .map(f => ({ h: f.item_id ? `#/item/${f.item_id}` : f.meeting_id ? `#/meeting/${f.meeting_id}` : `#/sop/${f.sop_id}`, t: f.original_name, s: 'ملف', file: f.id })));
     return { q, groups };
@@ -265,6 +267,7 @@ function createApp(P) {
 
   app.get('/api/items/:id', wrap(req => {
     const it = S.getItem(Number(req.params.id));
+    if (it.deleted_at && !D.can(req.user, 'item.manage')) throw new S.AppError(404, 'غير موجود');
     S.assertCanSee(req.user, it);
     // فتح المهمة يعني الاطلاع على إشعاراتها
     run('UPDATE notifications SET read_at=? WHERE user_id=? AND link=? AND read_at IS NULL', nowIso(), req.user.id, `#/item/${it.id}`);
@@ -286,6 +289,8 @@ function createApp(P) {
   app.post('/api/items/:id/convert', wrap(req => S.convertToTask(req.user, Number(req.params.id), req.body)));
   app.patch('/api/items/:id', wrap(req => S.updateItem(req.user, Number(req.params.id), req.body)));
   app.post('/api/items/:id/close', wrap(req => S.closeItem(req.user, Number(req.params.id))));
+  app.post('/api/items/:id/delete', wrap(req => S.deleteItem(req.user, Number(req.params.id), req.body.reason)));
+  app.post('/api/items/:id/restore', wrap(req => S.restoreItem(req.user, Number(req.params.id))));
   app.post('/api/items/:id/messages', wrap(req => ({ id: S.addMessage(req.user, Number(req.params.id), req.body, req.body.file_ids || []) })));
   app.post('/api/items/:id/approvals', wrap(req => ({ id: S.requestApproval(req.user, Number(req.params.id), req.body, req.body.file_ids || []) })));
   app.post('/api/approvals/:id/decide', wrap(req => S.decide(req.user, Number(req.params.id), req.body)));
@@ -312,7 +317,7 @@ function createApp(P) {
         { key: 'urgent', title: 'المهام العاجلة', tone: 'red', items: D.urgentRibbon() },
         { key: 'today', title: 'مهام اليوم', tone: 'orange', items: D.todayRibbon() },
         { key: 'overdue', title: 'المهام المتأخرة', tone: 'red', items: q(`${TK} AND i.due_date<?`, t) },
-        { key: 'unack', title: 'تكليفات جديدة غير مؤكدة الاستلام', tone: 'orange', items: q("i.kind IN ('assignment','note') AND i.acknowledged_at IS NULL AND i.status!='cancelled'") },
+        { key: 'unack', title: 'تكليفات جديدة غير مؤكدة الاستلام', tone: 'orange', items: q("i.kind IN ('assignment','note') AND i.deleted_at IS NULL AND i.acknowledged_at IS NULL AND i.status!='cancelled'") },
         { key: 'not_started', title: 'مهام لم يبدأ تنفيذها', tone: 'gray', items: q(`${TK} AND i.status IN ('new','acknowledged')`) },
         { key: 'waiting_info', title: 'تنتظر معلومات من ' + D.ownerTitle() + '', tone: 'gray', items: q(`${TK} AND i.status='waiting_info'`) },
         { key: 'waiting_approval', title: 'تنتظر اعتماد ' + D.ownerTitle() + '', tone: 'gray', items: q(`${TK} AND i.status='waiting_approval'`) },
@@ -496,7 +501,7 @@ function createApp(P) {
     const s = get('SELECT * FROM sops WHERE id=?', Number(req.params.id)); if (!s) throw S.notFound();
     s.files = all('SELECT id,original_name,mime,size FROM files WHERE sop_id=?', s.id);
     const sc = S.scopeFor(req.user);
-    s.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE sop_id=?${sc.sql} ORDER BY id DESC LIMIT 50`, s.id, ...sc.params).map(i => D.decorate(i));
+    s.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE sop_id=? AND i.deleted_at IS NULL${sc.sql} ORDER BY id DESC LIMIT 50`, s.id, ...sc.params).map(i => D.decorate(i));
     return s;
   }));
   function sopSave(req, existing) {
@@ -526,7 +531,7 @@ function createApp(P) {
     const p = get('SELECT * FROM partners WHERE id=?', Number(req.params.id)); if (!p) throw S.notFound();
     const out = partnerOut(p, req.user);
     const sc = S.scopeFor(req.user);
-    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE partner_id=?${sc.sql} ORDER BY id DESC`, p.id, ...sc.params).map(i => D.decorate(i));
+    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE partner_id=? AND i.deleted_at IS NULL${sc.sql} ORDER BY id DESC`, p.id, ...sc.params).map(i => D.decorate(i));
     return out;
   }));
   function partnerSave(req, ex) {
@@ -643,7 +648,7 @@ function createApp(P) {
     const d = get('SELECT * FROM directives WHERE id=?', Number(req.params.id)); if (!d) throw S.notFound('التوجيه غير موجود');
     const sc = S.scopeFor(req.user);
     const out = S.directiveRow(d, req.user);
-    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.directive_id=?${sc.sql} ORDER BY i.id`, d.id, ...sc.params).map(i => D.decorate(i));
+    out.tasks = all(`SELECT ${D.ITEM_LIST_COLS} FROM items i WHERE i.directive_id=? AND i.deleted_at IS NULL${sc.sql} ORDER BY i.id`, d.id, ...sc.params).map(i => D.decorate(i));
     out.created_by_name = (get('SELECT name FROM users WHERE id=?', d.created_by) || {}).name;
     out.log = all("SELECT a.*, u.name AS user_name FROM audit_log a LEFT JOIN users u ON u.id=a.user_id WHERE entity='directive' AND entity_id=? ORDER BY a.id", d.id);
     return out;
@@ -782,7 +787,7 @@ function createApp(P) {
     const rows = all(`SELECT f.id,f.original_name,f.mime,f.size,f.is_voice,f.created_at,f.item_id,f.meeting_id,f.sop_id,f.uploader_id,
         i.ref AS item_ref, i.title AS item_title, i.section AS item_section, m.title AS meeting_title, s.name AS sop_name, us.name AS uploader_name
       FROM files f LEFT JOIN items i ON i.id=f.item_id LEFT JOIN meetings m ON m.id=f.meeting_id LEFT JOIN sops s ON s.id=f.sop_id LEFT JOIN users us ON us.id=f.uploader_id
-      WHERE f.is_voice=0 AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL)${q ? ' AND (instr(lower(f.original_name), lower(?))>0 OR instr(lower(COALESCE(i.title,"")), lower(?))>0 OR instr(lower(COALESCE(m.title,"")), lower(?))>0)' : ''}
+      WHERE f.is_voice=0 AND (i.id IS NULL OR i.deleted_at IS NULL) AND (f.item_id IS NOT NULL OR f.meeting_id IS NOT NULL OR f.sop_id IS NOT NULL)${q ? ' AND (instr(lower(f.original_name), lower(?))>0 OR instr(lower(COALESCE(i.title,"")), lower(?))>0 OR instr(lower(COALESCE(m.title,"")), lower(?))>0)' : ''}
       ORDER BY f.id DESC LIMIT 400`, ...(q ? [q, q, q] : []));
     return rows.filter(f => (f.item_id && S.canSee(u, { id: f.item_id })) || (f.meeting_id && D.can(u, 'meetings.view')) || (f.sop_id && D.can(u, 'sops.view')))
       .map(f => ({ ...f, section_name: f.item_section ? D.sectionName(f.item_section) : null })).slice(0, 200);

@@ -581,3 +581,8 @@ a.chip.link { text-decoration: none; cursor: pointer; } a.chip.link:hover { filt
 .voice-q .vq-a { display: flex; flex-wrap: wrap; gap: 6px; }
 .voice-q .vq-btn { background: #fff; border: 1px solid var(--line); min-height: 40px; padding: 6px 12px; font-size: .9rem; cursor: pointer; }
 .voice-q .vq-btn:hover, .voice-q .vq-btn:focus { border-color: var(--c-blue); color: var(--c-blue); text-decoration: none; }
+
+/* المهمة المحذوفة */
+.del-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.del-banner svg.i { width: 20px; height: 20px; flex: none; }
+.del-banner span { flex: 1; min-width: 200px; }

@@ -328,6 +328,7 @@ function navItems() {
     { h: '#/partners', i: 'handshake', t: 'العلاقات والشراكات' },
     { h: '#/reports', i: 'chart', t: 'التقارير والإنجازات' },
     { h: '#/files', i: 'folder', t: 'الأرشيف والملفات' },
+    ...(isAdmin() ? [{ h: '#/trash', i: 'trash', t: 'المحذوفات' }] : []),
   ];
   if (isMember()) return [
     { h: '#/', i: 'dash', t: 'الرئيسية' },
@@ -415,6 +416,7 @@ const routes = [
   [/^#\/tasks(?:\?(.*))?$/, viewTasks],
   [/^#\/command$/, viewCommand],
   [/^#\/files$/, viewFiles],
+  [/^#\/trash$/, viewTrash],
   [/^#\/meetings$/, viewMeetings],
   [/^#\/meeting\/(\d+)$/, viewMeeting],
   [/^#\/sops$/, viewSops],
@@ -733,11 +735,13 @@ async function viewDashboard(main) {
   await load(); return { refresh: load };
 }
 function quickStatus(i) {
-  if (!i.is_open || i.kind === 'note' || i.closed_at) return '';
-  if (!isAdmin() && !(isMember() && i.kind === 'task')) return '';
-  const list = isAdmin() ? ['in_progress', 'waiting_reply', 'waiting_info', 'stalled', 'done'] : ['in_progress', 'waiting_reply', 'stalled', 'done'];
+  if (i.deleted_at) return '';
+  const canDel = isAdmin();
+  const active = i.is_open && i.kind !== 'note' && !i.closed_at && (isAdmin() || (isMember() && i.kind === 'task'));
+  if (!active && !canDel) return '';
+  const list = !active ? [] : isAdmin() ? ['in_progress', 'waiting_reply', 'waiting_info', 'stalled', 'done'] : ['in_progress', 'waiting_reply', 'stalled', 'done'];
   return `<select class="qs" data-id="${i.id}" aria-label="تحديث الحالة" style="min-height:36px;width:auto">
-    ${opt('', 'تحديث سريع للحالة…')}${list.filter(s => s !== i.status).map(s => opt(s, state.meta.statuses[s])).join('')}</select>`;
+    ${opt('', active ? 'تحديث سريع للحالة…' : 'إجراء…')}${list.filter(s => s !== i.status).map(s => opt(s, state.meta.statuses[s])).join('')}${canDel ? `<option disabled>──────────</option>${opt('__delete', 'حذف المهمة…')}` : ''}</select>`;
 }
 function bindQuickStatus(root, items = []) {
   $$('select.qs', root).forEach(s => s.onchange = async () => {
@@ -794,7 +798,23 @@ function renderForcePassword() {
 
 // ===== تغيير الحالة: نوافذ «أنجزت» و«متعثرة» بدل نوافذ المتصفح =====
 const STALL_REASONS = ['طرف خارجي لم يرد', 'نقص معلومات أو مستندات', 'تعارض مع أولوية أخرى', 'عائق مالي أو إداري'];
+// حذف المهمة: تُنقل إلى «المحذوفات» ويمكن استعادتها، ولا يُمسح شيء
+function modalDelete(i, after) {
+  const subs = i.subtasks_total ? `<p>ستُحذف معها <b>${i.subtasks_total}</b> ${i.subtasks_total === 1 ? 'مهمة فرعية' : 'مهام فرعية'}.</p>` : '';
+  openModal({
+    title: 'حذف المهمة', submit: 'حذف المهمة', submitClass: 'red', confirmClose: false,
+    body: `<p>حذف «<b>${esc(i.title)}</b>»؟</p>${subs}
+      <div class="info-box" style="margin:10px 0">تختفي من القوائم والشريط والأعداد والتقارير، وتُنقل إلى <b>«المحذوفات»</b> حيث يمكن استعادتها كما كانت في أي وقت. ويُسجَّل من حذفها ومتى.</div>
+      ${field('السبب (اختياري)', '<input type="text" name="reason" maxlength="300" placeholder="مثل: سُجّلت بالخطأ، أو أُلغي الموضوع">')}`,
+    onSubmit: async (d) => {
+      await POST(`/api/items/${i.id}/delete`, { reason: d.reason });
+      toast('حُذفت المهمة. يمكنك استعادتها من «المحذوفات»', 'ok');
+      if (location.hash === `#/item/${i.id}`) location.hash = '#/tasks'; else { after && after(); refreshView(); }
+    },
+  });
+}
 async function changeStatus(i, status, after) {
+  if (status === '__delete') return modalDelete(i, after);
   const done = async (body) => { await api('PATCH', `/api/items/${i.id}`, body); toast('تم تحديث الحالة', 'ok'); after && after(); };
   if (status === 'stalled') return modalStalled(i, done);
   if (status === 'in_progress' && ['done', 'cancelled'].includes(i.status)) return openModal({
@@ -1198,6 +1218,13 @@ async function viewItem(main, id) {
   async function load() {
     data = await GET(`/api/items/${id}`);
     renderHead(); renderSubtasks(); renderTimeline(); renderLog();
+    const del = data.item.deleted_at; const cmp = $('#cmp', main); if (cmp) cmp.classList.toggle('hidden', !!del);
+    const ob = $('#delBanner', main); if (ob) ob.remove();
+    if (del) {
+      $('#ih', main).insertAdjacentHTML('afterbegin', `<div class="warn-box del-banner" id="delBanner">${I('trash')}<span>هذه المهمة <b>محذوفة</b>${data.item.deleted_by_name ? ` — حذفها ${esc(data.item.deleted_by_name)}` : ''} ${fmtTs(del)}. لا تظهر في القوائم ولا الأعداد.</span>${isAdmin() ? `<button type="button" class="btn sm primary" id="restore">استعادة المهمة</button>` : ''}</div>`);
+      const rb = $('#restore', main); if (rb) rb.onclick = async () => { try { await POST(`/api/items/${data.item.id}/restore`); toast('استُعيدت المهمة', 'ok'); await load(); } catch (e) { showErr(e); } };
+      const acts = $('#acts', main); if (acts) acts.classList.add('hidden');
+    }
     refreshCounts(); // الخادم يعلّم إشعارات هذه المهمة كمقروءة عند فتحها
   }
   function renderHead() {
@@ -2399,4 +2426,22 @@ function modalVoice() {
   void origSubmit;
   // يبدأ الاستماع فورًا (الضغط على زر «بالصوت» نفسه يُعد إذنًا من المستخدم)
   if (mode === 'sr') startSR();
+}
+
+
+// ===== المحذوفات: المهام المحذوفة مع من حذفها ومتى، واستعادتها بضغطة =====
+async function viewTrash(main) {
+  async function load() {
+    const items = await GET('/api/items?kind=deleted&limit=500');
+    items.sort((a, b) => String(b.deleted_at).localeCompare(String(a.deleted_at)));
+    main.innerHTML = `<div class="page-h">${I('trash')}<h1>المحذوفات</h1></div>
+      <p class="small muted">المهام المحذوفة لا تظهر في القوائم ولا الأعداد ولا التقارير. لم يُمسح منها شيء، ويمكن استعادة أي منها كما كانت.</p>
+      ${listOrEmpty(items, i => `<div class="row"><div class="main"><a class="title" href="#/item/${i.id}">${esc(i.title)}</a>
+        <div class="meta"><span class="chip">${esc(sectionName(i.section))}</span><span class="txt ltr">${esc(i.ref)}</span>${i.subtasks_total ? `<span class="chip">${I('list')}${i.subtasks_total} فرعية</span>` : ''}
+        <span class="txt">حُذفت ${fmtTs(i.deleted_at)}${i.deleted_by_name ? ` — ${esc(i.deleted_by_name)}` : ''}</span></div></div>
+        <div class="side"><button type="button" class="btn sm" data-restore="${i.id}">استعادة</button></div></div>`, 'لا توجد مهام محذوفة')}`;
+    $$('[data-restore]', main).forEach(b => b.onclick = async () => { try { await POST(`/api/items/${b.dataset.restore}/restore`); toast('استُعيدت المهمة', 'ok'); load(); } catch (e) { showErr(e); } });
+  }
+  await load();
+  return { refresh: load };
 }

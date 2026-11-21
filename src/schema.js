@@ -75,4 +75,10 @@ module.exports.migrations = [
   [
     'ALTER TABLE items ADD COLUMN deliverable TEXT',
   ],
+  // 7) حذف المهمة حذفًا قابلًا للاستعادة: تُنقل إلى «المحذوفات» (kind='deleted') ويُحفظ نوعها الأصلي ومن حذفها ومتى
+  [
+    'ALTER TABLE items ADD COLUMN deleted_kind TEXT',
+    'ALTER TABLE items ADD COLUMN deleted_at TEXT',
+    'ALTER TABLE items ADD COLUMN deleted_by INTEGER REFERENCES users(id)',
+  ],
 ];
