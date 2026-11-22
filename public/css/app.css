@@ -46,7 +46,7 @@ svg.i { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-widt
 /* ===== الهيكل ===== */
 .topbar { position: sticky; top: 0; z-index: 40; background: var(--surface); border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; padding: 8px 16px; min-height: 60px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--brand); font-weight: 700; min-width: 0; }
-.brand img { width: 44px; height: 40px; object-fit: contain; }
+.brand img { height: 34px; width: auto; max-width: 64px; object-fit: contain; flex: none; }
 .brand .t { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
 .brand .t small { color: var(--ink-3); font-weight: 400; font-size: .75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar .spacer { flex: 1; }
@@ -76,7 +76,7 @@ main { flex: 1; min-width: 0; padding: 16px 16px 96px; max-width: 1280px; margin
   .topbar .desk-only { display: none; }
   .brand .t small { display: none; }
 }
-@media (max-width: 420px) { .brand .t b { font-size: .9rem; } .brand img { width: 36px; height: 32px; } }
+@media (max-width: 420px) { .brand .t b { font-size: .9rem; } .brand img { height: 28px; max-width: 50px; } }
 
 /* ===== أزرار ونماذج ===== */
 .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 44px; padding: 8px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; font-weight: 600; white-space: nowrap; color: var(--ink); }
@@ -321,7 +321,7 @@ details.log summary { cursor: pointer; color: var(--ink-2); font-weight: 600; pa
 /* ===== الدخول ===== */
 .login { min-height: 100vh; display: grid; place-items: center; padding: 16px; background: linear-gradient(160deg, #eef4f7, #f7f9fa); }
 .login .card { width: 100%; max-width: 400px; padding: 26px; }
-.login img { width: 150px; display: block; margin: 0 auto 8px; }
+.login img { width: 190px; display: block; margin: 0 auto 8px; }
 .login h1 { text-align: center; color: var(--brand); margin-bottom: 4px; }
 .login p.sub { text-align: center; color: var(--ink-3); margin: 0 0 18px; }
 .hello { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
